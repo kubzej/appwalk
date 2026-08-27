@@ -19,6 +19,8 @@ export interface ReplayResult {
   steps: StepResult[];
   failedAt?: { index: number; action: string; error: string };
   expectationsReproduced: boolean;
+  /** Number of requests intentionally blocked by Appwalk safety during this replay. */
+  safetyBlocked: number;
   finalSnapshot: string;
   /** The first successful observation of a derived scenario expectation, if one was supplied. */
   variantExpectationResult?: import("../agent/tools.js").ToolCallResult;
@@ -51,6 +53,7 @@ export async function replay(
   expectedExpectations: ExpectationObservation[] = [],
   variantExpectation?: ResponseExpectation,
   logger?: Logger,
+  getSafetyBlockCount?: () => number,
 ): Promise<ReplayResult> {
   const flowStartUrl = page.url();
   const flowStartSnapshot = await captureSnapshot(page);
@@ -59,6 +62,7 @@ export async function replay(
   let variantExpectationResult: import("../agent/tools.js").ToolCallResult | undefined;
   let variantExpectationStep: number | undefined;
   let finalUrl = flowStartUrl;
+  const safetyCountBefore = getSafetyBlockCount?.() ?? 0;
 
   for (const [index, action] of actions.entries()) {
     logger?.debug("replay.step_started", "Replay action started", { stepIndex: index, action: action.name, input: action.input });
@@ -98,6 +102,7 @@ export async function replay(
         expectationsReproduced: false,
         finalSnapshot: steps[steps.length - 1]?.snapshot ?? flowStartSnapshot,
         failedAt: { index, action: action.name, error: (err as Error).message },
+        safetyBlocked: Math.max(0, (getSafetyBlockCount?.() ?? safetyCountBefore) - safetyCountBefore),
         finalPage: page,
       };
     }
@@ -123,9 +128,10 @@ export async function replay(
     finalSnapshot,
     network: recorder?.network.slice(replayNetworkStart) ?? [],
   });
-  const reproduced = expectationsReproduced && verificationPassed;
+  const safetyBlocked = Math.max(0, (getSafetyBlockCount?.() ?? safetyCountBefore) - safetyCountBefore);
+  const reproduced = safetyBlocked === 0 && expectationsReproduced && verificationPassed;
   logger?.debug("replay.completed", "Replay verification completed", {
-    reproduced, verificationPassed, expectationsReproduced, steps: steps.length, finalUrl,
+    reproduced, verificationPassed, expectationsReproduced, safetyBlocked, steps: steps.length, finalUrl,
   });
   return {
     reproduced,
@@ -135,6 +141,7 @@ export async function replay(
     expectationsReproduced,
     finalSnapshot,
     finalPage: page,
+    safetyBlocked,
     variantExpectationResult,
     variantExpectationStep,
   };

@@ -11,14 +11,16 @@ import { configurePageTimeouts } from "../browser/actions.js";
 import { formatTestTitle, generateSpec, type FlowEntries } from "../codegen/spec.js";
 import { loadAppwalkConfig, validateResolvedOptions, type CoverageRunConfig, type ProviderName } from "../config.js";
 import { EvidenceLog, readEvidenceLog, type EvidenceEntry, type EvidenceReadIssue } from "../evidence/log.js";
-import { EvidenceRecorder } from "../evidence/recorder.js";
+import { EvidenceRecorder, type RuntimeErrorEntry } from "../evidence/recorder.js";
 import {
   applyResponseVariant,
   extractResponseFixtures,
   installResponseFixtures,
-  parseResponseVariants,
+  parseResponseVariantsDetailed,
+  RESPONSE_VARIANT_MAX_OUTPUT_TOKENS,
   responseVariantPrompt,
   type ResponseFixture,
+  type ResponseVariantParseResult,
   type ResponseVariant,
 } from "../response/variants.js";
 import type { ExpectationObservation } from "../types.js";
@@ -38,6 +40,9 @@ import {
   type ReportFlow,
   type ReportIssue,
   type ReportResponseVariantAudit,
+  type ReportRuntimeError,
+  type ReportSafety,
+  type ReportStopReason,
   type ReportStep,
 } from "../report/contract.js";
 import { extractActions, hasObservableReplayDifference, replay } from "../verify/replay.js";
@@ -87,7 +92,7 @@ interface DiscoveryManifestFlow {
   startIndex: number;
   endIndex: number;
   startUrl: string;
-  startStorageState: string;
+  startStorageState?: string;
   responseFixtures?: ResponseFixture[];
   origin?: "discovered" | "derived";
   sourceFlowId?: number;
@@ -127,6 +132,7 @@ interface DiscoveryManifestRun {
   scope?: string;
   expectations: string[];
   exhausted: boolean;
+  stopReason?: ReportStopReason;
   flowIds: number[];
   error?: string;
 }
@@ -142,6 +148,9 @@ interface ExplorationRun {
   replayConfirmedIds: number[];
   findings: FlowFinding[];
   responseVariantAudits: ReportResponseVariantAudit[];
+  safety: ReportSafety;
+  runtimeErrors: ReportRuntimeError[];
+  replayFailures: Record<number, NonNullable<ReportFlow["replayFailure"]>>;
   error?: string;
 }
 
@@ -167,6 +176,54 @@ interface ConfirmedFlow extends FlowEntries {
   sourceFlowIndex?: number;
   scenarioId?: string;
   responseVariant?: ResponseVariant;
+}
+
+interface SafetyEvent {
+  phase: "exploration" | "replay";
+  method: string;
+  url: string;
+}
+
+function emptySafety(): ReportSafety {
+  return { blockedRequests: 0, explorationBlocked: 0, replayBlocked: 0, byMethod: {}, samples: [], safetyRelatedRuntimeErrors: 0 };
+}
+
+function summarizeSafety(events: SafetyEvent[]): ReportSafety {
+  const byMethod: Record<string, number> = {};
+  for (const event of events) byMethod[event.method] = (byMethod[event.method] ?? 0) + 1;
+  const samples: ReportSafety["samples"] = [];
+  const seen = new Set<string>();
+  for (const event of events) {
+    const key = `${event.phase}:${event.method}:${event.url}`;
+    if (seen.has(key) || samples.length >= 20) continue;
+    seen.add(key);
+    samples.push(event);
+  }
+  return {
+    blockedRequests: events.length,
+    explorationBlocked: events.filter((event) => event.phase === "exploration").length,
+    replayBlocked: events.filter((event) => event.phase === "replay").length,
+    byMethod,
+    samples,
+    safetyRelatedRuntimeErrors: 0,
+  };
+}
+
+function summarizeRuntimeErrors(
+  entries: Array<{ error: RuntimeErrorEntry; phase: "exploration" | "replay"; flowIndex?: number }>,
+): ReportRuntimeError[] {
+  const grouped = new Map<string, ReportRuntimeError>();
+  for (const entry of entries) {
+    const { error, phase, flowIndex } = entry;
+    const key = JSON.stringify([phase, flowIndex, error.kind, error.message, error.method, error.url, error.status, error.safetyRelated]);
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.occurrences += 1;
+      continue;
+    }
+    grouped.set(key, { ...error, phase, flowIndex, occurrences: 1 });
+  }
+  return [...grouped.values()];
 }
 
 function printUsage(error?: string): never {
@@ -445,15 +502,59 @@ async function proposeResponseVariants(
   finalSnapshot: string,
   replayTimeline: Array<{ url: string; snapshot: string }>,
   logger = appLogger,
-): Promise<ResponseVariant[]> {
-  const planner = createProvider(provider, model, apiKey, logger);
+): Promise<ResponseVariantParseResult> {
+  const plannerLogger = logger.child({ operation: "response_variant_planner" });
+  plannerLogger.debug("response_variants.planning_started", "Response variant planning started", {
+    flowName,
+    fixtureCount: fixtures.length,
+    maxVariants,
+    maxOutputTokens: RESPONSE_VARIANT_MAX_OUTPUT_TOKENS,
+    replaySteps: replayTimeline.length,
+  });
+  const planner = createProvider(provider, model, apiKey, plannerLogger);
   const turn = await planner.start({
     systemPrompt:
       "You are a conservative response-variant planner for browser test generation. Return only the JSON requested by the user. Never invent application behavior or fields.",
     tools: [],
     initialInput: responseVariantPrompt(flowName, fixtures, maxVariants, finalSnapshot, replayTimeline),
+    maxOutputTokens: RESPONSE_VARIANT_MAX_OUTPUT_TOKENS,
   });
-  return turn.type === "text" ? parseResponseVariants(turn.text, fixtures, maxVariants) : [];
+  if (turn.type !== "text") {
+    const result = {
+      variants: [],
+      candidates: 0,
+      rejected: 0,
+      rejectionReasons: [],
+      reason: "Planner did not return a text response.",
+    };
+    plannerLogger.debug("response_variants.planning_parsed", "Response variant planner returned no text proposals", {
+      responseType: turn.type,
+      candidates: result.candidates,
+      accepted: result.variants.length,
+      rejected: result.rejected,
+      reason: result.reason,
+    });
+    return result;
+  }
+  const result = parseResponseVariantsDetailed(turn.text, fixtures, maxVariants);
+  if (turn.incompleteReason) {
+    result.incomplete = true;
+    result.reason = `Planner response was incomplete: ${turn.incompleteReason}.`;
+  }
+  plannerLogger.debug("response_variants.planning_response", "Response variant planner response received", {
+    responseType: turn.type,
+    responseLength: turn.text.length,
+    incompleteReason: turn.incompleteReason,
+    plannerReason: result.plannerReason,
+  });
+  plannerLogger.debug("response_variants.planning_parsed", "Response variant planner output parsed", {
+    candidates: result.candidates,
+    accepted: result.variants.length,
+    rejected: result.rejected,
+    rejectionReasons: result.rejectionReasons,
+    reason: result.reason,
+  });
+  return result;
 }
 
 function derivedEvidenceEntries(
@@ -479,6 +580,7 @@ function derivedEvidenceEntries(
       result: steps[index],
       network: [],
       console: [],
+      runtimeErrors: [],
     });
     if (expectationResult && expectationStepIndex === index) {
       entries.push({
@@ -492,6 +594,7 @@ function derivedEvidenceEntries(
         result: expectationResult,
         network: [],
         console: [],
+        runtimeErrors: [],
       });
     }
   });
@@ -507,6 +610,7 @@ function derivedEvidenceEntries(
       result: expectationResult,
       network: [],
       console: [],
+      runtimeErrors: [],
     });
   }
   return entries;
@@ -550,13 +654,18 @@ async function exploreAndVerifyInBrowser(
 
   const evidencePath = join(args.output, "evidence.jsonl");
   const safetyConfig = loadSafetyConfig(args.safetyConfigPath);
-  let blockedRequests = 0;
+  const safetyEvents: SafetyEvent[] = [];
+  let safetyPhase: SafetyEvent["phase"] = "exploration";
+  let activeRecorder: EvidenceRecorder | undefined;
   const guardOptions = {
     allowDestructive: args.allowDestructive,
     blockMethods: args.blockMethods,
     config: safetyConfig,
     logger: runLogger,
-    onBlocked: () => { blockedRequests += 1; },
+    onBlocked: (request: { method: string; url: string }) => {
+      safetyEvents.push({ phase: safetyPhase, ...request });
+      activeRecorder?.markSafetyBlocked(request);
+    },
   };
 
   const page = await browser.newPage(
@@ -572,7 +681,7 @@ async function exploreAndVerifyInBrowser(
   await installDestructiveActionGuard(page, guardOptions);
   // Start recording after setup so login and token-refresh traffic never become application fixtures.
   const recorder = new EvidenceRecorder(page, runLogger);
-  blockedRequests = 0;
+  activeRecorder = recorder;
 
   runLogger.info("  Exploring application");
   const discovery = await runAgentLoop(page, createProvider(provider, model, apiKey, runLogger), {
@@ -583,8 +692,9 @@ async function exploreAndVerifyInBrowser(
     scope: args.scope,
     expectations: args.expectations,
     logger: runLogger,
+    getSafetyBlockCount: () => safetyEvents.filter((event) => event.phase === "exploration").length,
     onStep: (step, index, flowIndex) => {
-      const { network, console: consoleEntries } = recorder.drain();
+      const { network, console: consoleEntries, runtimeErrors } = recorder.drain();
         const entry = {
           index,
           flowIndex,
@@ -593,6 +703,7 @@ async function exploreAndVerifyInBrowser(
           ...step,
           network,
           console: consoleEntries,
+          runtimeErrors,
         } satisfies EvidenceEntry;
         runEntries.push(entry);
         evidenceLog.append(entry);
@@ -600,7 +711,7 @@ async function exploreAndVerifyInBrowser(
   });
   await recorder.waitForPendingBodies();
   await discovery.finalPage.context().browser()?.close();
-  const explorationBlockedRequests = blockedRequests;
+  const explorationBlockedRequests = safetyEvents.filter((event) => event.phase === "exploration").length;
   if (explorationBlockedRequests > 0) {
     runLogger.info(`  Safety: ${explorationBlockedRequests} destructive request${explorationBlockedRequests === 1 ? "" : "s"} blocked during exploration`);
   }
@@ -615,16 +726,18 @@ async function exploreAndVerifyInBrowser(
   const replayConfirmedIds: number[] = [];
   const findings: FlowFinding[] = [];
   const responseVariantAudits: ReportResponseVariantAudit[] = [];
+  const replayFailures: Record<number, NonNullable<ReportFlow["replayFailure"]>> = {};
+  const runtimeErrorEntries: Array<{ error: RuntimeErrorEntry; phase: "exploration" | "replay"; flowIndex?: number }> = recorder.runtimeErrors.map((error) => ({ error, phase: "exploration" }));
   let runError: string | undefined;
 
   if (verifiedFlows.length > 0) {
     runLogger.info(`  Verifying ${verifiedFlows.length} of ${discovery.flows.length} discovered flow(s) by replay in a clean session`);
-    const replayBlockedStart = blockedRequests;
     let replayBrowser: Browser | undefined;
     try {
       replayBrowser = await chromium.launch();
       try {
         for (const { flow, index } of verifiedFlows) {
+        safetyPhase = "replay";
         const flowLogger = runLogger.child({ flowIndex: index + 1 });
         const flowEntries = allEntries.filter((entry) => entry.flowIndex === index);
         const actions = extractActions(flowEntries);
@@ -647,6 +760,7 @@ async function exploreAndVerifyInBrowser(
         );
         await installDestructiveActionGuard(replayPage, guardOptions);
         const replayRecorder = new EvidenceRecorder(replayPage, flowLogger);
+        activeRecorder = replayRecorder;
         const expectedExpectations = flowEntries
           .filter((entry) => entry.result?.expectation)
           .map((entry) => entry.result!.expectation!) as ExpectationObservation[];
@@ -658,7 +772,26 @@ async function exploreAndVerifyInBrowser(
           expectedExpectations,
           undefined,
           flowLogger,
+          () => safetyEvents.filter((event) => event.phase === "replay").length,
         );
+        runtimeErrorEntries.push(...replayRecorder.runtimeErrors.map((error) => ({ error, phase: "replay" as const, flowIndex: index + 1 })));
+        if (!replayResult.reproduced) {
+          const runtimeIssues = replayRecorder.runtimeErrors.filter((error) => !error.safetyRelated);
+          replayFailures[index] = {
+            reason: replayResult.failedAt
+              ? "A recorded action could not be completed in the clean replay session."
+              : replayResult.safetyBlocked > 0
+                ? "Replay was limited by the safety policy."
+                : !replayResult.expectationsReproduced
+                  ? "The replay did not reproduce the recorded expectation signals."
+                  : "The replay did not reach the recorded verification state.",
+            step: replayResult.failedAt ? replayResult.failedAt.index + 1 : undefined,
+            action: replayResult.failedAt?.action,
+            error: replayResult.failedAt?.error,
+            lastUrl: replayResult.finalUrl,
+            lastSnapshot: replayResult.finalSnapshot,
+          };
+        }
         const activeBrowser = replayResult.finalPage.context().browser();
         if (activeBrowser && activeBrowser !== replayBrowser) replayBrowser = activeBrowser;
         await replayResult.finalPage.close();
@@ -666,6 +799,7 @@ async function exploreAndVerifyInBrowser(
         if (findingCandidate) {
           const confirmedFinding =
             !replayResult.failedAt &&
+            replayResult.safetyBlocked === 0 &&
             replayResult.expectationsReproduced &&
             !replayResult.verificationPassed;
           const finding: FlowFinding = {
@@ -674,6 +808,8 @@ async function exploreAndVerifyInBrowser(
             summary: flow.finalText || "The application did not satisfy the challenge verification condition.",
             failure: replayResult.failedAt
               ? `step ${replayResult.failedAt.index}, ${replayResult.failedAt.action}: ${replayResult.failedAt.error}`
+              : replayResult.safetyBlocked > 0
+                ? `Replay was limited by safety policy: ${replayResult.safetyBlocked} request${replayResult.safetyBlocked === 1 ? "" : "s"} blocked.`
               : !replayResult.expectationsReproduced
                 ? "The replay did not reproduce one or more expectation signals."
                 : replayResult.verificationPassed
@@ -691,6 +827,8 @@ async function exploreAndVerifyInBrowser(
             flowLogger.debug("replay.step_failed", "Replay action failed", { stepIndex: replayResult.failedAt.index, action: replayResult.failedAt.action, error: replayResult.failedAt.error });
           } else if (!replayResult.expectationsReproduced) {
             flowLogger.warn(`    Flow ${index + 1} not confirmed: expected result was not reproduced`);
+          } else if (replayResult.safetyBlocked > 0) {
+            flowLogger.warn(`    Flow ${index + 1} not confirmed: replay was limited by safety policy (${replayResult.safetyBlocked} request${replayResult.safetyBlocked === 1 ? "" : "s"} blocked)`);
           } else {
             flowLogger.warn(`    Flow ${index + 1} not confirmed: expected final state was not reached`);
           }
@@ -719,6 +857,11 @@ async function exploreAndVerifyInBrowser(
             url: fixture.url,
             bytes: JSON.stringify(fixture.body).length,
           })),
+          planningStatus: (args.responseVariantMax ?? 0) > 0 && (baseFlow.responseFixtures?.length ?? 0) > 0 ? "completed" :
+            (args.responseVariantMax ?? 0) > 0 ? "not_run" : "not_enabled",
+          plannerCandidates: 0,
+          plannerRejected: 0,
+          plannerRejectionReasons: [],
           proposed: 0,
           confirmed: 0,
           confirmedScenarios: [],
@@ -730,7 +873,7 @@ async function exploreAndVerifyInBrowser(
           let variants: ResponseVariant[] = [];
           try {
             flowLogger.verbose(`    Flow ${index + 1}: planning response scenarios`);
-            variants = await proposeResponseVariants(
+            const planning = await proposeResponseVariants(
               provider,
               model,
               apiKey,
@@ -741,9 +884,21 @@ async function exploreAndVerifyInBrowser(
               replayResult.steps.map((step) => ({ url: step.url, snapshot: step.snapshot })),
               flowLogger,
             );
+            variants = planning.variants;
+            responseVariantAudit.plannerCandidates = planning.candidates;
+            responseVariantAudit.plannerRejected = planning.rejected;
+            responseVariantAudit.plannerRejectionReasons = planning.rejectionReasons;
+            responseVariantAudit.plannerReason = planning.reason;
             responseVariantAudit.proposed = variants.length;
+            responseVariantAudit.planningStatus = planning.incomplete ? "incomplete" : "completed";
+            flowLogger.verbose(`    Flow ${index + 1}: response planner proposals=${planning.candidates}, accepted=${planning.variants.length}, rejected=${planning.rejected}`);
+            if (planning.reason) {
+              flowLogger.verbose(`    Flow ${index + 1}: response planner note: ${planning.reason}`);
+            }
           } catch (error) {
             const reason = (error as Error).message;
+            responseVariantAudit.planningStatus = "failed";
+            responseVariantAudit.plannerReason = reason;
             responseVariantAudit.skipped.push({ name: "planner", reason });
             flowLogger.warn(`    Flow ${index + 1}: response scenario planning skipped`);
             flowLogger.debug("response_variants.planning_failed", "Response scenario planning failed", { error: reason });
@@ -774,6 +929,7 @@ async function exploreAndVerifyInBrowser(
             await installDestructiveActionGuard(variantPage, guardOptions);
             await installResponseFixtures(variantPage, variantFixtures);
             const variantRecorder = new EvidenceRecorder(variantPage, flowLogger);
+            activeRecorder = variantRecorder;
             const variantResult = await replay(
               variantPage,
               actions,
@@ -782,7 +938,9 @@ async function exploreAndVerifyInBrowser(
               expectedExpectations,
               variant.expectation,
               flowLogger.child({ scenarioId }),
+              () => safetyEvents.filter((event) => event.phase === "replay").length,
             );
+            runtimeErrorEntries.push(...variantRecorder.runtimeErrors.map((error) => ({ error, phase: "replay" as const, flowIndex: index + 1 })));
             const variantExpectationResult = variantResult.variantExpectationResult;
             const activeVariantBrowser = variantResult.finalPage.context().browser();
             if (activeVariantBrowser && activeVariantBrowser !== replayBrowser) replayBrowser = activeVariantBrowser;
@@ -791,6 +949,8 @@ async function exploreAndVerifyInBrowser(
             if (!variantResult.reproduced) {
               responseVariantAudit.skipped.push({ name: variant.name, reason: variantResult.failedAt
                 ? `Replay failed at step ${variantResult.failedAt.index}: ${variantResult.failedAt.error}`
+                : variantResult.safetyBlocked > 0
+                  ? `Replay was limited by safety policy: ${variantResult.safetyBlocked} request${variantResult.safetyBlocked === 1 ? "" : "s"} blocked.`
                 : variantResult.expectationsReproduced ? "Replay did not satisfy the flow verification." : "Replay did not reproduce the original expectation signals." });
               flowLogger.verbose(`      Response scenario "${variant.name}": replay failed`);
               continue;
@@ -847,7 +1007,7 @@ async function exploreAndVerifyInBrowser(
         }
         }
       } finally {
-        const replayBlockedRequests = blockedRequests - replayBlockedStart;
+        const replayBlockedRequests = safetyEvents.filter((event) => event.phase === "replay").length;
         if (replayBlockedRequests > 0) {
           runLogger.info(`  Safety: ${replayBlockedRequests} destructive request${replayBlockedRequests === 1 ? "" : "s"} blocked during replay`);
         }
@@ -867,7 +1027,28 @@ async function exploreAndVerifyInBrowser(
     runLogger.warn("  No flows were ready for replay");
   }
 
-  return { runId, runName, args, evidencePath, allEntries, discovery, confirmedFlows, replayConfirmedIds, findings, responseVariantAudits, error: runError };
+  const summarizedRuntimeErrors = summarizeRuntimeErrors(runtimeErrorEntries);
+  const summarizedSafety = summarizeSafety(safetyEvents);
+  summarizedSafety.safetyRelatedRuntimeErrors = runtimeErrorEntries
+    .filter(({ error }) => error.safetyRelated)
+    .reduce((total) => total + 1, 0);
+
+  return {
+    runId,
+    runName,
+    args,
+    evidencePath,
+    allEntries,
+    discovery,
+    confirmedFlows,
+    replayConfirmedIds,
+    findings,
+    responseVariantAudits,
+    safety: summarizedSafety,
+    runtimeErrors: summarizedRuntimeErrors,
+    replayFailures,
+    error: runError,
+  };
 }
 
 function createCoverageRuns(args: CliArgs): Array<{ id: string; name: string; args: CliArgs }> {
@@ -902,7 +1083,8 @@ async function exploreCoverage(args: CliArgs, executionId: string): Promise<Expl
     try {
       const run = await exploreAndVerify(configuredRun.args, evidenceLog, configuredRun.id, configuredRun.name);
       runs.push(run);
-      appLogger.info(`  ${run.error ? "Partial results" : "Completed"}: ${run.replayConfirmedIds.length} of ${run.discovery?.flows.length ?? 0} discovered flow(s) replay-confirmed`, {
+      const needsReview = Boolean(run.error) || Boolean(run.discovery?.exhausted) || run.safety.blockedRequests > 0 || run.runtimeErrors.length > 0;
+      appLogger.info(`  ${needsReview ? "Partial results" : "Completed"}: ${run.replayConfirmedIds.length} of ${run.discovery?.flows.length ?? 0} discovered flow(s) replay-confirmed`, {
         runId: configuredRun.id,
         flowsFound: run.discovery?.flows.length ?? 0,
         replayConfirmed: run.replayConfirmedIds.length,
@@ -921,6 +1103,9 @@ async function exploreCoverage(args: CliArgs, executionId: string): Promise<Expl
         replayConfirmedIds: [],
         findings: [],
         responseVariantAudits: [],
+        safety: emptySafety(),
+        runtimeErrors: [],
+        replayFailures: {},
         error: message,
       });
     }
@@ -962,7 +1147,6 @@ function manifestFor(batch: ExplorationBatch): DiscoveryManifest {
         startIndex: flow.startIndex,
         endIndex: flow.endIndex,
         startUrl: flow.startUrl,
-        startStorageState: flow.startStorageState,
         responseFixtures: confirmed?.responseFixtures,
         origin: "discovered",
         finding: run.findings.find((finding) => finding.flowIndex === runFlowIndex),
@@ -987,7 +1171,6 @@ function manifestFor(batch: ExplorationBatch): DiscoveryManifest {
         startIndex: source.startIndex,
         endIndex: source.endIndex,
         startUrl: derived.startUrl ?? source.startUrl,
-        startStorageState: derived.startStorageState ?? source.startStorageState,
         responseFixtures: derived.responseFixtures,
         origin: "derived",
         sourceFlowId: source.id,
@@ -1004,6 +1187,7 @@ function manifestFor(batch: ExplorationBatch): DiscoveryManifest {
       scope: run.args.scope,
       expectations: run.args.expectations,
       exhausted: run.discovery?.exhausted ?? false,
+      stopReason: run.discovery?.stopReason ?? (run.error ? "error" : "completed"),
       flowIds,
       error: run.error,
     };
@@ -1072,7 +1256,7 @@ function reportStepValue(entry: EvidenceEntry): string | undefined {
   return /password|card|cvv|secret|token/i.test(target) ? "[redacted]" : String(value);
 }
 
-function reportSteps(entries: EvidenceEntry[]): ReportStep[] {
+function reportSteps(entries: EvidenceEntry[], errorLabel: string): ReportStep[] {
   return entries
     .filter((entry) => entry.toolCall && entry.toolCall.name !== "flowComplete")
     .map((entry, index) => {
@@ -1088,6 +1272,8 @@ function reportSteps(entries: EvidenceEntry[]): ReportStep[] {
         target,
         value: reportStepValue(entry),
         error: entry.error,
+        errorLabel: entry.error ? errorLabel : undefined,
+        safetyBlocked: entry.safetyBlocked,
       };
     });
 }
@@ -1096,6 +1282,7 @@ function reportFlowsForRun(run: ExplorationRun): ReportFlow[] {
   const discovered = (run.discovery?.flows ?? []).map((flow, index): ReportFlow => {
     const entries = run.allEntries.filter((entry) => entry.flowIndex === index && entry.scenarioId === undefined);
     const finding = run.findings.find((candidate) => candidate.flowIndex === index);
+    const runtimeIssues = run.runtimeErrors.filter((error) => error.phase === "replay" && error.flowIndex === index + 1);
     return {
       id: `${run.runId}-flow-${index + 1}`,
       title: flow.title ?? formatTestTitle(flow.finalText || `Flow ${index + 1}`),
@@ -1103,7 +1290,9 @@ function reportFlowsForRun(run: ExplorationRun): ReportFlow[] {
       origin: "discovered",
       discoveryVerified: flow.verified,
       replayConfirmed: run.replayConfirmedIds.includes(index + 1),
-      steps: reportSteps(entries),
+      runtimeIssues,
+      steps: reportSteps(entries, "Exploration action failed"),
+      replayFailure: run.replayFailures[index],
       finding,
     };
   });
@@ -1116,7 +1305,8 @@ function reportFlowsForRun(run: ExplorationRun): ReportFlow[] {
       origin: "derived",
       discoveryVerified: true,
       replayConfirmed: true,
-      steps: reportSteps(flow.entries),
+      runtimeIssues: [],
+      steps: reportSteps(flow.entries, "Replay action failed"),
     }));
   return [...discovered, ...derived];
 }
@@ -1157,8 +1347,11 @@ function writeExecutionReport(
       personaIntent: run.args.personaName ? PERSONAS[run.args.personaName]?.intent : undefined,
       flowsFound: run.discovery?.flows.length ?? 0,
       replayConfirmed: run.replayConfirmedIds.length,
-      generatedTests: run.confirmedFlows.length,
+      generatedTests: command === "run" ? run.confirmedFlows.length : 0,
       exhausted: run.discovery?.exhausted ?? false,
+      stopReason: run.discovery?.stopReason ?? (run.error ? "error" : "completed"),
+      safety: run.safety,
+      runtimeErrors: run.runtimeErrors,
       flows: reportFlowsForRun(run),
       findings: run.findings,
       responseVariants: run.responseVariantAudits,
@@ -1214,8 +1407,8 @@ function generateFromManifest(args: CliArgs): void {
   const selected = selectManifestFlows(manifest, args.flowSelection);
   const storageStatePath = args.storageStatePath ?? manifest.setup.storageStatePath;
   const useCapturedState = manifest.setup.requiresLogin && !storageStatePath && !(args.email && args.password);
-  if (useCapturedState && selected.some((flow) => !flow.startStorageState)) {
-    throw new Error("This discovery used login but does not contain captured session state. Pass -e/-p or --storage-state.");
+  if (useCapturedState) {
+    throw new Error("This discovery used login. Pass -e/-p or --storage-state when generating from it; captured session state is not stored in discovery artifacts.");
   }
 
   const runNames = new Map((manifest.runs ?? []).map((run) => [run.id, run.name]));
@@ -1233,12 +1426,29 @@ function generateFromManifest(args: CliArgs): void {
       startUrl: useFlowState ? flow.startUrl : flow.id === 1 ? undefined : flow.startUrl,
       startStorageState: useFlowState ? flow.startStorageState : flow.id === 1 ? undefined : flow.startStorageState,
       responseFixtures: flow.responseFixtures,
+      origin: flow.origin,
     };
   });
   const emptyFlows = flows.filter((flow) => flow.entries.length === 0).map((flow) => flow.name);
   if (emptyFlows.length > 0) {
     throw new Error("Discovery evidence is missing for selected flow(s): " + emptyFlows.join(", "));
   }
+  appLogger.debug("codegen.started", "Generating tests from discovery", {
+    mode: "generate",
+    flows: flows.length,
+    baselineFlows: flows.filter((flow) => flow.origin !== "derived").length,
+    derivedFlows: flows.filter((flow) => flow.origin === "derived").length,
+    baselineFixtures: flows.reduce((total, flow) => total + (flow.responseFixtures?.length ?? 0), 0),
+  });
+  flows.forEach((flow, index) => {
+    appLogger.debug("codegen.flow", "Preparing generated flow", {
+      mode: "generate",
+      flowIndex: index + 1,
+      origin: flow.origin ?? "discovered",
+      responseFixtures: flow.responseFixtures?.length ?? 0,
+      responseMocking: (flow.responseFixtures?.length ?? 0) > 0,
+    });
+  });
   const execution = createExecutionDirectory(args.output);
   const specPath = join(execution.path, "discovered.spec.ts");
   writeFileSync(specPath, generateSpec(flows, {
@@ -1247,6 +1457,12 @@ function generateFromManifest(args: CliArgs): void {
     password: args.password,
     storageStatePath,
   }));
+  appLogger.debug("codegen.completed", "Generated test suite", {
+    mode: "generate",
+    tests: flows.length,
+    baselineTests: flows.filter((flow) => flow.origin !== "derived").length,
+    derivedTests: flows.filter((flow) => flow.origin === "derived").length,
+  });
   appLogger.result("done:\n  execution:                           " + execution.path + "\n  test suite (" + flows.length + " test(s)): " + specPath);
 }
 
@@ -1279,7 +1495,6 @@ async function main() {
   if (executionArgs.command === "explore") {
     const report = writeExecutionReport(batch, executionCommand, execution, 0);
     process.exitCode = report.exitCode;
-    appLogger.result(`status: ${report.status}`);
     appLogger.result(`summary: ${report.summary.runs} persona(s), ${report.summary.flowsFound} flow(s) found, ${report.summary.replayConfirmed} replay-confirmed`);
     return;
   }
@@ -1287,11 +1502,26 @@ async function main() {
     const report = writeExecutionReport(batch, executionCommand, execution, 0);
     process.exitCode = report.exitCode;
     appLogger.result("No confirmed regression flow to generate; see the execution report.");
-    appLogger.result(`status: ${report.status}`);
     return;
   }
 
   appLogger.info("Generating test suite");
+  appLogger.debug("codegen.started", "Generating tests from confirmed flows", {
+    mode: "run",
+    flows: batch.confirmedFlows.length,
+    baselineFlows: batch.confirmedFlows.filter((flow) => flow.origin === "discovered").length,
+    derivedFlows: batch.confirmedFlows.filter((flow) => flow.origin === "derived").length,
+    baselineFixtures: batch.confirmedFlows.reduce((total, flow) => total + (flow.responseFixtures?.length ?? 0), 0),
+  });
+  batch.confirmedFlows.forEach((flow, index) => {
+    appLogger.debug("codegen.flow", "Preparing generated flow", {
+      mode: "run",
+      flowIndex: index + 1,
+      origin: flow.origin,
+      responseFixtures: flow.responseFixtures?.length ?? 0,
+      responseMocking: (flow.responseFixtures?.length ?? 0) > 0,
+    });
+  });
   const specPath = join(executionArgs.output, "discovered.spec.ts");
   writeFileSync(specPath, generateSpec(batch.confirmedFlows, {
     url: executionArgs.url,
@@ -1299,10 +1529,15 @@ async function main() {
     password: executionArgs.password,
     storageStatePath: executionArgs.storageStatePath,
   }));
+  appLogger.debug("codegen.completed", "Generated test suite", {
+    mode: "run",
+    tests: batch.confirmedFlows.length,
+    baselineTests: batch.confirmedFlows.filter((flow) => flow.origin === "discovered").length,
+    derivedTests: batch.confirmedFlows.filter((flow) => flow.origin === "derived").length,
+  });
   appLogger.result("test suite (" + batch.confirmedFlows.length + " test(s)): " + specPath);
   const report = writeExecutionReport(batch, executionCommand, execution, batch.confirmedFlows.length);
   process.exitCode = report.exitCode;
-  appLogger.result(`status: ${report.status}`);
   appLogger.result(`summary: ${report.summary.runs} persona(s), ${report.summary.flowsFound} flow(s) found, ${report.summary.replayConfirmed} replay-confirmed, ${report.summary.generatedTests} test(s) generated`);
 }
 

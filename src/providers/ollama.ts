@@ -57,6 +57,7 @@ export class OllamaProvider implements LlmProvider {
     tools: ToolDefinition[];
     initialInput: string;
     screenshot?: string;
+    maxOutputTokens?: number;
   }): Promise<ProviderTurn> {
     this.tools = params.tools;
     this.messages = [

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyResponseVariant, extractResponseFixtures, parseResponseVariants } from "../src/response/variants.js";
+import { applyResponseVariant, extractResponseFixtures, parseResponseVariants, parseResponseVariantsDetailed } from "../src/response/variants.js";
 import type { EvidenceEntry } from "../src/evidence/log.js";
 
 const applicationUrl = "https://example.test";
@@ -64,4 +64,34 @@ test("does not silently choose an ambiguous response", () => {
     fixtures,
   );
   assert.equal(variants.length, 0);
+});
+
+test("explains when the planner returns no proposals", () => {
+  const fixtures = extractResponseFixtures(evidence(), applicationUrl);
+  const result = parseResponseVariantsDetailed(JSON.stringify({
+    variants: [],
+    reason: "No observable alternate order state was available.",
+  }), fixtures, 5);
+  assert.deepEqual(result.variants, []);
+  assert.equal(result.candidates, 0);
+  assert.equal(result.rejected, 0);
+  assert.equal(result.plannerReason, "No observable alternate order state was available.");
+  assert.equal(result.reason, "Planner returned no variant proposals: No observable alternate order state was available.");
+});
+
+test("explains proposals rejected by validation", () => {
+  const fixtures = extractResponseFixtures(evidence(), applicationUrl);
+  const result = parseResponseVariantsDetailed(JSON.stringify([{
+    name: "Invalid patch",
+    sourceMethod: "GET",
+    sourceUrl: apiUrl,
+    sourceOccurrence: 1,
+    patches: [{ path: "$.missing", value: "cancelled" }],
+    expectation: { assertion: "urlContains", value: "/orders/42" },
+  }]), fixtures, 5);
+  assert.deepEqual(result.variants, []);
+  assert.equal(result.candidates, 1);
+  assert.equal(result.rejected, 1);
+  assert.equal(result.reason, "All planner proposals were rejected by Appwalk validation.");
+  assert.deepEqual(result.rejectionReasons, ["patch did not apply to the captured response"]);
 });

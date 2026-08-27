@@ -46,7 +46,7 @@ export async function installDestructiveActionGuard(
       return;
     }
     if (matchesAny(url, block) || blockMethods.has(request.method())) {
-      options.onBlocked?.({ method: request.method(), url });
+      options.onBlocked?.({ method: request.method(), url: safePath(url) });
       options.logger?.verbose(`      Blocked destructive request: ${request.method()} ${safePath(url)}`);
       options.logger?.debug("safety.request_blocked", "Destructive request blocked", {
         method: request.method(), url, matchedBlockRule: matchesAny(url, block), blockMethods: [...blockMethods],

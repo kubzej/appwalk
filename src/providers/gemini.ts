@@ -47,6 +47,7 @@ export class GeminiProvider implements LlmProvider {
     tools: ToolDefinition[];
     initialInput: string;
     screenshot?: string;
+    maxOutputTokens?: number;
   }): Promise<ProviderTurn> {
     this.systemPrompt = params.systemPrompt;
     this.tools = toGeminiTools(params.tools);
@@ -55,7 +56,7 @@ export class GeminiProvider implements LlmProvider {
       parts.push({ inlineData: { mimeType: "image/jpeg", data: params.screenshot } });
     }
     this.contents = [{ role: "user", parts }];
-    return this.send();
+    return this.send(params.maxOutputTokens);
   }
 
   async continue(toolResult: ToolResult): Promise<ProviderTurn> {
@@ -74,7 +75,7 @@ export class GeminiProvider implements LlmProvider {
     return this.send();
   }
 
-  private async send(): Promise<ProviderTurn> {
+  private async send(maxOutputTokens = AGENT_MAX_OUTPUT_TOKENS): Promise<ProviderTurn> {
     const requestIndex = ++this.requestIndex;
     this.logger.debug("provider.request_started", "Gemini request started", { provider: "gemini", model: this.model, requestIndex });
     const startedAt = Date.now();
@@ -85,12 +86,12 @@ export class GeminiProvider implements LlmProvider {
       config: {
         systemInstruction: this.systemPrompt,
         tools: this.tools,
-        maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+        maxOutputTokens,
       },
     };
     await sharedRateLimitCoordinator.beforeRequest(
       `gemini:${this.model}`,
-      estimateRequestTokens(request, AGENT_MAX_OUTPUT_TOKENS),
+      estimateRequestTokens(request, maxOutputTokens),
       this.logger,
     );
     let response: Awaited<ReturnType<typeof this.client.models.generateContent>>;
@@ -141,6 +142,10 @@ export class GeminiProvider implements LlmProvider {
     }
 
     if (candidateContent) this.contents.push(candidateContent);
-    return { type: "text", text: response.text ?? "" };
+    return {
+      type: "text",
+      text: response.text ?? "",
+      incompleteReason: response.candidates?.[0]?.finishReason === "MAX_TOKENS" ? "MAX_TOKENS" : undefined,
+    };
   }
 }

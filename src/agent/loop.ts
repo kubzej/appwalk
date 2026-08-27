@@ -104,6 +104,8 @@ Locator syntax — this is a Playwright locator string, not a plain CSS selector
 
 When something fails twice in a row, don't just retry the same idea with small tweaks — change strategy. Try a different path through the page (scroll for more content, navigate directly to a likely URL, go back and take a different link) instead of only adjusting the locator syntax.${formCorrectionGuidance}${meaningfulDefinition}
 
+Some browser requests may be intentionally blocked by Appwalk's safety policy. If a tool result says a request was safety-blocked, that request was not sent and the action may not have changed application state. Do not retry the same blocked action repeatedly; choose a safe read-only path or clearly treat the attempted flow as incomplete.
+
 When you believe you have completed a full, meaningful flow, call the \`flowComplete\` tool immediately with a short summary of what you did — don't continue exploratory actions after reaching that flow's terminal success state. If you want to test a follow-up scenario, close the current flow first; if action budget remains, you'll be taken back to the starting page to look for a different flow. Reach for a genuinely different variation (different data, different option, different area of the app) before settling for a near-identical repeat. Never end your turn with plain text while budget remains; only stop early if the app itself is completely broken or unreachable.`;
 }
 
@@ -112,6 +114,7 @@ export interface LoopStep {
   result?: StepResult;
   error?: string;
   finalText?: string;
+  safetyBlocked?: number;
 }
 
 export interface FlowResult {
@@ -127,12 +130,15 @@ export interface FlowResult {
   startStorageState: string;
 }
 
+export type LoopStopReason = "completed" | "agent_stopped" | "budget_exhausted" | "no_progress";
+
 export interface LoopResult {
   history: LoopStep[];
   /** One entry per flow the agent completed (via `flowComplete`, or by ending its turn in plain text). */
   flows: FlowResult[];
-  /** True if the loop stopped because it ran out of step budget mid-flow, not because the agent chose to stop. */
+  /** True if the loop stopped because it ran out of step budget. */
   exhausted: boolean;
+  stopReason: LoopStopReason;
   expectationResults: ExpectationResult[];
   /** The page actually active when the loop ended — the same page it was called with, unless an action
    * (a new tab, a reopened browser) switched it. The caller must close this page's browser, not
@@ -256,6 +262,8 @@ export async function runAgentLoop(
     expectations?: string[];
     /** Rebuild the provider context after this many tool actions. Set to 0 to disable. */
     contextCheckpointActions?: number;
+    /** Returns the number of safety-blocked requests observed by the active browser session. */
+    getSafetyBlockCount?: () => number;
     logger?: Logger;
   },
 ): Promise<LoopResult> {
@@ -302,7 +310,13 @@ export async function runAgentLoop(
       const stopStep: LoopStep = { finalText: turn.text, result: await toStepResult(page) };
       history.push(stopStep);
       options.onStep?.(stopStep, history.length - 1, flowIndex);
-      options.logger?.info("    Exploration stopped: agent did not complete a flow");
+      options.logger?.info(
+        actionCount >= options.maxSteps
+          ? `    Exploration reached the action budget before the next flow was completed; retained ${flows.length} completed flow(s)`
+          : flows.length > 0
+            ? `    Exploration ended before the next flow was completed; retained ${flows.length} completed flow(s)`
+            : "    Exploration stopped before completing a flow",
+      );
       options.logger?.debug("exploration.agent_stopped", "Agent returned text without calling flowComplete", {
         flowIndex,
         actionCount,
@@ -312,6 +326,7 @@ export async function runAgentLoop(
         history,
         flows,
         exhausted: actionCount >= options.maxSteps,
+        stopReason: actionCount >= options.maxSteps ? "budget_exhausted" : "agent_stopped",
         expectationResults: aggregateExpectationResults(options.expectations ?? [], expectationObservations),
         finalPage: page,
       };
@@ -380,6 +395,7 @@ export async function runAgentLoop(
             history,
             flows,
             exhausted: false,
+            stopReason: "no_progress",
             expectationResults: aggregateExpectationResults(options.expectations ?? [], expectationObservations),
             finalPage: page,
           };
@@ -420,6 +436,7 @@ export async function runAgentLoop(
         history,
         flows,
         exhausted: false,
+        stopReason: "completed",
         expectationResults: aggregateExpectationResults(options.expectations ?? [], expectationObservations),
         finalPage: page,
       };
@@ -433,6 +450,8 @@ export async function runAgentLoop(
     let result: StepResult | undefined;
     let error: string | undefined;
     let resultText: string;
+    const safetyCountBefore = options.getSafetyBlockCount?.() ?? 0;
+    let safetyBlocked = 0;
 
     options.logger?.verbose(`      Action ${actionCount + 1}/${options.maxSteps}: ${actionDescription(toolCall.name, toolCall.input)}`);
     options.logger?.debug("agent.tool_call_requested", "Agent requested a tool call", {
@@ -463,7 +482,21 @@ export async function runAgentLoop(
       });
     }
 
-    const step: LoopStep = { toolCall: { name: toolCall.name, input: toolCall.input }, result, error };
+    safetyBlocked = Math.max(0, (options.getSafetyBlockCount?.() ?? safetyCountBefore) - safetyCountBefore);
+    if (safetyBlocked > 0) {
+      resultText += `\nSafety policy blocked ${safetyBlocked} network request${safetyBlocked === 1 ? "" : "s"} during this action. The request was not sent; do not repeat the same action. Choose a different safe path or leave the flow incomplete.`;
+      options.logger?.verbose(`      Action ${actionCount + 1}/${options.maxSteps} limited by safety policy: ${safetyBlocked} request${safetyBlocked === 1 ? "" : "s"} blocked`);
+      options.logger?.debug("safety.action_blocked", "The action triggered one or more safety blocks", {
+        flowIndex, stepIndex: actionCount, tool: toolCall.name, blockedRequests: safetyBlocked,
+      });
+    }
+
+    const step: LoopStep = {
+      toolCall: { name: toolCall.name, input: toolCall.input },
+      result,
+      error,
+      safetyBlocked: safetyBlocked || undefined,
+    };
     history.push(step);
     if (result?.expectation) {
       expectationObservations.push({ ...result.expectation, flowIndex, historyIndex: history.length - 1 });
@@ -522,6 +555,7 @@ export async function runAgentLoop(
     history,
     flows,
     exhausted: true,
+    stopReason: "budget_exhausted",
     expectationResults: aggregateExpectationResults(options.expectations ?? [], expectationObservations),
     finalPage: page,
   };

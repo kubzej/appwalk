@@ -21,6 +21,7 @@ export interface FlowEntries {
   startStorageState?: string;
   /** Observed JSON responses to replay deterministically before the flow starts. */
   responseFixtures?: ResponseFixture[];
+  origin?: "discovered" | "derived";
 }
 
 /**

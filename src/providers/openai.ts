@@ -19,6 +19,8 @@ interface OpenAiOutputItem {
 
 interface OpenAiResponse {
   id: string;
+  status?: string;
+  incomplete_details?: { reason?: string };
   output?: OpenAiOutputItem[];
   usage?: {
     input_tokens?: number;
@@ -56,6 +58,7 @@ export class OpenAIProvider implements LlmProvider {
     tools: ToolDefinition[];
     initialInput: string;
     screenshot?: string;
+    maxOutputTokens?: number;
   }): Promise<ProviderTurn> {
     this.lastResponseId = null;
     this.tools = toOpenAiTools(params.tools);
@@ -66,7 +69,7 @@ export class OpenAIProvider implements LlmProvider {
     return this.send([
       { role: "system", content: params.systemPrompt },
       { role: "user", content: userContent },
-    ]);
+    ], params.maxOutputTokens);
   }
 
   async continue(toolResult: ToolResult): Promise<ProviderTurn> {
@@ -86,7 +89,7 @@ export class OpenAIProvider implements LlmProvider {
     return this.send(input);
   }
 
-  private async send(input: unknown[]): Promise<ProviderTurn> {
+  private async send(input: unknown[], maxOutputTokens = AGENT_MAX_OUTPUT_TOKENS): Promise<ProviderTurn> {
     const requestIndex = ++this.requestIndex;
     this.logger.debug("provider.request_started", "OpenAI request started", { provider: "openai", model: this.model, requestIndex });
     const startedAt = Date.now();
@@ -96,14 +99,14 @@ export class OpenAIProvider implements LlmProvider {
       input,
       tools: this.tools,
       parallel_tool_calls: false,
-      max_output_tokens: AGENT_MAX_OUTPUT_TOKENS,
+      max_output_tokens: maxOutputTokens,
     };
     if (this.lastResponseId) body.previous_response_id = this.lastResponseId;
 
     const requestBody = JSON.stringify(body);
     await sharedRateLimitCoordinator.beforeRequest(
       `openai:${this.model}`,
-      estimateRequestTokens(body, AGENT_MAX_OUTPUT_TOKENS),
+      estimateRequestTokens(body, maxOutputTokens),
       this.logger,
     );
     const response = await fetch(API_URL, {
@@ -133,6 +136,8 @@ export class OpenAIProvider implements LlmProvider {
       provider: "openai", model: this.model, requestIndex, durationMs: Date.now() - startedAt,
       inputTokens: usage?.input_tokens ?? 0, cachedTokens: usage?.input_tokens_details?.cached_tokens ?? 0,
       outputTokens: usage?.output_tokens ?? 0, totalTokens: usage?.total_tokens ?? 0,
+      responseStatus: data.status,
+      incompleteReason: data.incomplete_details?.reason,
       rateLimit: rateLimitHeadersSummary(response.headers).trim() || undefined,
     });
 
@@ -163,6 +168,10 @@ export class OpenAIProvider implements LlmProvider {
       .filter((part) => part.type === "output_text" || part.type === "text")
       .map((part) => part.text ?? "")
       .join("");
-    return { type: "text", text };
+    return {
+      type: "text",
+      text,
+      incompleteReason: data.incomplete_details?.reason,
+    };
   }
 }

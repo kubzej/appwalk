@@ -24,6 +24,7 @@ test("stops on plain provider text without inventing a flow", async () => {
     assert.equal(result.history.length, 1);
     assert.equal(result.history[0]?.finalText, "I found a page, but did not complete a flow.");
     assert.equal(result.exhausted, false);
+    assert.equal(result.stopReason, "agent_stopped");
   } finally {
     await browser.close();
   }

@@ -1,11 +1,11 @@
-export type ReportStatus = 'passed' | 'findings' | 'inconclusive' | 'failed';
+type ExecutionOutcome = 'passed' | 'findings' | 'inconclusive' | 'failed';
 
 export const REPORT_EXIT_CODES = {
   passed: 0,
   findings: 1,
   failed: 2,
   inconclusive: 3,
-} as const satisfies Record<ReportStatus, number>;
+} as const satisfies Record<ExecutionOutcome, number>;
 
 export interface ReportFinding {
   id: string;
@@ -23,6 +23,8 @@ export interface ReportStep {
   target?: string;
   value?: string;
   error?: string;
+  errorLabel?: string;
+  safetyBlocked?: number;
 }
 
 export interface ReportFlow {
@@ -32,7 +34,16 @@ export interface ReportFlow {
   origin: 'discovered' | 'derived';
   discoveryVerified: boolean;
   replayConfirmed: boolean;
+  runtimeIssues: ReportRuntimeError[];
   steps: ReportStep[];
+  replayFailure?: {
+    reason: string;
+    step?: number;
+    action?: string;
+    error?: string;
+    lastUrl: string;
+    lastSnapshot: string;
+  };
   finding?: {
     status: 'confirmed' | 'inconclusive';
     summary: string;
@@ -45,6 +56,11 @@ export interface ReportResponseVariantAudit {
   enabled: boolean;
   fixturesFound: number;
   fixtures: Array<{ method: string; url: string; bytes: number }>;
+  planningStatus: 'not_enabled' | 'not_run' | 'completed' | 'incomplete' | 'failed';
+  plannerCandidates: number;
+  plannerRejected: number;
+  plannerRejectionReasons: string[];
+  plannerReason?: string;
   proposed: number;
   confirmed: number;
   confirmedScenarios: string[];
@@ -58,16 +74,45 @@ export interface ReportIssue {
   message: string;
 }
 
+export interface ReportRuntimeError {
+  phase: 'exploration' | 'replay';
+  kind: 'console_error' | 'page_error' | 'request_failed' | 'http_error';
+  message: string;
+  flowIndex?: number;
+  method?: string;
+  url?: string;
+  status?: number;
+  occurrences: number;
+  safetyRelated?: boolean;
+}
+
+export interface ReportSafety {
+  blockedRequests: number;
+  explorationBlocked: number;
+  replayBlocked: number;
+  byMethod: Record<string, number>;
+  samples: Array<{
+    phase: 'exploration' | 'replay';
+    method: string;
+    url: string;
+  }>;
+  safetyRelatedRuntimeErrors: number;
+}
+
+export type ReportStopReason = 'completed' | 'agent_stopped' | 'budget_exhausted' | 'no_progress' | 'error';
+
 export interface ReportRun {
   id: string;
   name: string;
   persona?: string;
   personaIntent?: 'journey' | 'challenge';
-  status: ReportStatus;
   flowsFound: number;
   replayConfirmed: number;
   generatedTests: number;
   exhausted: boolean;
+  stopReason: ReportStopReason;
+  safety: ReportSafety;
+  runtimeErrors: ReportRuntimeError[];
   flows: ReportFlow[];
   findings: ReportFinding[];
   responseVariants: ReportResponseVariantAudit[];
@@ -81,7 +126,6 @@ export interface ExecutionReport {
   url: string;
   startedAt: string;
   completedAt: string;
-  status: ReportStatus;
   exitCode: number;
   intent: {
     scope?: string;
@@ -96,6 +140,9 @@ export interface ExecutionReport {
     inconclusiveFindings: number;
     errors: number;
     evidenceWarnings: number;
+    coverageIncomplete: boolean;
+    safetyBlockedRequests: number;
+    runtimeErrors: number;
   };
   issues: ReportIssue[];
   runs: ReportRun[];
@@ -129,6 +176,9 @@ export interface ExecutionReportInput {
     replayConfirmed: number;
     generatedTests: number;
     exhausted: boolean;
+    stopReason: ReportStopReason;
+    safety: ReportSafety;
+    runtimeErrors: ReportRuntimeError[];
     flows: ReportFlow[];
     findings: Array<Omit<ReportFinding, 'id' | 'runId' | 'runName'>>;
     responseVariants: ReportResponseVariantAudit[];
@@ -147,25 +197,18 @@ export function buildExecutionReport(
       runId: run.id,
       runName: run.name,
     }));
-    const status: ReportStatus = run.error
-      ? 'failed'
-      : findings.some((finding) => finding.status === 'confirmed')
-        ? 'findings'
-        : findings.some((finding) => finding.status === 'inconclusive')
-          ? 'inconclusive'
-          : run.replayConfirmed > 0
-            ? 'passed'
-            : 'inconclusive';
     return {
       id: run.id,
       name: run.name,
       persona: run.persona,
       personaIntent: run.personaIntent,
-      status,
       flowsFound: run.flowsFound,
       replayConfirmed: run.replayConfirmed,
       generatedTests: run.generatedTests,
       exhausted: run.exhausted,
+      stopReason: run.stopReason,
+      safety: run.safety,
+      runtimeErrors: run.runtimeErrors,
       flows: run.flows,
       findings,
       responseVariants: run.responseVariants,
@@ -179,20 +222,25 @@ export function buildExecutionReport(
   const inconclusiveFindings = findings.filter(
     (finding) => finding.status === 'inconclusive',
   ).length;
-  const errors = runs.filter((run) => run.status === 'failed').length;
+  const errors = runs.filter((run) => Boolean(run.error)).length;
+  const safetyBlockedRequests = runs.reduce((total, run) => total + run.safety.blockedRequests, 0);
+  const runtimeErrors = runs.reduce((total, run) => total + run.runtimeErrors
+    .filter((error) => !error.safetyRelated)
+    .reduce((count, error) => count + error.occurrences, 0), 0);
+  const coverageIncomplete = runs.some((run) => run.exhausted || Boolean(run.error) || run.safety.blockedRequests > 0 || run.runtimeErrors.some((error) => !error.safetyRelated));
   const flowsFound = runs.reduce((total, run) => total + run.flowsFound, 0);
   const replayConfirmed = runs.reduce(
     (total, run) => total + run.replayConfirmed,
     0,
   );
-  const status: ReportStatus =
+  const outcome: ExecutionOutcome =
     errors > 0
       ? 'failed'
       : (input.issues?.length ?? 0) > 0
         ? 'inconclusive'
       : confirmedFindings > 0
         ? 'findings'
-        : inconclusiveFindings > 0 || replayConfirmed === 0
+        : inconclusiveFindings > 0 || replayConfirmed === 0 || coverageIncomplete
           ? 'inconclusive'
           : 'passed';
 
@@ -203,8 +251,7 @@ export function buildExecutionReport(
     url: input.url,
     startedAt: input.startedAt,
     completedAt: input.completedAt,
-    status,
-    exitCode: REPORT_EXIT_CODES[status],
+    exitCode: REPORT_EXIT_CODES[outcome],
     intent: { scope: input.scope, expectations: input.expectations },
     summary: {
       runs: runs.length,
@@ -215,6 +262,9 @@ export function buildExecutionReport(
       inconclusiveFindings,
       errors,
       evidenceWarnings: input.issues?.length ?? 0,
+      coverageIncomplete,
+      safetyBlockedRequests,
+      runtimeErrors,
     },
     issues: input.issues ?? [],
     runs,
@@ -232,18 +282,12 @@ function escapeHtml(value: string): string {
     .replaceAll("'", '&#39;');
 }
 
-function statusLabel(status: string): string {
-  return status === 'findings'
-    ? 'Potential bugs'
-    : status.charAt(0).toUpperCase() + status.slice(1);
-}
-
-function statusTone(status: string): string {
-  return status === 'passed'
-    ? 'good'
-    : status === 'inconclusive'
-      ? 'warning'
-      : 'danger';
+function cleanDiagnostic(value: string): string {
+  return value
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
 }
 
 function formatTimestamp(value: string): string {
@@ -268,14 +312,10 @@ function formatDuration(startedAt: string, completedAt: string): string {
 }
 
 function flowStatus(flow: ReportFlow): { label: string; tone: string } {
-  if (flow.finding) {
-    return flow.finding.status === 'confirmed'
-      ? { label: 'Potential bug', tone: 'danger' }
-      : { label: 'Potential bug - review', tone: 'warning' };
-  }
-  return flow.replayConfirmed
-    ? { label: 'Passed', tone: 'good' }
-    : { label: 'Inconclusive', tone: 'warning' };
+  if (!flow.replayConfirmed) return { label: 'Needs review', tone: 'warning' };
+  if (flow.finding?.status === 'confirmed') return { label: 'Potential bug', tone: 'danger' };
+  if (flow.finding?.status === 'inconclusive') return { label: 'Needs review', tone: 'warning' };
+  return { label: 'Confirmed', tone: 'good' };
 }
 
 function panelId(
@@ -296,12 +336,12 @@ function personaName(run: ReportRun): string | undefined {
   return run.persona ? capitalize(run.persona) : undefined;
 }
 
-function badge(label: string, tone: string): string {
-  return `<span class="r-badge r-badge-${tone}">${escapeHtml(label)}</span>`;
-}
-
 function callout(tone: string, children: string): string {
   return `<div class="r-callout r-callout-${tone}">${children}</div>`;
+}
+
+function badge(label: string, tone: string): string {
+  return `<span class="r-badge r-badge-${tone}">${escapeHtml(label)}</span>`;
 }
 
 function renderIndex(report: ExecutionReport): string {
@@ -321,7 +361,7 @@ function renderIndex(report: ExecutionReport): string {
         ? `<span class="r-persona-secondary">${escapeHtml(run.name)}</span>`
         : '';
       return `<div class="r-index-group">
-      <a class="r-link r-link-persona" href="#${panelId('persona', runIndex)}" data-target="${panelId('persona', runIndex)}"><span class="r-link-title"><span class="r-persona-primary">${primary}</span>${secondary}</span>${badge(statusLabel(run.status), statusTone(run.status))}</a>
+      <a class="r-link r-link-persona" href="#${panelId('persona', runIndex)}" data-target="${panelId('persona', runIndex)}"><span class="r-link-title"><span class="r-persona-primary">${primary}</span>${secondary}</span></a>
       <div class="r-index-flows">${flows}</div>
     </div>`;
     })
@@ -344,9 +384,12 @@ function renderStepsCard(steps: ReportStep[]): string {
               ? ` <span class="r-muted">${escapeHtml(step.value)}</span>`
               : '';
           const error = step.error
-            ? `<div class="r-tone-danger">${escapeHtml(step.error)}</div>`
+            ? `<div class="r-step-error"><p class="r-label">${escapeHtml(step.errorLabel ?? 'Action failed')}</p><pre class="r-code-block"><code>${escapeHtml(cleanDiagnostic(step.error))}</code></pre></div>`
             : '';
-          return `<div class="r-step"><span class="r-muted">${String(step.number).padStart(2, '0')}</span><div><span class="r-step-action">${escapeHtml(step.action)}</span>${target}${value}${error}</div></div>`;
+          const safety = step.safetyBlocked
+            ? `<div class="r-tone-warning">Safety policy blocked ${step.safetyBlocked} request${step.safetyBlocked === 1 ? '' : 's'}; the request was not sent.</div>`
+            : '';
+          return `<div class="r-step"><span class="r-muted">${String(step.number).padStart(2, '0')}</span><div><span class="r-step-action">${escapeHtml(step.action)}</span>${target}${value}${error}${safety}</div></div>`;
         })
         .join('')}</div>`
     : `<p class="r-muted">No action evidence recorded.</p>`;
@@ -357,7 +400,7 @@ function renderResponseScenariosCard(
   audit: ReportResponseVariantAudit,
 ): string {
   if (!audit.enabled) {
-    return `<div class="r-card"><p class="r-label">Response scenarios</p><p class="r-muted">Not enabled.</p></div>`;
+    return `<div class="r-card"><p class="r-label">Response scenarios</p><p class="r-muted">Not enabled. The flow uses baseline response fixtures only.</p></div>`;
   }
   const fixtures = audit.fixtures.length
     ? `<div class="r-fixtures">${audit.fixtures.map((fixture) => `<div class="r-row"><span class="r-code">${escapeHtml(fixture.method)}</span><span class="r-fixture-url">${escapeHtml(fixture.url)}</span><span class="r-muted">${fixture.bytes.toLocaleString()} B</span></div>`).join('')}</div>`
@@ -368,24 +411,84 @@ function renderResponseScenariosCard(
   const skipped = audit.skipped.length
     ? `<div class="r-audit-group"><p class="r-label">Skipped scenarios</p>${audit.skipped.map((item) => `<p><strong>${escapeHtml(item.name)}</strong> <span class="r-muted">${escapeHtml(item.reason)}</span></p>`).join('')}</div>`
     : '';
+  const planner = audit.planningStatus === 'failed'
+    ? `<p class="r-tone-danger">Variant planning failed${audit.plannerReason ? `: ${escapeHtml(audit.plannerReason)}` : '.'}</p>`
+    : audit.planningStatus === 'incomplete'
+      ? `<p class="r-tone-danger">Variant planning was incomplete${audit.plannerReason ? `: ${escapeHtml(audit.plannerReason)}` : '.'}</p>`
+    : audit.plannerReason
+      ? `<p class="r-muted">${escapeHtml(audit.plannerReason)}</p>`
+      : '';
+  const rejected = audit.plannerRejected > 0
+    ? `<p class="r-muted">${audit.plannerRejected} planner proposal${audit.plannerRejected === 1 ? '' : 's'} rejected${audit.plannerRejectionReasons.length ? `: ${escapeHtml(audit.plannerRejectionReasons.join('; '))}` : '.'}</p>`
+    : '';
   return `<div class="r-card">
     <p class="r-label">Response scenarios</p>
-    <p class="r-muted">${audit.confirmed} confirmed, ${audit.proposed} proposed, ${audit.skipped.length} skipped, ${audit.fixturesFound} JSON fixture${audit.fixturesFound === 1 ? '' : 's'}</p>
+    <p class="r-muted">${audit.fixturesFound} baseline JSON fixture${audit.fixturesFound === 1 ? '' : 's'} · ${audit.proposed} variant${audit.proposed === 1 ? '' : 's'} accepted · ${audit.confirmed} confirmed</p>
+    ${audit.planningStatus === 'completed' ? `<p class="r-muted">Planner returned ${audit.plannerCandidates} proposal${audit.plannerCandidates === 1 ? '' : 's'}.</p>` : ''}
+    ${planner}
+    ${rejected}
     ${fixtures}
     ${confirmed}
     ${skipped}
   </div>`;
 }
 
+function renderFlowRuntimeIssues(errors: ReportRuntimeError[]): string {
+  if (errors.length === 0) return '';
+  const rows = errors.slice(0, 8).map((error) => {
+    const phase = capitalize(error.phase);
+    const request = [error.method, error.url].filter(Boolean).join(' ');
+    const count = error.occurrences > 1 ? ` (${error.occurrences} occurrences)` : '';
+    return `<div class="r-runtime-item">
+      <p class="r-runtime-message"><strong>${escapeHtml(error.message)}</strong>${escapeHtml(count)}</p>
+      <p class="r-runtime-line"><strong>Phase:</strong> ${escapeHtml(phase)}</p>
+      ${request ? `<p class="r-runtime-line"><strong>Request:</strong> <code>${escapeHtml(request)}</code></p>` : ''}
+      <p class="r-muted">Observed during replay; this event is not linked to a recorded action.</p>
+    </div>`;
+  }).join('');
+  const more = errors.length > 8
+    ? `<p class="r-muted">${errors.length - 8} more application error${errors.length - 8 === 1 ? '' : 's'} recorded for this flow.</p>`
+    : '';
+  return callout('warning', `<p class="r-label">Application error observed</p>${rows}${more}`);
+}
+
+function renderReplayFailure(failure: ReportFlow['replayFailure']): string {
+  if (!failure) return '';
+  const diagnostic = failure.error ? cleanDiagnostic(failure.error) : '';
+  const step = failure.step !== undefined
+    ? `<p class="r-failure-line"><strong>Step:</strong> <code>${failure.step}</code>${failure.action ? ` <span class="r-muted">(${escapeHtml(failure.action)})</span>` : ''}</p>`
+    : '';
+  const technicalError = diagnostic
+    ? `<pre class="r-code-block"><code>${escapeHtml(diagnostic)}</code></pre>`
+    : '';
+  return callout('warning', `<p class="r-failure-title">REPLAY NOT CONFIRMED</p><p class="r-failure-description">${escapeHtml(failure.reason)}</p><p class="r-failure-line"><strong>Last URL:</strong> <code>${escapeHtml(failure.lastUrl)}</code></p>${step}${technicalError}<details><summary>Last captured page state</summary><pre class="r-code-block"><code>${escapeHtml(failure.lastSnapshot || '(empty)')}</code></pre></details>`);
+}
+
+function renderSafetyCard(safety: ReportSafety): string {
+  if (safety.blockedRequests === 0) return '';
+  const methods = Object.entries(safety.byMethod)
+    .map(([method, count]) => `${method} ${count}`)
+    .join(', ');
+  const samples = safety.samples.slice(0, 3).map((sample) => `${sample.method} ${sample.url}`).join(', ');
+  const related = safety.safetyRelatedRuntimeErrors > 0
+    ? `<p class="r-muted">${safety.safetyRelatedRuntimeErrors} browser runtime issue${safety.safetyRelatedRuntimeErrors === 1 ? '' : 's'} were caused by these blocked requests and are excluded from potential bug review.</p>`
+    : '';
+  return callout('warning', `<p class="r-label">Safety limited coverage</p><p>${safety.blockedRequests} destructive request${safety.blockedRequests === 1 ? '' : 's'} blocked during this persona.</p><p class="r-muted">Exploration: ${safety.explorationBlocked}; replay: ${safety.replayBlocked}${methods ? `; methods: ${escapeHtml(methods)}` : ''}.</p>${related}${samples ? `<p class="r-muted">Examples: ${escapeHtml(samples)}</p>` : ''}`);
+}
+
+function renderStopReason(stopReason: ReportStopReason): string {
+  if (stopReason === 'completed') return '';
+  const message = stopReason === 'budget_exhausted'
+    ? 'The action budget was reached before the next flow was completed.'
+    : stopReason === 'agent_stopped'
+      ? 'Exploration ended before the next flow was completed.'
+      : stopReason === 'no_progress'
+        ? 'Exploration stopped after repeated attempts made no progress.'
+        : 'The persona did not complete its exploration.';
+  return callout('warning', `<p class="r-label">Exploration incomplete</p><p>${message}</p>`);
+}
+
 function renderOverviewPanel(report: ExecutionReport): string {
-  const statusCopy =
-    report.status === 'passed'
-      ? 'Verified coverage completed without findings.'
-      : report.status === 'findings'
-        ? 'Coverage completed with potential bugs.'
-        : report.status === 'failed'
-          ? 'The execution could not complete.'
-          : 'Coverage completed without enough evidence to conclude.';
   const caveats =
     report.runs.filter((run) => run.error).length +
     report.runs.filter((run) => run.exhausted).length;
@@ -393,7 +496,7 @@ function renderOverviewPanel(report: ExecutionReport): string {
     report.intent.scope || report.intent.expectations.length
       ? `${report.intent.scope ? `<p class="r-label">Scope</p><p>${escapeHtml(report.intent.scope)}</p>` : ''}
       ${report.intent.expectations.length ? `<p class="r-label">Expectations</p><ol class="r-expectations">${report.intent.expectations.map((expectation) => `<li>${escapeHtml(expectation)}</li>`).join('')}</ol>` : ''}`
-      : `<p class="r-muted">No scope or expectations were provided for this execution.</p>`;
+      : '';
   const artifacts = Object.entries(report.artifacts)
     .map(
       ([key, path]) => `<a href="${escapeHtml(path)}">${escapeHtml(key)}</a>`,
@@ -404,11 +507,18 @@ function renderOverviewPanel(report: ExecutionReport): string {
     ? callout('warning', `<p><strong>Evidence is incomplete.</strong> ${evidenceIssues.length} malformed record${evidenceIssues.length === 1 ? '' : 's'} skipped while reading evidence.</p><p class="r-muted">${evidenceIssues.map((issue) => `Line ${issue.line}: ${escapeHtml(issue.message)}`).join('<br>')}</p>`)
     : '';
   return `<section id="panel-overview" class="r-panel">
-    <div class="r-panel-head"><p class="r-label">Execution overview</p><h1 class="r-h1">${escapeHtml(report.url)}</h1></div>
+    <div class="r-panel-head"><p class="r-label">Report</p><h1 class="r-h1">Execution overview</h1></div>
     <div class="r-card">
-      <div class="r-card-top">${badge(statusLabel(report.status), statusTone(report.status))}<p>${statusCopy}</p></div>
-      <p class="r-muted">Command <strong>${escapeHtml(report.command)}</strong> &nbsp; Execution <strong>${escapeHtml(report.executionId)}</strong> &nbsp; Completed <strong>${escapeHtml(formatTimestamp(report.completedAt))}</strong> &nbsp; Duration <strong>${escapeHtml(formatDuration(report.startedAt, report.completedAt))}</strong> &nbsp; Exit code <strong>${report.exitCode}</strong></p>
-      ${caveats ? callout('warning', `<p>${caveats} persona${caveats === 1 ? '' : 's'} needed attention during this execution.</p>`) : ''}
+      <div class="r-meta-list">
+        <div class="r-meta-row"><strong class="r-meta-label">URL:</strong><span class="r-meta-value"><a href="${escapeHtml(report.url)}">${escapeHtml(report.url)}</a></span></div>
+        <div class="r-meta-row"><strong class="r-meta-label">Command:</strong><span class="r-meta-value">${escapeHtml(report.command)}</span></div>
+        <div class="r-meta-row"><strong class="r-meta-label">Execution:</strong><span class="r-meta-value">${escapeHtml(report.executionId)}</span></div>
+        <div class="r-meta-row"><strong class="r-meta-label">Completed:</strong><span class="r-meta-value">${escapeHtml(formatTimestamp(report.completedAt))}</span></div>
+        <div class="r-meta-row"><strong class="r-meta-label">Duration:</strong><span class="r-meta-value">${escapeHtml(formatDuration(report.startedAt, report.completedAt))}</span></div>
+        <div class="r-meta-row"><strong class="r-meta-label">Exit code:</strong><span class="r-meta-value">${report.exitCode}</span></div>
+      </div>
+      ${report.summary.coverageIncomplete ? callout('warning', `<p><strong>Coverage incomplete.</strong> At least one persona exhausted its action budget, encountered a runtime issue, or was limited by safety policy.</p>`) : ''}
+      ${caveats && !report.summary.coverageIncomplete ? callout('warning', `<p>${caveats} persona${caveats === 1 ? '' : 's'} needed attention during this execution.</p>`) : ''}
       ${evidenceWarning}
       <div class="r-stat-grid">
         <div><p class="r-label">Personas</p><p class="r-stat">${report.summary.runs}</p></div>
@@ -417,9 +527,11 @@ function renderOverviewPanel(report: ExecutionReport): string {
         <div><p class="r-label">Generated tests</p><p class="r-stat">${report.summary.generatedTests}</p></div>
         <div><p class="r-label">Potential bugs</p><p class="r-stat">${report.summary.confirmedFindings}</p></div>
         <div><p class="r-label">Needs review</p><p class="r-stat">${report.summary.inconclusiveFindings}</p></div>
+        <div><p class="r-label">Runtime issues</p><p class="r-stat">${report.summary.runtimeErrors}</p></div>
+        <div><p class="r-label">Safety blocks</p><p class="r-stat">${report.summary.safetyBlockedRequests}</p></div>
       </div>
     </div>
-    <div class="r-card"><p class="r-label">What was evaluated</p>${intentBody}</div>
+    ${intentBody ? `<div class="r-card">${intentBody}</div>` : ''}
     <div class="r-card"><p class="r-label">Execution artifacts</p><nav class="r-artifacts">${artifacts}</nav></div>
   </section>`;
 }
@@ -429,25 +541,21 @@ function renderPersonaPanel(run: ReportRun, runIndex: number): string {
   const intentLabel = run.personaIntent
     ? `${capitalize(run.personaIntent)} persona`
     : 'Persona';
-  const meta = [
-    `${run.flows.length} flow${run.flows.length === 1 ? '' : 's'} found`,
-    `${run.replayConfirmed} replay confirmed`,
-    `${run.generatedTests} generated`,
-  ].join(', ');
-  const hint = run.flows.length
-    ? `<p class="r-muted">Select a flow from the list to see its steps.</p>`
-    : `<p class="r-muted">No flows discovered for this persona.</p>`;
+  const meta = `<div class="r-persona-stat-grid">
+    <div><p class="r-label">Flows found</p><p class="r-stat">${run.flowsFound}</p></div>
+    <div><p class="r-label">Replay confirmed</p><p class="r-stat">${run.replayConfirmed}</p></div>
+    <div><p class="r-label">Generated tests</p><p class="r-stat">${run.generatedTests}</p></div>
+  </div>`;
   const head = name
     ? `<p class="r-label">${escapeHtml(intentLabel)}</p><h1 class="r-h1">${escapeHtml(name)}</h1><p class="r-muted">${escapeHtml(run.name)}</p>`
     : `<p class="r-label">Run</p><h1 class="r-h1">${escapeHtml(run.name)}</h1>`;
   return `<section id="${panelId('persona', runIndex)}" class="r-panel" hidden>
     <div class="r-panel-head">${head}</div>
     <div class="r-card">
-      <div class="r-card-top">${badge(statusLabel(run.status), statusTone(run.status))}</div>
-      <p class="r-muted">${meta}</p>
+      ${meta}
       ${run.error ? callout('danger', `<p>Persona failed: ${escapeHtml(run.error)}</p>`) : ''}
-      ${run.exhausted ? callout('warning', `<p>Budget exhausted before exploration completed.</p>`) : ''}
-      ${hint}
+      ${renderStopReason(run.stopReason)}
+      ${renderSafetyCard(run.safety)}
     </div>
   </section>`;
 }
@@ -473,11 +581,16 @@ function renderFlowPanel(
   return `<section id="${panelId('flow', runIndex, flowIndex)}" class="r-panel" hidden>
     <div class="r-panel-head"><p class="r-crumb">${crumb}</p><h1 class="r-h1">${escapeHtml(flow.title)}</h1></div>
     <div class="r-card">
-      <div class="r-card-top">${badge(status.label, status.tone)}</div>
+      <p class="r-flow-status r-tone-${status.tone}">${escapeHtml(status.label)}</p>
+      <div class="r-flow-checks">
+        <div class="r-flow-check"><p class="r-label">Discovery</p><p class="r-flow-check-value${flow.discoveryVerified ? ' r-tone-good' : ''}">${flow.discoveryVerified ? 'Verified' : 'Not verified'}</p></div>
+        <div class="r-flow-check"><p class="r-label">Replay</p><p class="r-flow-check-value${flow.replayConfirmed ? ' r-tone-good' : ''}">${flow.replayConfirmed ? 'Confirmed' : 'Not confirmed'}</p></div>
+      </div>
       <p>${escapeHtml(flow.summary)}</p>
-      <p class="r-muted"><span class="${flow.discoveryVerified ? 'r-tone-good' : ''}">Discovery ${flow.discoveryVerified ? 'verified' : 'not verified'}</span> &nbsp; <span class="${flow.replayConfirmed ? 'r-tone-good' : ''}">Replay ${flow.replayConfirmed ? 'confirmed' : 'not confirmed'}</span></p>
     </div>
     ${finding}
+    ${renderReplayFailure(flow.replayFailure)}
+    ${renderFlowRuntimeIssues(flow.runtimeIssues)}
     ${renderStepsCard(flow.steps)}
     ${audit ? renderResponseScenariosCard(audit) : ''}
   </section>`;
@@ -516,23 +629,23 @@ export function renderHtmlReport(report: ExecutionReport): string {
     '.r-h1 { font-size: 26px; font-weight: 700; }',
     '.r-label { color: #6b7680; font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }',
     '.r-stat { font-size: 20px; font-weight: 700; margin-top: 4px; }',
-    '.r-badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 650; letter-spacing: .02em; white-space: nowrap; }',
-    '.r-badge-good { background: #e3f5ea; color: #157347; }',
-    '.r-badge-warning { background: #fdf3d9; color: #8a6a00; }',
-    '.r-badge-danger { background: #fbe4e1; color: #b42318; }',
     '.r-tone-good { color: #157347; }',
     '.r-tone-warning { color: #8a6a00; }',
     '.r-tone-danger { color: #b42318; }',
     '.r-muted { color: #6b7680; }',
-    '.r-card { background: #fff; border: 1px solid #e2e5e8; border-radius: 12px; padding: 20px 22px; }',
+    '.r-card { background: #fff; border-radius: 12px; padding: 20px 22px; }',
     '.r-callout { border-radius: 10px; padding: 12px 14px; margin-top: 14px; color: #33424c; }',
-    '.r-callout-good { background: #eaf6ee; border: 1px solid #cbe8d4; }',
-    '.r-callout-warning { background: #fdf6df; border: 1px solid #f0e0a6; }',
-    '.r-callout-danger { background: #fbeae8; border: 1px solid #f0c7c1; }',
+    '.r-callout-good { background: #eaf6ee; }',
+    '.r-callout-warning { background: #fdf6df; }',
+    '.r-callout-danger { background: #fbeae8; }',
     '.r-masthead { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding-bottom: 24px; }',
     '.r-brand { display: flex; align-items: baseline; gap: 8px; }',
     '.r-brand-mark { color: var(--brand); font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }',
     '.r-brand-sub { color: #6b7680; font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }',
+    '.r-badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 650; letter-spacing: .02em; white-space: nowrap; }',
+    '.r-badge-good { background: #e3f5ea; color: #157347; }',
+    '.r-badge-warning { background: #fdf3d9; color: #8a6a00; }',
+    '.r-badge-danger { background: #fbe4e1; color: #b42318; }',
     '.r-masthead-url { display: block; margin-top: 4px; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }',
     '.r-workspace { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 28px; align-items: start; }',
     '.r-index { position: sticky; top: 24px; padding: 10px; max-height: calc(100vh - 48px); overflow-y: auto; }',
@@ -544,7 +657,7 @@ export function renderHtmlReport(report: ExecutionReport): string {
     '.r-link-overview { font-weight: 600; margin-bottom: 8px; }',
     '.r-link-persona { font-weight: 600; margin-top: 14px; }',
     '.r-index-group:first-child .r-link-persona { margin-top: 0; }',
-    '.r-index-flows { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 0 22px; padding-left: 10px; border-left: 2px solid #e5e7ea; }',
+    '.r-index-flows { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 0 22px; padding-left: 10px; }',
     '.r-panel { display: none; }',
     '.r-panel:not([hidden]) { display: flex; flex-direction: column; gap: 18px; }',
     '.r-panel-head p.r-label, .r-panel-head p.r-crumb { margin-bottom: 6px; }',
@@ -554,14 +667,42 @@ export function renderHtmlReport(report: ExecutionReport): string {
     '.r-crumb-sep { margin: 0 6px; color: #b7bcc1; }',
     '.r-card-top { display: flex; align-items: baseline; gap: 12px; }',
     '.r-card-top p { color: #33424c; }',
+    '.r-flow-status { font-size: 16px; font-weight: 700; }',
+    '.r-flow-checks { display: grid; grid-template-columns: repeat(2, minmax(150px, 220px)); gap: 28px; margin-top: 18px; }',
+    '.r-flow-check { display: flex; flex-direction: column; gap: 2px; }',
+    '.r-flow-check .r-label, .r-flow-check-value { margin: 0; }',
+    '.r-flow-check-value { color: #6b7680; font-weight: 700; }',
+    '.r-failure-title { color: #6b7680; font-size: 16px; font-weight: 700; letter-spacing: .04em; }',
+    '.r-failure-description { margin-top: 8px; }',
+    '.r-failure-line { overflow-wrap: anywhere; }',
+    '.r-failure-line code { color: #33424c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }',
+    '.r-code-block { max-height: 280px; margin: 8px 0 0; padding: 12px 14px; overflow: auto; background: #f3f5f6; border-radius: 7px; white-space: pre-wrap; overflow-wrap: anywhere; color: #33424c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; }',
+    '.r-code-block code { font: inherit; }',
+    '.r-callout details { margin-top: 14px; }',
+    '.r-callout summary { color: #33424c; cursor: pointer; font-weight: 600; }',
+    '.r-runtime-item + .r-runtime-item { margin-top: 16px; }',
+    '.r-runtime-message { margin-top: 8px; }',
+    '.r-runtime-line { margin-top: 4px; }',
+    '.r-runtime-line code { color: #33424c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }',
     '.r-card > * + * { margin-top: 12px; }',
+    '.r-meta-list { display: grid; gap: 7px; margin-top: 16px; }',
+    '.r-meta-row { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 12px; align-items: baseline; }',
+    '.r-meta-label { color: #33424c; font-weight: 700; }',
+    '.r-meta-value { color: #6b7680; overflow-wrap: anywhere; }',
     '.r-expectations { padding-left: 20px; }',
     '.r-expectations li + li { margin-top: 6px; }',
     '.r-stat-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 18px; margin-top: 18px; }',
+    '.r-stat-grid > div { background: #f3f5f6; border-radius: 10px; padding: 16px 14px; min-height: 104px; }',
+    '.r-stat-grid .r-stat { text-align: center; margin-top: 14px; }',
+    '.r-persona-stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 18px; }',
+    '.r-persona-stat-grid > div { background: #f3f5f6; border-radius: 10px; padding: 16px 14px; min-height: 104px; }',
+    '.r-persona-stat-grid .r-stat { text-align: center; margin-top: 14px; }',
     '.r-steps { display: grid; gap: 10px; }',
     '.r-step { display: grid; grid-template-columns: 22px 1fr; gap: 10px; }',
     '.r-step-action { font-weight: 600; }',
-    '.r-code { color: #4a5860; }',
+    '.r-code, .r-step-error code { color: #33424c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }',
+    '.r-step-error { margin-top: 10px; }',
+    '.r-step-error .r-code-block { max-height: 240px; }',
     '.r-fixtures { display: grid; gap: 6px; }',
     '.r-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; }',
     '.r-fixture-url { overflow-wrap: anywhere; }',
@@ -578,13 +719,7 @@ export function renderHtmlReport(report: ExecutionReport): string {
     styles,
     '</style></head><body>',
     '<div class="r-app">',
-    '<header class="r-masthead"><div><p class="r-brand"><span class="r-brand-mark">Appwalk</span><span class="r-brand-sub">Execution report</span></p><a class="r-masthead-url" href="',
-    escapeHtml(report.url),
-    '">',
-    escapeHtml(report.url),
-    '</a></div>',
-    badge(statusLabel(report.status), statusTone(report.status)),
-    '</header>',
+    '<header class="r-masthead"><div><p class="r-brand"><span class="r-brand-mark">Appwalk</span><span class="r-brand-sub">Execution report</span></p></div></header>',
     '<div class="r-workspace">',
     index,
     '<div class="r-detail">',

@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ConsoleEntry, NetworkEntry } from "./recorder.js";
+import type { ConsoleEntry, NetworkEntry, RuntimeErrorEntry } from "./recorder.js";
 import type { StepResult } from "../types.js";
 
 export interface EvidenceEntry {
@@ -17,6 +17,9 @@ export interface EvidenceEntry {
   finalText?: string;
   network: NetworkEntry[];
   console: ConsoleEntry[];
+  runtimeErrors?: RuntimeErrorEntry[];
+  /** Number of network requests intentionally blocked by safety during this action. */
+  safetyBlocked?: number;
 }
 
 export interface EvidenceReadIssue {

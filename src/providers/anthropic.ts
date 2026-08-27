@@ -37,6 +37,7 @@ export class AnthropicProvider implements LlmProvider {
     tools: ToolDefinition[];
     initialInput: string;
     screenshot?: string;
+    maxOutputTokens?: number;
   }): Promise<ProviderTurn> {
     this.systemPrompt = params.systemPrompt;
     this.tools = params.tools.map((tool) => ({
@@ -52,7 +53,7 @@ export class AnthropicProvider implements LlmProvider {
       });
     }
     this.messages = [{ role: "user", content }];
-    return this.send();
+    return this.send(params.maxOutputTokens);
   }
 
   async continue(toolResult: ToolResult): Promise<ProviderTurn> {
@@ -80,7 +81,7 @@ export class AnthropicProvider implements LlmProvider {
     return this.send();
   }
 
-  private async send(): Promise<ProviderTurn> {
+  private async send(maxOutputTokens = AGENT_MAX_OUTPUT_TOKENS): Promise<ProviderTurn> {
     const requestIndex = ++this.requestIndex;
     // Cache breakpoints on the last tool, the system prompt, and the last message block —
     // both are identical every turn, and history only ever grows, so each breakpoint lets
@@ -103,7 +104,7 @@ export class AnthropicProvider implements LlmProvider {
 
     const request = {
       model: this.model,
-      max_tokens: AGENT_MAX_OUTPUT_TOKENS,
+      max_tokens: maxOutputTokens,
       system,
       messages,
       tools,
@@ -115,7 +116,7 @@ export class AnthropicProvider implements LlmProvider {
     this.logger.debug("provider.request_started", "Anthropic request started", { provider: "anthropic", model: this.model, requestIndex });
     await sharedRateLimitCoordinator.beforeRequest(
       `anthropic:${this.model}`,
-      estimateRequestTokens(request, AGENT_MAX_OUTPUT_TOKENS),
+      estimateRequestTokens(request, maxOutputTokens),
       this.logger,
     );
 
@@ -176,6 +177,6 @@ export class AnthropicProvider implements LlmProvider {
       .filter((block) => block.type === "text")
       .map((block) => (block.type === "text" ? block.text : ""))
       .join("");
-    return { type: "text", text };
+    return { type: "text", text, incompleteReason: response.stop_reason === "max_tokens" ? "max_tokens" : undefined };
   }
 }

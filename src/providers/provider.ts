@@ -23,7 +23,7 @@ export const AGENT_MAX_OUTPUT_TOKENS = 1024;
 
 export type ProviderTurn =
   | { type: "tool_call"; toolCall: ToolCall }
-  | { type: "text"; text: string };
+  | { type: "text"; text: string; incompleteReason?: string };
 
 export interface LlmProvider {
   start(params: {
@@ -32,6 +32,8 @@ export interface LlmProvider {
     initialInput: string;
     /** Base64 JPEG, no data-URI prefix. Only consumed by providers that implement vision fallback. */
     screenshot?: string;
+    /** Optional per-request output budget for one-shot operations such as response planning. */
+    maxOutputTokens?: number;
   }): Promise<ProviderTurn>;
 
   continue(toolResult: ToolResult): Promise<ProviderTurn>;

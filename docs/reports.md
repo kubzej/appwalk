@@ -19,44 +19,48 @@ The execution ID combines an ISO timestamp and a short random suffix. This keeps
 | File | Audience | Purpose |
 | --- | --- | --- |
 | `report.html` | Tester, developer, reviewer | Human-facing execution result: personas, flows, replay state, findings, response scenarios, warnings, and recorded steps. |
-| `report.json` | CI, dashboards, integrations | Stable structured execution contract with status, summary, runs, flows, findings, and artifact paths. |
-| `discovery.json` | `generate`, tooling | Manifest of discovered flows, run metadata, replay state, captured storage, and response fixtures. |
+| `report.json` | CI, dashboards, integrations | Stable structured execution contract with summary, runs, flow results, findings, and artifact paths. |
+| `discovery.json` | `generate`, tooling | Manifest of discovered flows, run metadata, replay state, and response fixtures. It does not contain captured auth tokens. |
 | `evidence.jsonl` | Debugging and forensic review | Append-only per-step browser evidence, tool calls, results, network entries, console entries, and errors. |
 | `discovered.spec.ts` | Playwright users | Generated tests for confirmed base and derived flows. |
 
-## Report status
+## Exit codes
 
-| Status | Meaning | Exit code |
+| Exit code | Meaning |
 | --- | --- | ---: |
-| `passed` | At least one flow was replay-confirmed and no finding or execution error was recorded. | `0` |
-| `findings` | A challenge flow was replayed and confirmed a potential application bug. | `1` |
-| `failed` | An execution-level error prevented a complete run, such as a provider, browser, or replay setup failure. | `2` |
-| `inconclusive` | No confirmed regression flow survived, evidence was incomplete, or a result could not be established. | `3` |
+| `0` | Confirmed flow coverage exists without findings or incomplete evidence. |
+| `1` | At least one flow contains a confirmed potential bug. |
+| `2` | An execution-level error prevented the run from completing. |
+| `3` | Coverage or evidence is incomplete, or no confirmed regression flow survived. |
 
-The console `status` is the execution status. A generated test suite can exist while the overall execution is `findings` or `inconclusive`; generation and application health are separate signals.
+Exit code is a process/CI signal only. The report does not assign a status to the execution or to a persona. Review status on individual flows, alongside the summary counts and coverage warnings. A generated test suite can exist while the exit code is `1` or `3`; generation and application health are separate signals.
 
 ## Flow states
 
-The report keeps discovery and replay separate because they answer different questions:
+The report uses three simple flow results. Discovery and replay remain supporting facts because they answer different questions. Runtime issues are observations, not a flow result; they are shown separately and do not change the flow result by themselves:
 
-| State | Meaning |
+| Result | Meaning |
 | --- | --- |
-| Discovery verified | The flow reached the persona's verification condition during the exploratory session. |
-| Replay confirmed | The recorded actions reproduced the condition in a clean session. |
-| Potential bug confirmed | A challenge persona reproduced its unmet expectation during clean replay. |
-| Inconclusive | The flow or finding could not be replayed or evidence was incomplete. It is not proof of a bug. |
-| Derived | The flow came from a response variant of a confirmed base flow. |
+| Confirmed | Replay confirmed the flow. Runtime issues, when present, are shown separately on the flow. |
+| Potential bug | Replay confirmed the flow and reproduced a finding that indicates a potential application bug. |
+| Needs review | Replay did not confirm the flow, a finding was inconclusive, or the evidence was insufficient. The flow page includes the failed step, error, last URL, and last captured page state when an action failed. It is not proof of a bug. |
+
+Supporting facts shown on a flow are:
+
+- **Discovery verified**: the flow reached the persona's verification condition during exploration.
+- **Replay confirmed**: the recorded actions reproduced the condition in a clean session.
+- **Derived**: the flow came from a response variant of a confirmed base flow.
 
 ## Report interpretation
 
 Read the report in this order:
 
-1. **Execution status and summary**: decide whether the run passed, found a potential bug, failed, or needs review.
-2. **Persona coverage**: see which independent exploration runs completed and which exhausted their action budget.
-3. **Flows**: compare discovered flows with replay-confirmed flows. Unconfirmed discoveries are useful leads, not regression coverage.
+1. **Summary**: see counts for personas, flows, replay confirmation, generated tests, findings, and coverage warnings.
+2. **Persona coverage**: see which independent exploration runs completed, which exhausted their action budget, and whether safety limited the result.
+3. **Flows**: review the status of each discovered or derived flow. Unconfirmed discoveries are useful leads, not regression coverage.
 4. **Findings**: inspect confirmed and inconclusive challenge results separately.
-5. **Response scenarios**: review proposed, confirmed, and skipped variants with their reasons.
-6. **Recorded steps and evidence**: use the exact action sequence and raw evidence when debugging.
+5. **Response scenarios**: distinguish baseline fixtures used to stabilize the original flow from planner proposals and confirmed derived scenarios. If no variants were accepted, the report shows whether the planner returned none, Appwalk rejected its proposals, or planning failed.
+6. **Runtime issues, recorded steps, and evidence**: review potential browser/application errors, then use the exact action sequence and raw evidence when debugging. Errors caused directly by a safety-blocked request are labeled as safety-related and are excluded from potential-bug review; the safety limitation itself still makes coverage inconclusive.
 
 ## Evidence warnings
 

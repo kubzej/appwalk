@@ -57,7 +57,7 @@ Screenshots are sent only where the provider integration supports them, and a te
 
 ## `generate` says the discovery used login
 
-Generation needs a replayable authentication setup. Pass the original credentials or a storage state:
+Generation needs an explicit authentication setup. Appwalk does not reuse auth tokens from discovery artifacts, so pass the original credentials or a storage state:
 
 ```bash
 npx tsx src/cli/index.ts generate ./appwalk-output/<execution-id> \
@@ -73,4 +73,4 @@ npx tsx src/cli/index.ts generate ./appwalk-output/<execution-id> \
 
 ## Generated tests fail in a different environment
 
-Generated tests preserve the discovered action sequence and may contain response fixtures or captured flow state. They do not provision your application, seed data, or replace the environment configuration of your Playwright project. Review URLs, credentials, storage state, fixture assumptions, and destructive-action behavior before moving them to CI.
+Generated tests preserve the discovered action sequence and may contain response fixtures. They do not provision your application, seed data, or replace the environment configuration of your Playwright project. Review URLs, credentials, storage state, fixture assumptions, and destructive-action behavior before moving them to CI.
