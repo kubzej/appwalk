@@ -135,6 +135,22 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "openTab",
+    description:
+      "Open the current page's URL in a new browser tab, logged in as the same user, and switch to it — keeping the current tab open in the background so you can return to it later with switchTab. The result reports the new tab's id and the ids of all open tabs.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "switchTab",
+    description:
+      "Switch the active tab to a previously opened one, by the id reported when it was opened (from openTab or, in the background, the tab you started in). Use this to interleave actions between two open tabs — for example, saving a change in one tab, then switching to another tab that still shows the old state to see whether it warns about the conflict or silently overwrites it.",
+    inputSchema: {
+      type: "object",
+      properties: { tabId: { type: "string", description: "The id of the tab to switch to, e.g. \"tab-1\"." } },
+      required: ["tabId"],
+    },
+  },
+  {
     name: "reopenBrowser",
     description: "Simulate fully closing and reopening the browser, then navigate back to the current URL. Cookies and localStorage carry over; sessionStorage does not, matching a real browser restart.",
     inputSchema: { type: "object", properties: {} },
@@ -365,7 +381,15 @@ async function verifyExpectation(
   };
 }
 
-export async function executeToolCall(page: Page, call: ToolCall): Promise<ToolCallResult> {
+/**
+ * Tracks every page that has ever been the active tab within one flow, keyed by a stable id assigned
+ * in opening order ("tab-0" is the tab the flow started on). Only `openTab`/`switchTab` (Talia) read
+ * or grow this; every other action ignores it. Callers that never use those two tools may omit it —
+ * `openTab`/`switchTab` throw a clear error instead of silently misbehaving without one.
+ */
+export type TabRegistry = Map<string, Page>;
+
+export async function executeToolCall(page: Page, call: ToolCall, tabs?: TabRegistry): Promise<ToolCallResult> {
   const input = call.input;
   switch (call.name) {
     case "navigate":
@@ -400,6 +424,25 @@ export async function executeToolCall(page: Page, call: ToolCall): Promise<ToolC
       return actions.hardReload(page);
     case "openInNewTab":
       return actions.openInNewTab(page);
+    case "openTab": {
+      if (!tabs) throw new Error("openTab: no tab registry available in this context.");
+      const result = await actions.openTab(page);
+      const newId = `tab-${tabs.size}`;
+      tabs.set(newId, result.activePage);
+      const openIds = [...tabs.keys()].join(", ");
+      return { ...result, snapshot: `${result.snapshot}\n\nOpened tab: ${newId}. Open tabs: ${openIds} (active: ${newId}).` };
+    }
+    case "switchTab": {
+      if (!tabs) throw new Error("switchTab: no tab registry available in this context.");
+      const tabId = input.tabId as string;
+      const target = tabs.get(tabId);
+      if (!target) {
+        throw new Error(`switchTab: no open tab with id "${tabId}". Open tabs: ${[...tabs.keys()].join(", ")}`);
+      }
+      const result = await actions.switchTab(target);
+      const openIds = [...tabs.keys()].join(", ");
+      return { ...result, snapshot: `${result.snapshot}\n\nSwitched to tab: ${tabId}. Open tabs: ${openIds} (active: ${tabId}).` };
+    }
     case "reopenBrowser":
       return actions.reopenBrowser(page);
     case "scroll":

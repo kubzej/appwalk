@@ -1,5 +1,6 @@
 import type { Page } from "playwright";
 import { executeToolCall } from "../agent/tools.js";
+import type { TabRegistry } from "../agent/tools.js";
 import type { VerificationMode } from "../agent/verification.js";
 import { verifyFlow } from "../agent/verification.js";
 import { configurePageTimeouts } from "../browser/actions.js";
@@ -57,10 +58,15 @@ export async function replay(
   logger?: Logger,
   getSafetyBlockCount?: () => number,
   variantSource?: { selector: ResponseFixtureSelector; isMatched: () => boolean },
+  /** Called whenever a replayed action switches the active page (a new tab, a reopened
+   * browser) — the caller re-applies whatever is page-scoped, such as the destructive-action
+   * safety guard, which doesn't follow a page switch on its own. */
+  onActivePageChange?: (page: Page) => Promise<void>,
 ): Promise<ReplayResult> {
   const flowStartUrl = page.url();
   const flowStartSnapshot = await captureSnapshot(page);
   const replayNetworkStart = recorder?.network.length ?? 0;
+  const tabs: TabRegistry = new Map([["tab-0", page]]);
   const steps: StepResult[] = [];
   let variantExpectationResult: import("../agent/tools.js").ToolCallResult | undefined;
   let variantExpectationStep: number | undefined;
@@ -79,7 +85,7 @@ export async function replay(
         locator: variantExpectation.locator,
         value: variantExpectation.value,
       },
-    });
+    }, tabs);
     if (expectationResult.expectation?.status === "met") {
       variantExpectationResult = expectationResult;
       variantExpectationStep = step;
@@ -93,13 +99,14 @@ export async function replay(
   for (const [index, action] of actions.entries()) {
     logger?.debug("replay.step_started", "Replay action started", { stepIndex: index, action: action.name, input: action.input });
     try {
-      const result = await executeToolCall(page, action);
+      const result = await executeToolCall(page, action, tabs);
       steps.push(result);
       finalUrl = result.url;
       if (result.activePage) {
         page = result.activePage;
         configurePageTimeouts(page);
         recorder?.reattach(page);
+        await onActivePageChange?.(page);
       }
       await checkVariantExpectation(index);
       logger?.debug("replay.step_completed", "Replay action completed", { stepIndex: index, action: action.name, url: result.url });

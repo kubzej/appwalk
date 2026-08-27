@@ -416,9 +416,15 @@ async function exploreAndVerifyInBrowser(
     },
   };
 
-  const page = await browser.newPage(
+  // Explicit newContext() + newPage(), not the browser.newPage() shorthand — that shorthand reserves
+  // its context for a single page and rejects a second context.newPage() ("Please use
+  // browser.newContext()"). Going through the context ourselves lets `openTab` (Talia) later add a
+  // genuine second page to this same context — real, live-shared cookies/localStorage, like two tabs
+  // of one real browser profile, not a point-in-time storageState clone.
+  const context = await browser.newContext(
     args.storageStatePath ? { storageState: args.storageStatePath } : undefined,
   );
+  const page = await context.newPage();
   configurePageTimeouts(page);
   const runEntries: EvidenceEntry[] = [];
 
@@ -441,6 +447,9 @@ async function exploreAndVerifyInBrowser(
     expectations: args.expectations,
     logger: runLogger,
     getSafetyBlockCount: () => safetyEvents.filter((event) => event.phase === "exploration").length,
+    // A new tab (openTab, openInNewTab, reopenBrowser) is a fresh Page — the destructive-action guard
+    // is installed with `page.route`, which is page-scoped and does not follow a page switch on its own.
+    onActivePageChange: (newPage) => installDestructiveActionGuard(newPage, guardOptions),
     onStep: (step, index, flowIndex) => {
       const { network, console: consoleEntries, runtimeErrors } = recorder.drain();
         const entry = {
@@ -499,7 +508,8 @@ async function exploreAndVerifyInBrowser(
           ? JSON.parse(flow.startStorageState)
           : args.storageStatePath;
 
-        const replayPage = await replayBrowser.newPage(flowStorageState ? { storageState: flowStorageState } : undefined);
+        const replayContext = await replayBrowser.newContext(flowStorageState ? { storageState: flowStorageState } : undefined);
+        const replayPage = await replayContext.newPage();
         configurePageTimeouts(replayPage);
         await navigateOrLogin(
           replayPage,
@@ -523,6 +533,8 @@ async function exploreAndVerifyInBrowser(
           undefined,
           flowLogger,
           () => safetyEvents.filter((event) => event.phase === "replay").length,
+          undefined,
+          (newPage) => installDestructiveActionGuard(newPage, guardOptions),
         );
         runtimeErrorEntries.push(...replayRecorder.runtimeErrors.map((error) => ({ error, phase: "replay" as const, flowIndex: index + 1 })));
         if (!replayResult.reproduced) {
@@ -667,9 +679,10 @@ async function exploreAndVerifyInBrowser(
             const variantStorageState = index > 0 && flow.startStorageState
               ? JSON.parse(flow.startStorageState)
               : args.storageStatePath;
-            const variantPage = await replayBrowser.newPage(
+            const variantContext = await replayBrowser.newContext(
               variantStorageState ? { storageState: variantStorageState } : undefined,
             );
+            const variantPage = await variantContext.newPage();
             configurePageTimeouts(variantPage);
             let variantSourceMatched = false;
             await installResponseFixtures(variantPage, variantFixtures, {
@@ -709,6 +722,7 @@ async function exploreAndVerifyInBrowser(
               flowLogger.child({ scenarioId }),
               () => safetyEvents.filter((event) => event.phase === "replay").length,
               { selector: { method: variant.sourceMethod, url: variant.sourceUrl, occurrence: variant.sourceOccurrence }, isMatched: () => variantSourceMatched },
+              (newPage) => installDestructiveActionGuard(newPage, guardOptions),
             );
             runtimeErrorEntries.push(...variantRecorder.runtimeErrors.map((error) => ({ error, phase: "replay" as const, flowIndex: index + 1 })));
             const variantExpectationResult = variantResult.variantExpectationResult;

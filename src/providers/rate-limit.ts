@@ -2,6 +2,10 @@ export interface RateLimitState {
   limitTokens?: number;
   remainingTokens?: number;
   resetAt?: number;
+  /** Separate from the token window — a request-count limit (e.g. RPM) can be hit even while
+   * plenty of token budget remains, and OpenAI/Anthropic report it via its own headers. */
+  remainingRequests?: number;
+  requestsResetAt?: number;
 }
 
 import type { Logger } from "../logging/logger.js";
@@ -68,29 +72,66 @@ export class RateLimitCoordinator {
 
   async beforeRequest(key: string, estimatedTokens: number, logger?: Logger): Promise<void> {
     const state = this.states.get(key);
-    if (state?.remainingTokens === undefined || state.resetAt === undefined) return;
+    if (!state) return;
 
     const now = Date.now();
-    if (state.resetAt <= now) {
-      this.states.delete(key);
+
+    // Tokens and requests are independent windows with their own remaining count and reset
+    // time; a stale window (reset time already passed) is dropped rather than treated as still
+    // exhausted, since the provider would have refilled it by now.
+    let waitMs: number | undefined;
+    let reason: "token" | "request" | undefined;
+
+    if (state.remainingTokens !== undefined && state.resetAt !== undefined) {
+      if (state.resetAt <= now) {
+        state.remainingTokens = undefined;
+        state.resetAt = undefined;
+      } else {
+        // Include the last observed request size because Responses-style APIs may account for
+        // server-side conversation history that is not present in the next request body.
+        const expected = Math.max(
+          estimatedTokens,
+          state.lastObservedInputTokens === undefined ? 0 : Math.ceil(state.lastObservedInputTokens * 1.5),
+        );
+        if (state.remainingTokens < expected) {
+          waitMs = state.resetAt - now + 100;
+          reason = "token";
+        }
+      }
+    }
+
+    if (state.remainingRequests !== undefined && state.requestsResetAt !== undefined) {
+      if (state.requestsResetAt <= now) {
+        state.remainingRequests = undefined;
+        state.requestsResetAt = undefined;
+      } else if (state.remainingRequests < 1) {
+        const requestWaitMs = state.requestsResetAt - now + 100;
+        if (waitMs === undefined || requestWaitMs > waitMs) {
+          waitMs = requestWaitMs;
+          reason = "request";
+        }
+      }
+    }
+
+    if (waitMs === undefined || reason === undefined) {
+      if (state.remainingTokens === undefined && state.remainingRequests === undefined) this.states.delete(key);
       return;
     }
 
-    // Include the last observed request size because Responses-style APIs may account for
-    // server-side conversation history that is not present in the next request body.
-    const expected = Math.max(
-      estimatedTokens,
-      state.lastObservedInputTokens === undefined ? 0 : Math.ceil(state.lastObservedInputTokens * 1.5),
-    );
-    if (state.remainingTokens >= expected) return;
-
-    const waitMs = state.resetAt - now + 100;
-    logger?.warn(`API quota reached. Waiting ${Math.ceil(waitMs / 1000)}s before continuing.`);
-    logger?.debug("provider.rate_limit_wait", "Waiting for the provider token window to reset", {
-      key, remainingTokens: state.remainingTokens, estimatedTokens, waitMs, resetAt: state.resetAt,
+    logger?.warn(`API quota reached (${reason} limit). Waiting ${Math.ceil(waitMs / 1000)}s before continuing.`);
+    logger?.debug("provider.rate_limit_wait", "Waiting for the provider rate-limit window to reset", {
+      key, reason, remainingTokens: state.remainingTokens, remainingRequests: state.remainingRequests, estimatedTokens, waitMs,
     });
     await sleep(waitMs);
-    this.states.delete(key);
+    // Only the dimension that actually triggered the wait is cleared — the other window's last
+    // observed counters are still valid until its own reset time.
+    if (reason === "token") {
+      state.remainingTokens = undefined;
+      state.resetAt = undefined;
+    } else {
+      state.remainingRequests = undefined;
+      state.requestsResetAt = undefined;
+    }
   }
 
   observe(key: string, headers: Headers, inputTokens?: number): void {
@@ -115,13 +156,20 @@ export class RateLimitCoordinator {
       "anthropic-ratelimit-tokens-reset",
       "anthropic-ratelimit-input-tokens-reset",
     );
-    if (remainingTokens === undefined && limitTokens === undefined && resetAt === undefined) return;
+    const remainingRequests = headerNumber(headers, "x-ratelimit-remaining-requests", "anthropic-ratelimit-requests-remaining");
+    const requestsResetAt = headerResetAt(headers, "x-ratelimit-reset-requests", "anthropic-ratelimit-requests-reset");
+    if (
+      remainingTokens === undefined && limitTokens === undefined && resetAt === undefined &&
+      remainingRequests === undefined && requestsResetAt === undefined
+    ) return;
 
     const previous = this.states.get(key);
     this.states.set(key, {
       limitTokens,
       remainingTokens,
       resetAt: resetAt ?? previous?.resetAt,
+      remainingRequests,
+      requestsResetAt: requestsResetAt ?? previous?.requestsResetAt,
       lastObservedInputTokens: inputTokens ?? previous?.lastObservedInputTokens,
     });
   }
@@ -142,7 +190,12 @@ export function rateLimitHeadersSummary(headers: Headers): string {
     ?? headers.get("x-ratelimit-reset-tokens")
     ?? headers.get("anthropic-ratelimit-tokens-reset")
     ?? headers.get("anthropic-ratelimit-input-tokens-reset");
-  if (!remaining && !reset) return "";
+  const remainingRequests = headers.get("x-ratelimit-remaining-requests") ?? headers.get("anthropic-ratelimit-requests-remaining");
+  const requestsReset = headers.get("x-ratelimit-reset-requests") ?? headers.get("anthropic-ratelimit-requests-reset");
+  if (!remaining && !reset && !remainingRequests && !requestsReset) return "";
   const resetValue = reset && reset !== "0" && reset !== "0s" ? reset : "not-provided";
-  return ` remaining=${remaining ?? "unknown"} reset=${resetValue}`;
+  const requestsResetValue = requestsReset && requestsReset !== "0" && requestsReset !== "0s" ? requestsReset : "not-provided";
+  const tokenPart = remaining || reset ? ` remaining=${remaining ?? "unknown"} reset=${resetValue}` : "";
+  const requestPart = remainingRequests || requestsReset ? ` remainingRequests=${remainingRequests ?? "unknown"} requestsReset=${requestsResetValue}` : "";
+  return `${tokenPart}${requestPart}`;
 }

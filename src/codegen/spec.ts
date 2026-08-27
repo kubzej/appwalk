@@ -328,6 +328,15 @@ function actionToStatement(name: string, input: Record<string, unknown>, fixture
     // in this codebase is created with ("Please use browser.newContext()").
     case "openInNewTab":
       return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); const newContext = await browser.newContext({ storageState }); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url); }`;
+    // A genuine second page of the *same* context — real, live-shared cookies/localStorage, like two
+    // real browser tabs — rather than a storageState clone into a fresh context. `tabs` maps every tab
+    // id ever opened to its page, mirroring the runtime tab registry: the id formula
+    // (`tab-${count so far}`) must match it exactly, since a later switchTab statement was recorded
+    // against the id the runtime assigned.
+    case "openTab":
+      return `{ const url = page.url(); const newPage = await page.context().newPage(); await newPage.goto(url); tabs[\`tab-\${Object.keys(tabs).length}\`] = page = newPage; }`;
+    case "switchTab":
+      return `page = tabs['${escapeJsString(input.tabId as string)}'];`;
     // Closes just the context, not the shared `browser` fixture the test runner owns — closing that
     // would break the runner, not just this one test's simulated "browser restart".
     case "reopenBrowser":
@@ -484,10 +493,17 @@ function flowToTest(
   // A recorded final expectation can already express the flow completion signal. Avoid emitting
   // the same assertion again as a generic confirmation fallback.
   const finalAssertion = assertion && bodyLines.includes(assertion) ? null : assertion;
-  const body = [...bodyLines, finalAssertion].filter((line): line is string => line !== null).map((line) => `  ${line}`).join("\n");
+  // `openTab`/`switchTab` (Talia) need an id -> page map alongside `page` itself — declared once,
+  // right where `page` is first bound, only when the flow actually uses either tool.
+  const needsTabRegistry = toolCalls.some(
+    (entry) => entry.toolCall!.name === "openTab" || entry.toolCall!.name === "switchTab",
+  );
+  const allBodyLines = needsTabRegistry ? ["const tabs: Record<string, typeof page> = { 'tab-0': page };", ...bodyLines] : bodyLines;
+  const body = [...allBodyLines, finalAssertion].filter((line): line is string => line !== null).map((line) => `  ${line}`).join("\n");
 
-  // `openInNewTab`/`reopenBrowser` both need the `browser` fixture to open a fresh context from; every
-  // other action only ever needs `page` (reassigned in place when one of those switches it).
+  // `openInNewTab`/`reopenBrowser` need the `browser` fixture to open a fresh context from; `openTab`
+  // only needs `page.context()`, since it stays in the same context. Every other action only ever
+  // needs `page` (reassigned in place when one of those switches it).
   const needsBrowserFixture = toolCalls.some(
     (entry) => entry.toolCall!.name === "openInNewTab" || entry.toolCall!.name === "reopenBrowser",
   );

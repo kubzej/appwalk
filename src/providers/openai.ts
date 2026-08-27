@@ -123,7 +123,7 @@ export class OpenAIProvider implements LlmProvider {
       const limitHint = rateLimitHeadersSummary(response.headers);
       if (response.status === 429) {
         this.logger.debug("provider.rate_limited", "OpenAI request was rate limited", { provider: "openai", model: this.model, requestIndex, status: response.status, hint: limitHint });
-        throw new Error(`OpenAI rate limit reached; request was not retried.`);
+        throw new Error(`OpenAI rate limit reached; request was not retried.${limitHint}`);
       }
       this.logger.debug("provider.request_failed", "OpenAI request failed", { provider: "openai", model: this.model, requestIndex, status: response.status, body: errorBody });
       throw new Error(`OpenAI request failed: ${response.status}`);

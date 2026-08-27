@@ -128,8 +128,9 @@ export class GrokProvider implements LlmProvider {
     if (!response.ok) {
       const errorBody = await response.text();
       if (response.status === 429) {
-        this.logger.debug("provider.rate_limited", "Grok request was rate limited", { provider: "grok", model: this.model, requestIndex, status: response.status, body: errorBody });
-        throw new Error("Grok rate limit reached; request was not retried.");
+        const limitHint = rateLimitHeadersSummary(response.headers);
+        this.logger.debug("provider.rate_limited", "Grok request was rate limited", { provider: "grok", model: this.model, requestIndex, status: response.status, hint: limitHint, body: errorBody });
+        throw new Error(`Grok rate limit reached; request was not retried.${limitHint}`);
       }
       this.logger.debug("provider.request_failed", "Grok request failed", { provider: "grok", model: this.model, requestIndex, status: response.status, body: errorBody });
       throw new Error(`Grok request failed: ${response.status}`);

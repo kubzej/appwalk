@@ -223,22 +223,49 @@ export async function hardReload(page: Page): Promise<StepResult> {
   return stepResultWithStorage(page);
 }
 
-/** Opens the current URL in a new tab and switches the active page to it. The old tab is left open —
- * matches a real user, and the caller closes the whole browser at the end of a run regardless. */
-export async function openInNewTab(page: Page): Promise<StepResult & { activePage: Page }> {
+/** Opens the current page's URL in a fresh context seeded from the same storageState — the closest
+ * simulation of "restart the browser" / "open a bookmark fresh" this codebase can produce for a tab
+ * that's meant to be abandoned. Used only by `openInNewTab`, which intentionally wants an independent
+ * context (a real page reload from a cold context, not a live-shared one). */
+async function cloneIntoNewTab(page: Page): Promise<Page> {
   const url = page.url();
-  // context.newPage() is rejected on this codebase's implicit context ("Please use browser.newContext()"),
-  // so a fresh context is seeded from the current storageState instead.
   // `indexedDB: true` is required or the snapshot omits it, unlike a real new tab.
   const storageState = await page.context().storageState({ indexedDB: true });
   const browser = page.context().browser();
-  if (!browser) throw new Error('openInNewTab: page has no browser (persistent context?)');
+  if (!browser) throw new Error('cloneIntoNewTab: page has no browser (persistent context?)');
   const newContext = await browser.newContext({ storageState });
   const newPage = await newContext.newPage();
   configurePageTimeouts(newPage);
   await newPage.goto(url);
+  return newPage;
+}
+
+/** Opens the current URL in a new tab and switches the active page to it. The old tab is left open —
+ * matches a real user, and the caller closes the whole browser at the end of a run regardless. */
+export async function openInNewTab(page: Page): Promise<StepResult & { activePage: Page }> {
+  const newPage = await cloneIntoNewTab(page);
   const result = await stepResultWithStorage(newPage);
   return { ...result, activePage: newPage };
+}
+
+/** Opens the current URL in a genuine second page of the *same* browser context — real, live-shared
+ * cookies/localStorage/sessionStorage, exactly like two tabs of one real browser profile. Requires the
+ * caller's page to already live in an explicit context (`browser.newContext()`, not the `browser.newPage()`
+ * shorthand, which Playwright reserves a single page for). The tools layer registers the result under a
+ * stable id so `switchTab` can return to it later. */
+export async function openTab(page: Page): Promise<StepResult & { activePage: Page }> {
+  const url = page.url();
+  const newPage = await page.context().newPage();
+  configurePageTimeouts(newPage);
+  await newPage.goto(url);
+  const result = await stepResultWithStorage(newPage);
+  return { ...result, activePage: newPage };
+}
+
+/** Makes a previously opened tab (tracked by the tools layer) the active page again. */
+export async function switchTab(target: Page): Promise<StepResult & { activePage: Page }> {
+  const result = await stepResultWithStorage(target);
+  return { ...result, activePage: target };
 }
 
 /** Simulates fully closing and reopening the browser: saves the current context's storageState (this

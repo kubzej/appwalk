@@ -42,6 +42,9 @@ Every built-in persona has one of two intents:
 | `lena` | journey | Latency and slow network behavior |
 | `hana` | journey | Hoverless and touch/keyboard alternatives |
 | `rosa` | journey | Returning-user state and retained history |
+| `ezra` | journey | File downloads and export controls |
+| `gail` | challenge | Plan, trial, and quota entitlement boundaries |
+| `talia` | challenge | Lost-update conflicts between two open tabs |
 
 The persona list is intentionally finite and explicit. A target application does not need to support every persona; a persona should adapt to the application and report when its defining surface does not exist instead of inventing one.
 
