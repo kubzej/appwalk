@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildExecutionReport, renderHtmlReport, type ReportSafety } from "../src/report/contract.js";
+import { buildExecutionReport, type ReportSafety } from "../src/report/contract.js";
+import { renderHtmlReport } from "../src/report/html-report.js";
 
 const safety: ReportSafety = {
   blockedRequests: 2,
