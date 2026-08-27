@@ -27,6 +27,9 @@ function reportInput(overrides: Partial<Parameters<typeof buildExecutionReport>[
       name: "Noah baseline",
       persona: "noah",
       personaIntent: "journey" as const,
+      maxSteps: 25,
+      scope: undefined,
+      expectations: [],
       flowsFound: 1,
       replayConfirmed: 1,
       generatedTests: 0,
@@ -143,6 +146,24 @@ test("renders persona coverage summary as centered stat cards", () => {
   assert.match(html, /Generated tests/);
   assert.match(html, /\.r-persona-stat-grid \.r-stat \{ text-align: center;/);
   assert.match(html, /<p class="r-stat">5<\/p>/);
+});
+
+test("preserves run-level evaluation metadata", () => {
+  const report = buildExecutionReport(reportInput({
+    runs: [{
+      ...reportInput().runs[0]!,
+      maxSteps: 80,
+      scope: "Explore checkout",
+      expectations: ["The order reaches confirmation"],
+    }],
+  }));
+  assert.equal(report.runs[0]?.maxSteps, 80);
+  assert.equal(report.runs[0]?.scope, "Explore checkout");
+  assert.deepEqual(report.runs[0]?.expectations, ["The order reaches confirmation"]);
+  const html = renderHtmlReport(report);
+  assert.match(html, /Max steps/);
+  assert.match(html, /Explore checkout/);
+  assert.match(html, /The order reaches confirmation/);
 });
 
 test("safety-related runtime errors are excluded from potential bug review", () => {
@@ -285,6 +306,52 @@ test("HTML report explains replay failures and flow-level runtime signals", () =
   const confirmedWithIssuesHtml = renderHtmlReport(confirmedWithIssues);
   assert.match(confirmedWithIssuesHtml, /Potential bug/);
   assert.doesNotMatch(confirmedWithIssuesHtml, /Confirmed with issues/);
-  assert.match(confirmedWithIssuesHtml, /8 baseline JSON fixtures/);
+  assert.match(confirmedWithIssuesHtml, /Fixtures:<\/strong><span class="r-meta-value">8 captured/);
   assert.match(confirmedWithIssuesHtml, /Planner returned no variant proposals/);
+});
+
+test("response variant results have readable sections and diagnostics", () => {
+  const input = reportInput({
+    runs: [{
+      ...reportInput().runs[0]!,
+      exhausted: false,
+      stopReason: "completed",
+      safety: { blockedRequests: 0, explorationBlocked: 0, replayBlocked: 0, byMethod: {}, samples: [], safetyRelatedRuntimeErrors: 0 },
+      runtimeErrors: [],
+      flows: [{
+        id: "run-1-flow-1",
+        title: "Checkout",
+        summary: "Completed checkout.",
+        origin: "discovered" as const,
+        discoveryVerified: true,
+        replayConfirmed: true,
+        runtimeIssues: [],
+        steps: [],
+      }],
+      responseVariants: [{
+        flowIndex: 0,
+        enabled: true,
+        fixturesFound: 7,
+        fixtures: [{ method: "GET", url: "https://example.test/api/orders/42", bytes: 120 }],
+        planningStatus: "completed" as const,
+        plannerCandidates: 4,
+        plannerRejected: 0,
+        plannerRejectionReasons: [],
+        proposed: 2,
+        confirmed: 1,
+        confirmedScenarios: ["Shipped order"],
+        skipped: [{ name: "Zero quantity", reason: "locator.click: Timeout 5000ms exceeded \uFFFD[2m" }],
+      }],
+    }],
+  });
+  const html = renderHtmlReport(buildExecutionReport(input));
+  assert.match(html, /Variants:<\/strong><span class="r-meta-value">2 accepted · 1 replay confirmed · 1 skipped/);
+  assert.match(html, /Captured fixtures/);
+  assert.match(html, /<code class="r-code r-fixture-url">https:\/\/example\.test\/api\/orders\/42<\/code>/);
+  assert.match(html, /Replay-confirmed variants/);
+  assert.match(html, /Skipped variants/);
+  assert.match(html, /Shipped order/);
+  assert.match(html, /Zero quantity/);
+  assert.match(html, /class="r-code-block r-scenario-code"><code>locator\.click: Timeout 5000ms exceeded<\/code>/);
+  assert.doesNotMatch(html, /�\[2m/);
 });

@@ -21,9 +21,21 @@ function escapeHtml(value: string): string {
 function cleanDiagnostic(value: string): string {
   return value
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\uFFFD\[[0-?]*[ -/]*[@-~]/g, '')
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
     .replace(/\r\n?/g, '\n')
     .trim();
+}
+
+function isTechnicalDiagnostic(value: string): boolean {
+  return /(?:locator\.|timeout|call log:|waiting for locator|replay failed|\berror\b|\bHTTP \d{3}\b)/i.test(value);
+}
+
+function renderScenarioReason(reason: string): string {
+  const cleaned = cleanDiagnostic(reason);
+  return isTechnicalDiagnostic(cleaned)
+    ? `<pre class="r-code-block r-scenario-code"><code>${escapeHtml(cleaned)}</code></pre>`
+    : `<p class="r-scenario-reason">${escapeHtml(cleaned)}</p>`;
 }
 
 function formatTimestamp(value: string): string {
@@ -136,31 +148,42 @@ function renderResponseScenariosCard(
   audit: ReportResponseVariantAudit,
 ): string {
   if (!audit.enabled) {
-    return `<div class="r-card"><p class="r-label">Response scenarios</p><p class="r-muted">Not enabled. The flow uses baseline response fixtures only.</p></div>`;
+    return `<div class="r-card"><p class="r-label">Response scenarios</p><p class="r-muted">Variant exploration was not enabled. The flow uses baseline response fixtures only.</p></div>`;
   }
+  const plannerStatus = audit.planningStatus === 'completed'
+    ? `Returned ${audit.plannerCandidates} proposal${audit.plannerCandidates === 1 ? '' : 's'}`
+    : audit.planningStatus === 'failed'
+      ? 'Failed'
+      : audit.planningStatus === 'incomplete'
+        ? 'Incomplete'
+        : 'Not run';
+  const summary = `<div class="r-meta-list r-response-meta">
+    <div class="r-meta-row"><strong class="r-meta-label">Fixtures:</strong><span class="r-meta-value">${audit.fixturesFound} captured</span></div>
+    <div class="r-meta-row"><strong class="r-meta-label">Variants:</strong><span class="r-meta-value">${audit.proposed} accepted · ${audit.confirmed} replay confirmed · ${audit.skipped.length} skipped</span></div>
+    <div class="r-meta-row"><strong class="r-meta-label">Planner:</strong><span class="r-meta-value">${escapeHtml(plannerStatus)}</span></div>
+  </div>`;
   const fixtures = audit.fixtures.length
-    ? `<div class="r-fixtures">${audit.fixtures.map((fixture) => `<div class="r-row"><span class="r-code">${escapeHtml(fixture.method)}</span><span class="r-fixture-url">${escapeHtml(fixture.url)}</span><span class="r-muted">${fixture.bytes.toLocaleString()} B</span></div>`).join('')}</div>`
-    : `<p class="r-muted">No replayable JSON responses were captured.</p>`;
+    ? `<div class="r-response-section"><p class="r-label">Captured fixtures</p><div class="r-fixtures">${audit.fixtures.map((fixture) => `<div class="r-row"><span class="r-code">${escapeHtml(fixture.method)}</span><code class="r-code r-fixture-url">${escapeHtml(fixture.url)}</code><span class="r-muted">${fixture.bytes.toLocaleString()} B</span></div>`).join('')}</div></div>`
+    : `<div class="r-response-section"><p class="r-label">Captured fixtures</p><p class="r-muted">No replayable JSON responses were captured.</p></div>`;
   const confirmed = audit.confirmedScenarios.length
-    ? `<div class="r-audit-group"><p class="r-label">Confirmed scenarios</p>${audit.confirmedScenarios.map((name) => `<p>${escapeHtml(name)}</p>`).join('')}</div>`
-    : '';
+    ? `<div class="r-response-section"><p class="r-label">Replay-confirmed variants</p><div class="r-scenario-list">${audit.confirmedScenarios.map((name) => `<p><strong>${escapeHtml(name)}</strong></p>`).join('')}</div></div>`
+    : `<div class="r-response-section"><p class="r-label">Replay-confirmed variants</p><p class="r-muted">No response variant was confirmed by replay.</p></div>`;
   const skipped = audit.skipped.length
-    ? `<div class="r-audit-group"><p class="r-label">Skipped scenarios</p>${audit.skipped.map((item) => `<p><strong>${escapeHtml(item.name)}</strong> <span class="r-muted">${escapeHtml(item.reason)}</span></p>`).join('')}</div>`
+    ? `<div class="r-response-section"><p class="r-label">Skipped variants</p><div class="r-scenario-list">${audit.skipped.map((item) => `<div class="r-scenario"><p><strong>${escapeHtml(item.name)}</strong></p>${renderScenarioReason(item.reason)}</div>`).join('')}</div></div>`
     : '';
   const planner = audit.planningStatus === 'failed'
-    ? `<p class="r-tone-danger">Variant planning failed${audit.plannerReason ? `: ${escapeHtml(audit.plannerReason)}` : '.'}</p>`
+    ? `<p class="r-response-note r-tone-danger">Variant planning failed${audit.plannerReason ? `: ${escapeHtml(cleanDiagnostic(audit.plannerReason))}` : '.'}</p>`
     : audit.planningStatus === 'incomplete'
-      ? `<p class="r-tone-danger">Variant planning was incomplete${audit.plannerReason ? `: ${escapeHtml(audit.plannerReason)}` : '.'}</p>`
+      ? `<p class="r-response-note r-tone-danger">Variant planning was incomplete${audit.plannerReason ? `: ${escapeHtml(cleanDiagnostic(audit.plannerReason))}` : '.'}</p>`
     : audit.plannerReason
-      ? `<p class="r-muted">${escapeHtml(audit.plannerReason)}</p>`
+      ? `<p class="r-response-note r-muted">${escapeHtml(cleanDiagnostic(audit.plannerReason))}</p>`
       : '';
   const rejected = audit.plannerRejected > 0
-    ? `<p class="r-muted">${audit.plannerRejected} planner proposal${audit.plannerRejected === 1 ? '' : 's'} rejected${audit.plannerRejectionReasons.length ? `: ${escapeHtml(audit.plannerRejectionReasons.join('; '))}` : '.'}</p>`
+    ? `<p class="r-response-note r-muted">${audit.plannerRejected} planner proposal${audit.plannerRejected === 1 ? '' : 's'} rejected${audit.plannerRejectionReasons.length ? `: ${escapeHtml(audit.plannerRejectionReasons.map(cleanDiagnostic).join('; '))}` : '.'}</p>`
     : '';
   return `<div class="r-card">
     <p class="r-label">Response scenarios</p>
-    <p class="r-muted">${audit.fixturesFound} baseline JSON fixture${audit.fixturesFound === 1 ? '' : 's'} · ${audit.proposed} variant${audit.proposed === 1 ? '' : 's'} accepted · ${audit.confirmed} confirmed</p>
-    ${audit.planningStatus === 'completed' ? `<p class="r-muted">Planner returned ${audit.plannerCandidates} proposal${audit.plannerCandidates === 1 ? '' : 's'}.</p>` : ''}
+    ${summary}
     ${planner}
     ${rejected}
     ${fixtures}
@@ -222,6 +245,20 @@ function renderStopReason(stopReason: ReportStopReason): string {
         ? 'Exploration stopped after repeated attempts made no progress.'
         : 'The persona did not complete its exploration.';
   return callout('warning', `<p class="r-label">Exploration incomplete</p><p>${message}</p>`);
+}
+
+function renderPersonaContext(run: ReportRun): string {
+  const scope = run.scope
+    ? `<div class="r-run-context-row"><strong>Scope:</strong><span>${escapeHtml(run.scope)}</span></div>`
+    : '';
+  const expectations = run.expectations.length
+    ? `<div class="r-run-context-row"><strong>Expectations:</strong><ol class="r-expectations">${run.expectations.map((expectation) => `<li>${escapeHtml(expectation)}</li>`).join('')}</ol></div>`
+    : '';
+  return `<div class="r-run-context">
+    <div class="r-run-context-row"><strong>Max steps:</strong><code>${run.maxSteps}</code></div>
+    ${scope}
+    ${expectations}
+  </div>`;
 }
 
 function renderOverviewPanel(report: ExecutionReport): string {
@@ -287,6 +324,7 @@ function renderPersonaPanel(run: ReportRun, runIndex: number): string {
     : `<p class="r-label">Run</p><h1 class="r-h1">${escapeHtml(run.name)}</h1>`;
   return `<section id="${panelId('persona', runIndex)}" class="r-panel" hidden>
     <div class="r-panel-head">${head}</div>
+    ${renderPersonaContext(run)}
     <div class="r-card">
       ${meta}
       ${run.error ? callout('danger', `<p>Persona failed: ${escapeHtml(run.error)}</p>`) : ''}
@@ -421,10 +459,21 @@ export function renderHtmlReport(report: ExecutionReport): string {
     '.r-runtime-line { margin-top: 4px; }',
     '.r-runtime-line code { color: #33424c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }',
     '.r-card > * + * { margin-top: 12px; }',
+    '.r-response-meta { margin-top: 14px; }',
+    '.r-response-section { margin-top: 20px; }',
+    '.r-response-section > .r-label { margin-bottom: 8px; }',
+    '.r-response-note { margin-top: 14px; }',
+    '.r-scenario-list { display: grid; gap: 10px; }',
+    '.r-scenario-reason { margin-top: 3px; color: #6b7680; overflow-wrap: anywhere; }',
     '.r-meta-list { display: grid; gap: 7px; margin-top: 16px; }',
     '.r-meta-row { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 12px; align-items: baseline; }',
     '.r-meta-label { color: #33424c; font-weight: 700; }',
     '.r-meta-value { color: #6b7680; overflow-wrap: anywhere; }',
+    '.r-run-context { display: grid; gap: 10px; color: #33424c; }',
+    '.r-run-context-row { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 12px; align-items: baseline; }',
+    '.r-run-context-row strong { font-weight: 700; }',
+    '.r-run-context-row code { color: #33424c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }',
+    '.r-run-context .r-expectations { margin: 0; }',
     '.r-expectations { padding-left: 20px; }',
     '.r-expectations li + li { margin-top: 6px; }',
     '.r-stat-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 18px; margin-top: 18px; }',

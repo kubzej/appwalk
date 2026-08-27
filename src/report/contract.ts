@@ -106,6 +106,9 @@ export interface ReportRun {
   name: string;
   persona?: string;
   personaIntent?: 'journey' | 'challenge';
+  maxSteps: number;
+  scope?: string;
+  expectations: string[];
   flowsFound: number;
   replayConfirmed: number;
   generatedTests: number;
@@ -172,6 +175,9 @@ export interface ExecutionReportInput {
     name: string;
     persona?: string;
     personaIntent?: 'journey' | 'challenge';
+    maxSteps: number;
+    scope?: string;
+    expectations: string[];
     flowsFound: number;
     replayConfirmed: number;
     generatedTests: number;
@@ -202,6 +208,9 @@ export function buildExecutionReport(
       name: run.name,
       persona: run.persona,
       personaIntent: run.personaIntent,
+      maxSteps: run.maxSteps,
+      scope: run.scope,
+      expectations: run.expectations,
       flowsFound: run.flowsFound,
       replayConfirmed: run.replayConfirmed,
       generatedTests: run.generatedTests,

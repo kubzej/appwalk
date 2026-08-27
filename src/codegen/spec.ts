@@ -66,7 +66,7 @@ export function formatTestTitle(name: string): string {
 // Mirrors src/browser/login.ts exactly — keep the two in sync. English label text only works
 // on English-language UIs; HTML input types (type="password", type="email", type="submit") are
 // language-independent, so structural signals are tried first, English text as a fallback.
-const FILL_FIRST_MATCH_HELPER = `async function findByLabelOrRole(page, ...patterns) {
+const FILL_FIRST_MATCH_HELPER = `async function findByLabelOrRole(page: Page, ...patterns: RegExp[]): Promise<Locator | null> {
   for (const pattern of patterns) {
     const byLabel = page.getByLabel(pattern);
     if ((await byLabel.count()) > 0) return byLabel.first();
@@ -78,7 +78,7 @@ const FILL_FIRST_MATCH_HELPER = `async function findByLabelOrRole(page, ...patte
   return null;
 }
 
-async function loginFirstMatch(page, username, password) {
+async function loginFirstMatch(page: Page, username: string, password: string): Promise<void> {
   let passwordField = page.locator('input[type="password"]').first();
   const loginUrl = page.url();
   if ((await passwordField.count()) === 0) {
@@ -118,7 +118,7 @@ async function loginFirstMatch(page, username, password) {
   }
 
   await Promise.race([
-    page.waitForURL((nextUrl) => nextUrl.toString() !== loginUrl, { timeout: 10000 }),
+    page.waitForURL((nextUrl: URL) => nextUrl.toString() !== loginUrl, { timeout: 10000 }),
     passwordField.waitFor({ state: 'hidden', timeout: 10000 }),
   ]).catch(() => undefined);
 }`;
@@ -302,7 +302,7 @@ function findConfirmationAssertion(entries: EvidenceEntry[]): string | null {
   return `await expect(page).toHaveURL('${escapeJsString(lastWithResult.result.url)}');`;
 }
 
-function flowToTest(flow: FlowEntries, options: CodegenOptions): string {
+function flowToTest(flow: FlowEntries, options: CodegenOptions, testTitle = formatTestTitle(flow.title ?? flow.name)): string {
   const toolCalls = flow.entries.filter((entry) => entry.toolCall && !entry.error && entry.toolCall.name !== "flowComplete");
   // Preserve the original timeline: an expectation may describe an intermediate state (e.g. an
   // item is present in the cart) and must run before later actions navigate away from that state.
@@ -328,8 +328,6 @@ function flowToTest(flow: FlowEntries, options: CodegenOptions): string {
   // discovery started on a login screen or captured an unauthenticated state after a failed login.
   const hasFlowStorageState = Boolean(flow.startStorageState) && !(options.username && options.password);
   const fixtureParams = hasFlowStorageState || needsBrowserFixture ? (hasFlowStorageState ? "{ browser }" : "{ page, browser }") : "{ page }";
-  const testTitle = formatTestTitle(flow.title ?? flow.name);
-
   if (hasFlowStorageState) {
     const storageState = JSON.stringify(JSON.parse(flow.startStorageState!));
     const indentedBody = body
@@ -364,7 +362,7 @@ export function generateSpec(flows: FlowEntries[], options: CodegenOptions): str
   const hasStorageState = Boolean(options.storageStatePath);
   const hasLogin = !hasStorageState && Boolean(options.username && options.password);
 
-  const parts: string[] = ["import { test, expect } from '@playwright/test';"];
+  const parts: string[] = ["import { test, expect, type Locator, type Page } from '@playwright/test';"];
 
   if (hasStorageState) {
     parts.push(`test.use({ storageState: '${escapeJsString(options.storageStatePath!)}' });`);
@@ -373,8 +371,26 @@ export function generateSpec(flows: FlowEntries[], options: CodegenOptions): str
     parts.push(FILL_FIRST_MATCH_HELPER);
   }
 
+  const baseTitleCounts = new Map<string, number>();
   for (const flow of flows) {
-    parts.push(flowToTest(flow, options));
+    const baseTitle = formatTestTitle(flow.title ?? flow.name);
+    baseTitleCounts.set(baseTitle, (baseTitleCounts.get(baseTitle) ?? 0) + 1);
+  }
+
+  const usedTitles = new Set<string>();
+  for (const flow of flows) {
+    const baseTitle = formatTestTitle(flow.title ?? flow.name);
+    const detailTitle = formatTestTitle(flow.name);
+    let testTitle = baseTitleCounts.get(baseTitle) === 1 || detailTitle === baseTitle
+      ? baseTitle
+      : `${baseTitle} - ${detailTitle}`;
+    const titleRoot = testTitle;
+    let suffix = 2;
+    while (usedTitles.has(testTitle)) {
+      testTitle = `${titleRoot} (${suffix++})`;
+    }
+    usedTitles.add(testTitle);
+    parts.push(flowToTest(flow, options, testTitle));
   }
 
   return parts.join("\n\n") + "\n";
