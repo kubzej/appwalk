@@ -1,11 +1,16 @@
 import { chromium } from 'playwright';
 import type { Page, Route } from 'playwright';
 import { toStepResult } from './snapshot.js';
+import { resolveLocator } from './locator.js';
 import type { StepResult } from '../types.js';
 
 const CLICK_SETTLE_MS = 500;
 export const ACTION_TIMEOUT_MS = 5000;
 export const NAVIGATION_TIMEOUT_MS = 20000;
+
+export type ClickButton = 'left' | 'right' | 'middle';
+export type ClickModifier = 'Alt' | 'Control' | 'Meta' | 'Shift';
+type ClickOptions = { button?: ClickButton; modifiers?: ClickModifier[] };
 
 /** Applies Appwalk's timeout contract to every page, including pages from a new context. */
 export function configurePageTimeouts(page: Page): void {
@@ -108,17 +113,24 @@ export function isPointerInterceptionError(error: unknown): boolean {
   return /intercepts pointer events|receives pointer events|would receive (?:the )?(?:click|pointer events)/i.test(message);
 }
 
-export async function click(page: Page, locator: string): Promise<StepResult> {
+export async function click(page: Page, locator: string, button?: ClickButton, modifiers?: ClickModifier[]): Promise<StepResult> {
+  const options: ClickOptions = { button, modifiers };
   try {
-    await page.locator(locator).click();
+    await resolveLocator(page, locator).click(options);
   } catch (err) {
     // A modal/overlay from a previous action can intercept pointer events on the next
     // click. Escape closes most modal libraries — retry once before giving up.
     if (!isPointerInterceptionError(err))
       throw err;
     await page.keyboard.press('Escape');
-    await page.locator(locator).click();
+    await resolveLocator(page, locator).click(options);
   }
+  await page.waitForTimeout(CLICK_SETTLE_MS);
+  return toStepResult(page);
+}
+
+export async function doubleClick(page: Page, locator: string, button?: ClickButton, modifiers?: ClickModifier[]): Promise<StepResult> {
+  await resolveLocator(page, locator).dblclick({ button, modifiers });
   await page.waitForTimeout(CLICK_SETTLE_MS);
   return toStepResult(page);
 }
@@ -128,16 +140,16 @@ export async function fill(
   locator: string,
   value: string,
 ): Promise<StepResult> {
-  await page.locator(locator).fill(value);
+  await resolveLocator(page, locator).fill(value);
   return toStepResult(page);
 }
 
 export async function select(
   page: Page,
   locator: string,
-  value: string,
+  value: string | string[],
 ): Promise<StepResult> {
-  await page.locator(locator).selectOption(value);
+  await resolveLocator(page, locator).selectOption(value);
   return toStepResult(page);
 }
 
@@ -146,12 +158,12 @@ export async function pressKey(
   locator: string,
   key: string,
 ): Promise<StepResult> {
-  await page.locator(locator).press(key);
+  await resolveLocator(page, locator).press(key);
   return toStepResult(page);
 }
 
 export async function check(page: Page, locator: string): Promise<StepResult> {
-  await page.locator(locator).check();
+  await resolveLocator(page, locator).check();
   return toStepResult(page);
 }
 
@@ -159,12 +171,17 @@ export async function uncheck(
   page: Page,
   locator: string,
 ): Promise<StepResult> {
-  await page.locator(locator).uncheck();
+  await resolveLocator(page, locator).uncheck();
   return toStepResult(page);
 }
 
 export async function hover(page: Page, locator: string): Promise<StepResult> {
-  await page.locator(locator).hover();
+  await resolveLocator(page, locator).hover();
+  return toStepResult(page);
+}
+
+export async function dragAndDrop(page: Page, source: string, target: string): Promise<StepResult> {
+  await resolveLocator(page, source).dragTo(resolveLocator(page, target));
   return toStepResult(page);
 }
 
@@ -250,7 +267,7 @@ export async function scroll(
   locator?: string,
 ): Promise<StepResult> {
   if (locator) {
-    await page.locator(locator).scrollIntoViewIfNeeded();
+    await resolveLocator(page, locator).scrollIntoViewIfNeeded();
   } else {
     await page.mouse.wheel(0, 10000);
   }
@@ -271,8 +288,18 @@ export async function uploadFile(
   locator: string,
   filePaths: string[],
 ): Promise<StepResult> {
-  await page.locator(locator).setInputFiles(filePaths);
+  await resolveLocator(page, locator).setInputFiles(filePaths);
   return toStepResult(page);
+}
+
+/** Clicks a download control and waits until Playwright has received the file. The generated test
+ * performs the same event handshake without committing an environment-specific filesystem path. */
+export async function download(page: Page, locator: string): Promise<StepResult> {
+  const downloadPromise = page.waitForEvent('download');
+  await resolveLocator(page, locator).click();
+  const file = await downloadPromise;
+  const result = await toStepResult(page);
+  return { ...result, snapshot: `${result.snapshot}\n\nDownload - ${file.suggestedFilename()}` };
 }
 
 /** Arms the page's *next* native dialog (alert/confirm/prompt) to auto-accept or auto-dismiss. Call before the action expected to trigger it. */
@@ -292,7 +319,7 @@ export async function waitFor(
 ): Promise<StepResult> {
   // Waiting means that any matching signal is enough. Using the first match avoids
   // failing on useful broad locators such as /Order confirmed|Thank you|success/.
-  await page.locator(locator).first().waitFor({ state: 'visible' });
+  await resolveLocator(page, locator).first().waitFor({ state: 'visible' });
   return toStepResult(page);
 }
 
@@ -319,7 +346,7 @@ export async function burst(
   if (!BURSTABLE_ACTIONS.has(action)) {
     throw new Error(`burst: "${action}" can't be repeated this way — only ${[...BURSTABLE_ACTIONS].join(', ')} are supported.`);
   }
-  const target = page.locator(locator);
+  const target = resolveLocator(page, locator);
   let completed = 0;
   let stoppedReason: string | null = null;
   for (let i = 0; i < count; i++) {

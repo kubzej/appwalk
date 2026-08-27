@@ -16,12 +16,14 @@ function reportActionLabel(name: string): string {
   const labels: Record<string, string> = {
     navigate: "Navigate",
     click: "Click",
+    doubleClick: "Double click",
     fill: "Fill",
     select: "Select",
     pressKey: "Press key",
     check: "Check",
     uncheck: "Uncheck",
     hover: "Hover",
+    dragAndDrop: "Drag and drop",
     goBack: "Go back",
     goForward: "Go forward",
     reload: "Reload",
@@ -32,6 +34,7 @@ function reportActionLabel(name: string): string {
     setViewportSize: "Set viewport",
     waitFor: "Wait for element",
     uploadFile: "Upload file",
+    download: "Download",
     handleDialog: "Handle dialog",
     verifyExpectation: "Verify expectation",
     clearCookie: "Clear cookie",
@@ -57,6 +60,8 @@ function reportSteps(entries: EvidenceEntry[], errorLabel: string): ReportStep[]
       const input = entry.toolCall!.input;
       const target = typeof input.locator === "string"
         ? input.locator
+        : typeof input.source === "string" && typeof input.target === "string"
+          ? `${input.source} -> ${input.target}`
         : typeof input.url === "string"
           ? input.url
           : undefined;

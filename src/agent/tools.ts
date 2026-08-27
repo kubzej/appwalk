@@ -1,13 +1,19 @@
 import type { Page } from "playwright";
 import * as actions from "../browser/actions.js";
 import { toStepResult } from "../browser/snapshot.js";
+import { resolveLocator } from "../browser/locator.js";
 import type { ToolCall, ToolDefinition } from "../providers/provider.js";
 import type { ExpectationAssertion, ExpectationObservation, StepResult } from "../types.js";
+
+const clickOptions = {
+  button: { type: "string", enum: ["left", "right", "middle"] },
+  modifiers: { type: "array", items: { type: "string", enum: ["Alt", "Control", "Meta", "Shift"] } },
+};
 
 const locatorProp = {
   locator: {
     type: "string",
-    description: "A Playwright locator string — see the locator syntax rules in the system prompt.",
+    description: "A Playwright locator string — prefer the stable locator hint from the page observation; see the locator syntax rules in the system prompt.",
   },
 };
 
@@ -24,7 +30,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "click",
     description: "Click an element.",
-    inputSchema: { type: "object", properties: locatorProp, required: ["locator"] },
+    inputSchema: { type: "object", properties: { ...locatorProp, ...clickOptions }, required: ["locator"] },
+  },
+  {
+    name: "doubleClick",
+    description: "Double-click an element.",
+    inputSchema: { type: "object", properties: { ...locatorProp, ...clickOptions }, required: ["locator"] },
   },
   {
     name: "fill",
@@ -37,10 +48,19 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: "select",
-    description: "Choose an option in a <select> dropdown by its value.",
+    description: "Choose one option in a <select> dropdown by its value, or multiple options by passing an array of values.",
     inputSchema: {
       type: "object",
-      properties: { ...locatorProp, value: { type: "string" } },
+      properties: {
+        ...locatorProp,
+        value: {
+          description: "One option value for a normal select, or an array of option values for a multi-select.",
+          anyOf: [
+            { type: "string" },
+            { type: "array", items: { type: "string" }, minItems: 1 },
+          ],
+        },
+      },
       required: ["locator", "value"],
     },
   },
@@ -67,6 +87,18 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: "hover",
     description: "Hover over an element — use this to reveal menus that only appear on mouseover.",
     inputSchema: { type: "object", properties: locatorProp, required: ["locator"] },
+  },
+  {
+    name: "dragAndDrop",
+    description: "Drag one element onto another element.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        source: { type: "string", description: "Locator for the element to drag." },
+        target: { type: "string", description: "Locator for the drop target." },
+      },
+      required: ["source", "target"],
+    },
   },
   {
     name: "goBack",
@@ -138,6 +170,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "download",
+    description: "Click a download control and wait for a file download to complete.",
+    inputSchema: { type: "object", properties: locatorProp, required: ["locator"] },
+  },
+  {
     name: "handleDialog",
     description:
       "Arms the browser's next native dialog (alert/confirm/prompt) to auto-accept or auto-dismiss. Call this BEFORE the action you expect to trigger the dialog.",
@@ -196,14 +233,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "verifyExpectation",
     description:
-      "Check one user expectation against a concrete signal caused by the current flow. The expectation index refers to the numbered expectation in the system prompt. Only use this after the current flow has performed the behavior described by the expectation; a read-only page or matching heading from an existing record does not prove that a create, submit, update, complete, or confirm operation happened. Translate the natural-language requirement into one observable condition: a locator is visible/hidden, a locator contains exact text, or the URL contains/equals a value. Use unknown only when the current flow reached the relevant behavior but no reliable signal can be identified; do not claim a result in plain text.",
+      "Check one user expectation against a concrete signal caused by the current flow. The expectation index refers to the numbered expectation in the system prompt. Only use this after the current flow has performed the behavior described by the expectation; a read-only page or matching heading from an existing record does not prove that a create, submit, update, complete, or confirm operation happened. Translate the natural-language requirement into one observable condition: a locator is visible/hidden, contains exact text, has an exact input value, is checked/unchecked, is enabled/disabled, has an exact count, or the URL contains/equals a value. Use unknown only when the current flow reached the relevant behavior but no reliable signal can be identified; do not claim a result in plain text.",
     inputSchema: {
       type: "object",
       properties: {
         expectationIndex: { type: "number", description: "1-based expectation number from the system prompt." },
-        assertion: { type: "string", enum: ["visible", "hidden", "containsText", "urlContains", "urlEquals", "unknown"] },
+        assertion: { type: "string", enum: ["visible", "hidden", "containsText", "urlContains", "urlEquals", "value", "checked", "unchecked", "disabled", "enabled", "count", "unknown"] },
         locator: { ...locatorProp.locator },
-        value: { type: "string", description: "Expected text or URL value; required for containsText, urlContains, and urlEquals." },
+        value: { type: "string", description: "Expected text, URL, or input value; required for containsText, urlContains, urlEquals, and value." },
+        expectedCount: { type: "number", description: "Expected locator count; required for count." },
       },
       required: ["expectationIndex", "assertion"],
     },
@@ -242,10 +280,11 @@ async function verifyExpectation(
   assertion: ExpectationAssertion,
   locatorInput: string | undefined,
   value: string | undefined,
+  expectedCount: number | undefined,
 ): Promise<ToolCallResult> {
   let status: ExpectationObservation["status"] = "unknown";
   let detail = "No reliable observable signal was supplied.";
-  const locator = locatorInput ? page.locator(locatorInput).first() : undefined;
+  const locator = locatorInput ? resolveLocator(page, locatorInput).first() : undefined;
 
   try {
     if (assertion === "visible" || assertion === "hidden") {
@@ -275,6 +314,44 @@ async function verifyExpectation(
         status = passed ? "met" : "violated";
         detail = passed ? `Current URL satisfies ${assertion}.` : `Current URL does not satisfy ${assertion}.`;
       }
+    } else if (assertion === "value") {
+      if (!locatorInput || value === undefined) {
+        detail = "The value check needs both a locator and a value.";
+      } else {
+        const actual = await locator!.inputValue();
+        const passed = actual === value;
+        status = passed ? "met" : "violated";
+        detail = passed ? `Locator ${locatorInput} has the expected value.` : `Locator ${locatorInput} does not have the expected value.`;
+      }
+    } else if (assertion === "checked" || assertion === "unchecked") {
+      if (!locatorInput) {
+        detail = `The ${assertion} check needs a locator.`;
+      } else {
+        const checked = await locator!.isChecked();
+        const passed = assertion === "checked" ? checked : !checked;
+        status = passed ? "met" : "violated";
+        detail = passed ? `Locator ${locatorInput} is ${assertion}.` : `Locator ${locatorInput} is not ${assertion}.`;
+      }
+    } else if (assertion === "disabled" || assertion === "enabled") {
+      if (!locatorInput) {
+        detail = `The ${assertion} check needs a locator.`;
+      } else {
+        const enabled = await locator!.isEnabled();
+        const passed = assertion === "enabled" ? enabled : !enabled;
+        status = passed ? "met" : "violated";
+        detail = passed ? `Locator ${locatorInput} is ${assertion}.` : `Locator ${locatorInput} is not ${assertion}.`;
+      }
+    } else if (assertion === "count") {
+      if (expectedCount === undefined || !Number.isSafeInteger(expectedCount) || expectedCount < 0) {
+        detail = "The count check needs a non-negative integer expectedCount.";
+      } else if (!locatorInput) {
+        detail = "The count check needs a locator.";
+      } else {
+        const actual = await resolveLocator(page, locatorInput).count();
+        const passed = actual === expectedCount;
+        status = passed ? "met" : "violated";
+        detail = passed ? `Locator count is ${expectedCount}.` : `Locator count is ${actual}, expected ${expectedCount}.`;
+      }
     }
   } catch (error) {
     status = "unknown";
@@ -284,7 +361,7 @@ async function verifyExpectation(
   const result = await toStepResult(page);
   return {
     ...result,
-    expectation: { expectationIndex, status, assertion, locator: locatorInput, value, detail },
+    expectation: { expectationIndex, status, assertion, locator: locatorInput, value, expectedCount, detail },
   };
 }
 
@@ -294,11 +371,13 @@ export async function executeToolCall(page: Page, call: ToolCall): Promise<ToolC
     case "navigate":
       return actions.navigate(page, input.url as string);
     case "click":
-      return actions.click(page, input.locator as string);
+      return actions.click(page, input.locator as string, input.button as actions.ClickButton | undefined, input.modifiers as actions.ClickModifier[] | undefined);
+    case "doubleClick":
+      return actions.doubleClick(page, input.locator as string, input.button as actions.ClickButton | undefined, input.modifiers as actions.ClickModifier[] | undefined);
     case "fill":
       return actions.fill(page, input.locator as string, input.value as string);
     case "select":
-      return actions.select(page, input.locator as string, input.value as string);
+      return actions.select(page, input.locator as string, input.value as string | string[]);
     case "pressKey":
       return actions.pressKey(page, input.locator as string, input.key as string);
     case "check":
@@ -307,6 +386,8 @@ export async function executeToolCall(page: Page, call: ToolCall): Promise<ToolC
       return actions.uncheck(page, input.locator as string);
     case "hover":
       return actions.hover(page, input.locator as string);
+    case "dragAndDrop":
+      return actions.dragAndDrop(page, input.source as string, input.target as string);
     case "goBack":
       return actions.goBack(page);
     case "reload":
@@ -327,6 +408,8 @@ export async function executeToolCall(page: Page, call: ToolCall): Promise<ToolC
       return actions.setViewportSize(page, input.width as number, input.height as number);
     case "uploadFile":
       return actions.uploadFile(page, input.locator as string, input.filePaths as string[]);
+    case "download":
+      return actions.download(page, input.locator as string);
     case "handleDialog":
       actions.handleDialog(page, input.behavior as "accept" | "dismiss");
       return toStepResult(page);
@@ -347,6 +430,7 @@ export async function executeToolCall(page: Page, call: ToolCall): Promise<ToolC
         input.assertion as ExpectationAssertion,
         input.locator as string | undefined,
         input.value as string | undefined,
+        input.expectedCount as number | undefined,
       );
     default:
       throw new Error(`Unknown tool: ${call.name}`);

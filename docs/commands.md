@@ -32,6 +32,12 @@ If the discovery used login, generation needs `--storage-state` or fresh `--emai
 
 `--scope` focuses exploration on an area or objective. `--expect` adds one or more user-visible conditions within that scope and requires `--scope`. See [Personas and exploration](personas.md) and [Configuration](configuration.md) for details.
 
+## Browser actions
+
+The model can combine these actions into one flow. `click`, `doubleClick`, `dragAndDrop`, `fill`, `select`, `pressKey`, `check`, `uncheck`, `hover`, `scroll`, `waitFor`, `uploadFile`, and `download` cover direct interaction. `navigate`, `goBack`, `goForward`, `reload`, `hardReload`, `setViewportSize`, `openInNewTab`, `reopenBrowser`, and `clearCookie` cover navigation and browser state. `handleDialog`, `simulateFailure`, `simulateLatency`, and `burst` cover controlled browser or network conditions. `verifyExpectation` records an explicit assertion and `flowComplete` closes a discovered journey.
+
+Locators use Appwalk syntax such as `role=button[name="Submit"]`, `text="Continue"`, or a raw CSS selector. For iframe content, use `frame=<iframe CSS selector> >> <inner locator>`.
+
 ## Shared options
 
 Requirements below are evaluated after command-line values and the explicitly passed YAML config are merged. A value can therefore be supplied in either place, and a CLI value overrides the config value. `generate` reads an existing discovery bundle and does not need a provider or model.

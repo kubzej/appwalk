@@ -118,7 +118,8 @@ export async function replay(
         actual.status === expected.status &&
         actual.assertion === expected.assertion &&
         actual.locator === expected.locator &&
-        actual.value === expected.value,
+        actual.value === expected.value &&
+        actual.expectedCount === expected.expectedCount,
     );
   }) && replayedExpectations.length === expectedExpectations.length;
   const verificationPassed = verifyFlow(mode, {

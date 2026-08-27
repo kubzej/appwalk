@@ -268,16 +268,35 @@ export async function installFixtures(context: BrowserContext, fixtures: Respons
 
 function actionToStatement(name: string, input: Record<string, unknown>, fixtureScenario?: string): string | null {
   const locatorExpr = () => toLocatorExpression(input.locator as string);
+  const sourceLocatorExpr = () => toLocatorExpression(input.source as string);
+  const targetLocatorExpr = () => toLocatorExpression(input.target as string);
+  const clickOptionsStatement = (): string => {
+    const options: string[] = [];
+    if (input.button === "left" || input.button === "right" || input.button === "middle") {
+      options.push(`button: '${input.button}'`);
+    }
+    if (Array.isArray(input.modifiers)) {
+      const modifiers = input.modifiers.filter((modifier): modifier is string =>
+        typeof modifier === "string" && ["Alt", "Control", "Meta", "Shift"].includes(modifier),
+      );
+      if (modifiers.length > 0) options.push(`modifiers: ${JSON.stringify(modifiers)}`);
+    }
+    return options.length > 0 ? `{ ${options.join(", ")} }` : "";
+  };
 
   switch (name) {
     case "navigate":
       return `await page.goto('${escapeJsString(input.url as string)}');`;
     case "click":
-      return `await ${locatorExpr()}.click();`;
+      return `await ${locatorExpr()}.click(${clickOptionsStatement()});`;
+    case "doubleClick":
+      return `await ${locatorExpr()}.dblclick(${clickOptionsStatement()});`;
     case "fill":
       return `await ${locatorExpr()}.fill('${escapeJsString(input.value as string)}');`;
     case "select":
-      return `await ${locatorExpr()}.selectOption('${escapeJsString(input.value as string)}');`;
+      return `await ${locatorExpr()}.selectOption(${Array.isArray(input.value)
+        ? `[${input.value.map((value) => `'${escapeJsString(String(value))}'`).join(", ")}]`
+        : `'${escapeJsString(input.value as string)}'`});`;
     case "pressKey":
       return `await ${locatorExpr()}.press('${escapeJsString(input.key as string)}');`;
     case "check":
@@ -286,6 +305,8 @@ function actionToStatement(name: string, input: Record<string, unknown>, fixture
       return `await ${locatorExpr()}.uncheck();`;
     case "hover":
       return `await ${locatorExpr()}.hover();`;
+    case "dragAndDrop":
+      return `await ${sourceLocatorExpr()}.dragTo(${targetLocatorExpr()});`;
     case "goBack":
       return `await page.goBack();`;
     case "goForward":
@@ -319,6 +340,8 @@ function actionToStatement(name: string, input: Record<string, unknown>, fixture
       return `await ${locatorExpr()}.first().waitFor({ state: 'visible' });`;
     case "uploadFile":
       return `await ${locatorExpr()}.setInputFiles(${JSON.stringify(input.filePaths)});`;
+    case "download":
+      return `{ const downloadPromise = page.waitForEvent('download'); await ${locatorExpr()}.click(); const download = await downloadPromise; await download.path(); }`;
     case "handleDialog":
       return `page.once('dialog', (dialog) => dialog.${input.behavior as string}());`;
     case "burst": {
@@ -394,6 +417,22 @@ function expectationToStatement(entry: EvidenceEntry): string | null {
     case "urlEquals":
       return observation.value !== undefined
         ? `await expect(page).toHaveURL('${escapeJsString(observation.value)}');`
+        : null;
+    case "value":
+      return locator && observation.value !== undefined
+        ? `await expect(${locator}).toHaveValue('${escapeJsString(observation.value)}');`
+        : null;
+    case "checked":
+      return locator ? `await expect(${locator}).toBeChecked();` : null;
+    case "unchecked":
+      return locator ? `await expect(${locator}).not.toBeChecked();` : null;
+    case "disabled":
+      return locator ? `await expect(${locator}).toBeDisabled();` : null;
+    case "enabled":
+      return locator ? `await expect(${locator}).toBeEnabled();` : null;
+    case "count":
+      return locator && observation.expectedCount !== undefined
+        ? `await expect(${locator}).toHaveCount(${observation.expectedCount});`
         : null;
     default:
       return null;

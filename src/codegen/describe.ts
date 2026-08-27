@@ -14,6 +14,8 @@ function describeAction(name: string, input: Record<string, unknown>): string {
       return `Navigated to \`${input.url}\``;
     case "click":
       return `Clicked \`${input.locator}\``;
+    case "doubleClick":
+      return `Double-clicked \`${input.locator}\``;
     case "fill":
       return `Filled \`${input.locator}\` with "${input.value}"`;
     case "select":
@@ -26,12 +28,16 @@ function describeAction(name: string, input: Record<string, unknown>): string {
       return `Unchecked \`${input.locator}\``;
     case "hover":
       return `Hovered over \`${input.locator}\``;
+    case "dragAndDrop":
+      return `Dragged \`${input.source}\` to \`${input.target}\``;
     case "goBack":
       return "Navigated back";
     case "scroll":
       return input.locator ? `Scrolled \`${input.locator}\` into view` : "Scrolled to the bottom of the page";
     case "uploadFile":
       return `Uploaded file(s) to \`${input.locator}\``;
+    case "download":
+      return `Downloaded a file from \`${input.locator}\``;
     case "handleDialog":
       return `Armed the next dialog to ${input.behavior as string}`;
     case "waitFor":

@@ -24,7 +24,7 @@ flowchart TD
 | `src/config.ts` | Validate YAML and the flattened CLI/config result. |
 | `src/agent/loop.ts` | Maintain one provider conversation and one browser exploration session per coverage run. |
 | `src/agent/personas.ts` | Define built-in persona goals, intent, verification mode, and core actions. |
-| `src/browser/*` | Execute browser actions, login, snapshots, timeout setup, and browser lifecycle operations. |
+| `src/browser/*` | Execute browser actions, login, page observations, timeout setup, and browser lifecycle operations. |
 | `src/evidence/*` | Record per-step browser evidence and read append-only JSONL safely. |
 | `src/verify/replay.ts` | Re-execute successful actions without an LLM and compare the expected result. |
 | `src/response/variants.ts` | Capture eligible JSON fixtures, parse conservative patches, install fixture queues, and validate derived scenarios. |
@@ -52,6 +52,12 @@ continue({ toolCallId, toolName, result, screenshot? })
 ```
 
 The loop executes one tool call at a time. Provider adapters normalize the response to either a single `tool_call` or plain `text`, and log when a provider returns multiple tool calls. Plain text ends exploration; it does not create a synthetic flow.
+
+## Page observation
+
+Each browser result contains an accessibility tree from Playwright's `ariaSnapshot()` plus a bounded DOM-lite inventory of visible interactive elements and embedded frames. The accessibility tree is the primary semantic signal. The inventory supplies stable locator hints for applications that use non-semantic elements such as clickable `div`s; it deliberately excludes the full HTML document to keep provider context useful and bounded.
+
+Locator selection follows this order: `data-testid`, stable `id` or app-owned attribute, role and accessible name, stable visible text, then a CSS structure selector. Screenshots remain an optional visual supplement rather than the primary page representation.
 
 ## Testing strategy
 

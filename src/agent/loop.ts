@@ -20,17 +20,20 @@ function actionLabel(name: string): string {
   const labels: Record<string, string> = {
     navigate: "Navigate",
     click: "Click",
+    doubleClick: "Double click",
     fill: "Fill field",
     select: "Select option",
     pressKey: "Press key",
     check: "Check option",
     uncheck: "Uncheck option",
     hover: "Hover element",
+    dragAndDrop: "Drag and drop",
     waitFor: "Wait for element",
     reload: "Reload page",
     goBack: "Go back",
     goForward: "Go forward",
     setViewportSize: "Set viewport",
+    download: "Download file",
     verifyExpectation: "Verify expectation",
   };
   return labels[name] ?? name;
@@ -47,6 +50,7 @@ function actionDescription(name: string, input: Record<string, unknown>): string
   const label = actionLabel(name);
   if (name === "setViewportSize") return `${label} to ${input.width}x${input.height}`;
   if (name === "navigate") return `${label} to target page`;
+  if (name === "dragAndDrop") return `${label} ${input.source} -> ${input.target}`;
   if (typeof input.locator === "string") return `${label} ${input.locator}`;
   return label;
 }
@@ -99,8 +103,11 @@ You see the page as an accessibility tree snapshot after every action. Choose ex
 Locator syntax — this is a Playwright locator string, not a plain CSS selector:
 - To target by accessibility role and name, you MUST prefix with "role=", e.g. role=button[name="Submit"] or role=textbox[name="Email"]. A bare "textbox[name=...]" or "button[name=...]" without the "role=" prefix is invalid — "textbox" and "button" are not HTML tags, so it will never match anything and will just time out.
 - To target by visible text, use text="exact text" or text=/partial/i.
+- To target an element inside an iframe, prefix its inner locator with the frame CSS selector: frame=iframe[title="Payment"] >> role=button[name="Pay"].
 - Prefer the actual interactive element (the button or link) over a decorative child inside it (an icon or image) — clicking an <img> inside a <button> can fail because the button intercepts the click. If an element has a role in the snapshot (e.g. "button \"Menu\""), target it with role=button[name="Menu"], not the icon inside it.
 - If a locator resolves to more than one element (ambiguous), make it more specific — add text, narrow the role, or use >> nth=N — rather than repeating the same locator.
+- Locator priority: prefer a stable data-testid, then a stable id or app-owned attribute, then role plus accessible name, then stable visible text, then a CSS structure selector. Use CSS when the application is built from non-semantic elements such as clickable divs, but avoid generated class names and layout-dependent selectors when a stable attribute exists.
+- The interactive-elements section is a compact DOM supplement, not a second accessibility tree. Use its locator hints for div-only controls, and use the screenshot when the element is visible but has no reliable semantic or stable DOM signal.
 
 When something fails twice in a row, don't just retry the same idea with small tweaks — change strategy. Try a different path through the page (scroll for more content, navigate directly to a likely URL, go back and take a different link) instead of only adjusting the locator syntax.${formCorrectionGuidance}${meaningfulDefinition}
 

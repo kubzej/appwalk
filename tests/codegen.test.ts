@@ -80,3 +80,23 @@ test("generated response fixtures live in shared artifacts and variants use patc
   assert.match(variantArtifact.content, /"base": "flow-001\.base\.json"/);
   assert.match(variantArtifact.content, /"path": "\$\.status"/);
 });
+
+test("generates iframe locators and expanded actions as Playwright APIs", () => {
+  const spec = generateSpec([
+    {
+      name: "Payment interaction",
+      entries: [
+        { index: 0, flowIndex: 0, timestamp: "2026-01-01T00:00:00.000Z", toolCall: { name: "doubleClick", input: { locator: "frame=iframe[title=\"Payment\"] >> role=button[name=\"Pay\"]" } }, network: [], console: [] },
+        { index: 1, flowIndex: 0, timestamp: "2026-01-01T00:00:00.000Z", toolCall: { name: "dragAndDrop", input: { source: "#source", target: "#drop" } }, network: [], console: [] },
+        { index: 2, flowIndex: 0, timestamp: "2026-01-01T00:00:00.000Z", toolCall: { name: "download", input: { locator: "#download" } }, network: [], console: [] },
+        { index: 3, flowIndex: 0, timestamp: "2026-01-01T00:00:00.000Z", toolCall: { name: "select", input: { locator: "#tags", value: ["one", "three"] } }, network: [], console: [] },
+      ],
+    },
+  ], { url: "https://example.test" });
+
+  assert.match(spec, /page\.frameLocator\('iframe\[title="Payment"\]'\)\.getByRole\('button'/);
+  assert.match(spec, /\.dblclick\(\);/);
+  assert.match(spec, /page\.locator\('#source'\)\.dragTo\(page\.locator\('#drop'\)\);/);
+  assert.match(spec, /page\.waitForEvent\('download'\)/);
+  assert.match(spec, /page\.locator\('#tags'\)\.selectOption\(\['one', 'three'\]\);/);
+});

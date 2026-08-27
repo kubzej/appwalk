@@ -1,6 +1,18 @@
 export type ExpectationStatus = "met" | "violated" | "unknown";
 
-export type ExpectationAssertion = "visible" | "hidden" | "containsText" | "urlContains" | "urlEquals" | "unknown";
+export type ExpectationAssertion =
+  | "visible"
+  | "hidden"
+  | "containsText"
+  | "urlContains"
+  | "urlEquals"
+  | "value"
+  | "checked"
+  | "unchecked"
+  | "disabled"
+  | "enabled"
+  | "count"
+  | "unknown";
 
 export interface ExpectationObservation {
   expectationIndex: number;
@@ -8,6 +20,7 @@ export interface ExpectationObservation {
   assertion: ExpectationAssertion;
   locator?: string;
   value?: string;
+  expectedCount?: number;
   detail: string;
 }
 
