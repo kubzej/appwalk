@@ -449,7 +449,7 @@ function renderFlowRuntimeIssues(errors: ReportRuntimeError[]): string {
   const more = errors.length > 8
     ? `<p class="r-muted">${errors.length - 8} more application error${errors.length - 8 === 1 ? '' : 's'} recorded for this flow.</p>`
     : '';
-  return callout('warning', `<p class="r-label">Application error observed</p>${rows}${more}`);
+  return callout('warning', `<p class="r-callout-title">APPLICATION ERROR OBSERVED</p>${rows}${more}`);
 }
 
 function renderReplayFailure(failure: ReportFlow['replayFailure']): string {
@@ -461,7 +461,7 @@ function renderReplayFailure(failure: ReportFlow['replayFailure']): string {
   const technicalError = diagnostic
     ? `<pre class="r-code-block"><code>${escapeHtml(diagnostic)}</code></pre>`
     : '';
-  return callout('warning', `<p class="r-failure-title">REPLAY NOT CONFIRMED</p><p class="r-failure-description">${escapeHtml(failure.reason)}</p><p class="r-failure-line"><strong>Last URL:</strong> <code>${escapeHtml(failure.lastUrl)}</code></p>${step}${technicalError}<details><summary>Last captured page state</summary><pre class="r-code-block"><code>${escapeHtml(failure.lastSnapshot || '(empty)')}</code></pre></details>`);
+  return callout('warning', `<p class="r-callout-title">REPLAY NOT CONFIRMED</p><p class="r-failure-description">${escapeHtml(failure.reason)}</p><p class="r-failure-line"><strong>Last URL:</strong> <code>${escapeHtml(failure.lastUrl)}</code></p>${step}${technicalError}<details><summary>Last captured page state</summary><pre class="r-code-block"><code>${escapeHtml(failure.lastSnapshot || '(empty)')}</code></pre></details>`);
 }
 
 function renderSafetyCard(safety: ReportSafety): string {
@@ -672,7 +672,7 @@ export function renderHtmlReport(report: ExecutionReport): string {
     '.r-flow-check { display: flex; flex-direction: column; gap: 2px; }',
     '.r-flow-check .r-label, .r-flow-check-value { margin: 0; }',
     '.r-flow-check-value { color: #6b7680; font-weight: 700; }',
-    '.r-failure-title { color: #6b7680; font-size: 16px; font-weight: 700; letter-spacing: .04em; }',
+    '.r-callout-title { color: #6b7680; font-size: 16px; font-weight: 700; letter-spacing: .04em; }',
     '.r-failure-description { margin-top: 8px; }',
     '.r-failure-line { overflow-wrap: anywhere; }',
     '.r-failure-line code { color: #33424c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }',

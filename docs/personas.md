@@ -65,7 +65,7 @@ Expectations are attached to a scope and can be repeated:
 --expect "The user can leave settings without losing the selected value"
 ```
 
-An expectation is not a standalone login or journey command. It is a condition Appwalk checks while replaying the flow discovered inside the scope. The report records whether each expectation was `met`, `violated`, or `unknown`, and where it was observed.
+An expectation is not a standalone login or journey command. It is a condition Appwalk checks after the current flow has actually performed the behavior described by the expectation. A read-only page or a matching heading from an existing record does not prove that a create, submit, update, complete, or confirm operation happened. The report records whether each expectation was `met`, `violated`, or `unknown`, and where it was observed.
 
 ## Response scenarios
 

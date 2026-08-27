@@ -51,7 +51,7 @@ function actionDescription(name: string, input: Record<string, unknown>): string
   return label;
 }
 
-function buildSystemPrompt(
+export function buildSystemPrompt(
   maxSteps: number,
   hasScreenshots: boolean,
   persona?: Persona,
@@ -85,7 +85,7 @@ function buildSystemPrompt(
     ? `\n\nThe user asked you to explore this scope: "${scope}". Treat it as a soft exploration mission: the current target URL is only your starting point, so navigate through the application to find the relevant area or journey even when its exact URL is unknown. Prefer meaningful flows inside this scope and avoid unrelated areas unless they are necessary to reach or understand it. Do not assume the requested area exists; if you cannot find it, do not invent a result and end with a clear summary of what was unavailable.`
     : "";
   const expectationGuidance = expectations.length
-    ? `\n\nThe user supplied these expectations for this scope. They are acceptance criteria, not instructions to assume success:\n${expectations.map((expectation, index) => `${index + 1}. ${expectation}`).join("\n")}\nAfter you reach a relevant state, physically check every expectation at least once with the \`verifyExpectation\` tool before completing the relevant flow. Translate each requirement into the strongest concrete signal the current page provides. You may check an expectation again in another relevant flow if that adds evidence. Use \`unknown\` only when the application offers no reliable observable signal. Do not claim expectation results only in your summary.`
+    ? `\n\nThe user supplied these expectations for this scope. They are acceptance criteria, not instructions to assume success:\n${expectations.map((expectation, index) => `${index + 1}. ${expectation}`).join("\n")}\nAfter the current flow has actually performed the behavior described by an expectation, physically check it with the \`verifyExpectation\` tool before completing that flow. The evidence must be caused by the current flow itself, not merely found on a page reached by navigation. In particular, an expectation about creating, submitting, updating, completing, or confirming something requires the current flow to perform that operation first; a read-only flow that opens an existing record or displays a matching heading is not evidence of that operation. Do not verify an expectation just because the page contains similar text. You may check an expectation again only when another flow independently performs the same behavior. Use \`unknown\` only when the current flow reaches the relevant behavior but the application offers no reliable observable signal. Do not claim expectation results only in your summary.`
     : "";
 
   return `${intro}${scopeGuidance}${expectationGuidance}

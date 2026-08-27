@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { chromium } from "playwright";
-import { runAgentLoop } from "../src/agent/loop.js";
+import { buildSystemPrompt, runAgentLoop } from "../src/agent/loop.js";
 import type { LlmProvider, ProviderTurn, ToolDefinition, ToolResult } from "../src/providers/provider.js";
 
 class TextOnlyProvider implements LlmProvider {
@@ -28,4 +28,11 @@ test("stops on plain provider text without inventing a flow", async () => {
   } finally {
     await browser.close();
   }
+});
+
+test("grounds expectations in behavior performed by the current flow", () => {
+  const prompt = buildSystemPrompt(20, false, undefined, "Checkout", ["A completed order reaches confirmation"]);
+  assert.match(prompt, /current flow itself/);
+  assert.match(prompt, /read-only flow that opens an existing record/);
+  assert.match(prompt, /Do not verify an expectation just because the page contains similar text/);
 });

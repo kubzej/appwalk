@@ -196,7 +196,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "verifyExpectation",
     description:
-      "Check one user expectation against a concrete signal on the current page. The expectation index refers to the numbered expectation in the system prompt. Translate the natural-language requirement into one observable condition: a locator is visible/hidden, a locator contains exact text, or the URL contains/equals a value. Use unknown only when no reliable signal can be identified; do not claim a result in plain text.",
+      "Check one user expectation against a concrete signal caused by the current flow. The expectation index refers to the numbered expectation in the system prompt. Only use this after the current flow has performed the behavior described by the expectation; a read-only page or matching heading from an existing record does not prove that a create, submit, update, complete, or confirm operation happened. Translate the natural-language requirement into one observable condition: a locator is visible/hidden, a locator contains exact text, or the URL contains/equals a value. Use unknown only when the current flow reached the relevant behavior but no reliable signal can be identified; do not claim a result in plain text.",
     inputSchema: {
       type: "object",
       properties: {

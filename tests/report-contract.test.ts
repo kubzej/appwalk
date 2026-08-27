@@ -117,7 +117,7 @@ test("runtime issues do not change a confirmed flow into a potential bug", () =>
   });
   const html = renderHtmlReport(buildExecutionReport(input));
   assert.match(html, /class="r-flow-status r-tone-good">Confirmed<\/p>/);
-  assert.match(html, /Application error observed/);
+  assert.match(html, /class="r-callout-title">APPLICATION ERROR OBSERVED<\/p>/);
 });
 
 test("renders scope without a redundant section title", () => {
@@ -222,7 +222,7 @@ test("HTML report explains replay failures and flow-level runtime signals", () =
   const html = renderHtmlReport(buildExecutionReport(input));
   assert.match(html, /Needs review/);
   assert.match(html, /class="r-flow-status r-tone-warning">Needs review<\/p>/);
-  assert.match(html, /class="r-flow-nav-status r-tone-warning">Needs review<\/span>/);
+  assert.match(html, /class="r-badge r-badge-warning">Needs review<\/span>/);
   assert.match(html, /class="r-flow-checks"/);
   assert.match(html, /Discovery<\/p><p class="r-flow-check-value r-tone-good">Verified/);
   assert.match(html, /Replay<\/p><p class="r-flow-check-value">Not confirmed/);
@@ -230,7 +230,7 @@ test("HTML report explains replay failures and flow-level runtime signals", () =
   assert.match(html, /<strong>Step:<\/strong> <code>3<\/code>/);
   assert.match(html, /class="r-code-block"><code>locator\.click: Timeout 5000ms exceeded<\/code>/);
   assert.match(html, /HTTP 503 response/);
-  assert.match(html, /Application error observed/);
+  assert.match(html, /class="r-callout-title">APPLICATION ERROR OBSERVED<\/p>/);
   assert.match(html, /<strong>Phase:<\/strong> Replay/);
   assert.match(html, /<strong>Request:<\/strong> <code>GET https:\/\/example\.test\/orders<\/code>/);
   assert.match(html, /not linked to a recorded action/);
