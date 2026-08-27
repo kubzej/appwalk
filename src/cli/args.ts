@@ -212,6 +212,7 @@ export function applyConfig(args: CliArgs): CliArgs {
   if (!args.cliSpecified.has("output") && config.output) args.output = config.output;
   if (!args.cliSpecified.has("provider") && config.provider) args.provider = config.provider;
   if (!args.cliSpecified.has("model") && config.model) args.model = config.model;
+  if (!args.cliSpecified.has("personaName") && config.persona) args.personaName = config.persona;
   if (!args.cliSpecified.has("maxSteps") && config.maxSteps !== undefined) args.maxSteps = config.maxSteps;
   if (!args.cliSpecified.has("screenshots") && config.screenshots !== undefined) args.screenshots = config.screenshots;
   if (!args.cliSpecified.has("email") && config.auth?.email) args.email = config.auth.email;

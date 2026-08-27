@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import test from "node:test";
-import { chromium } from "playwright";
+import { chromium, type Page, type Response } from "playwright";
 import { EvidenceRecorder } from "../src/evidence/recorder.js";
 
 test("records browser runtime errors without exposing sensitive values", async () => {
@@ -61,4 +62,36 @@ test("marks a related fetch console error as safety-related without matching an 
   } finally {
     await browser.close();
   }
+});
+
+test("does not block cleanup on a JSON response body that never settles", async () => {
+  const page = new EventEmitter() as unknown as Page;
+  const recorder = new EvidenceRecorder(page, undefined, { bodyReadTimeoutMs: 10 });
+  const response = {
+    request: () => ({ method: () => "GET" }),
+    url: () => "https://example.test/api/stream",
+    status: () => 200,
+    headers: () => ({ "content-type": "application/json" }),
+    json: () => new Promise<unknown>(() => undefined),
+  } as unknown as Response;
+
+  (page as unknown as { emit: (event: string, value: unknown) => boolean }).emit("response", response);
+  await recorder.waitForPendingBodies();
+
+  assert.equal(recorder.network[0]?.body, undefined);
+});
+
+test("classifies navigation cancellation as lifecycle noise", () => {
+  const page = new EventEmitter() as unknown as Page;
+  const recorder = new EvidenceRecorder(page);
+  const request = {
+    method: () => "GET",
+    url: () => "https://example.test/catalog",
+    failure: () => ({ errorText: "net::ERR_ABORTED" }),
+  };
+
+  (page as unknown as { emit: (event: string, value: unknown) => boolean }).emit("requestfailed", request);
+
+  assert.equal(recorder.runtimeErrors[0]?.kind, "request_failed");
+  assert.equal(recorder.runtimeErrors[0]?.lifecycle, true);
 });

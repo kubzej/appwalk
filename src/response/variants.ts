@@ -34,6 +34,17 @@ export interface ResponseExpectation {
   value?: string;
 }
 
+export interface ResponseFixtureSelector {
+  method?: string;
+  url: string;
+  occurrence?: number;
+}
+
+export interface ResponseFixtureInstallOptions {
+  /** Called after a captured fixture has been selected and its response is about to be fulfilled. */
+  onFixtureApplied?: (fixture: ResponseFixture, requestUrl: string) => void;
+}
+
 export interface ResponseVariantParseResult {
   variants: ResponseVariant[];
   candidates: number;
@@ -226,6 +237,15 @@ export function applyResponseVariant(fixtures: ResponseFixture[], variant: Respo
     if (!setExistingJsonPath(target.body, patch.path, patch.value)) return null;
   }
   return next;
+}
+
+export function responseFixtureMatchesSelector(
+  fixture: ResponseFixture,
+  selector: ResponseFixtureSelector,
+): boolean {
+  return fixture.url === selector.url &&
+    (!selector.method || fixture.method === selector.method) &&
+    (selector.occurrence === undefined || fixture.occurrence === selector.occurrence);
 }
 
 function extractJson(text: string): unknown {
@@ -421,11 +441,15 @@ Rules:
 - Always include the exact response method from the input as sourceMethod, because one URL can serve multiple methods.
 - Always include sourceOccurrence from the input when the same method and URL appear more than once, so the patch targets the intended response in the captured sequence.
 - Do not repeat the original response or produce cosmetic duplicates.
-- Include one concrete expectation that should be observable at some point during the same flow, using only visible/hidden/containsText/urlContains/urlEquals. The replay checks it after every action, so it may describe an intermediate state; do not guess a signal unrelated to the response.
+- Include one concrete expectation that should be observable after the selected source response is applied during the same flow, using only visible/hidden/containsText/urlContains/urlEquals. Do not guess a signal unrelated to the response.
 - If no meaningful variant is possible, return {"variants":[],"reason":"briefly explain why no reliable observable scenario can be derived"}.`;
 }
 
-export async function installResponseFixtures(page: Page, fixtures: ResponseFixture[]): Promise<void> {
+export async function installResponseFixtures(
+  page: Page,
+  fixtures: ResponseFixture[],
+  options: ResponseFixtureInstallOptions = {},
+): Promise<void> {
   type FixtureQueue = { items: ResponseFixture[]; next: number };
   const patternGroups = new Map<string, ResponseFixture[]>();
   for (const fixture of fixtures) {
@@ -464,6 +488,7 @@ export async function installResponseFixtures(page: Page, fixtures: ResponseFixt
         contentType: "application/json",
         body: JSON.stringify(fixture.body),
       });
+      options.onFixtureApplied?.(fixture, route.request().url());
     });
   }
 }

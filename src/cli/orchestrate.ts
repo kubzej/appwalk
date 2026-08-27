@@ -16,6 +16,7 @@ import {
   parseResponseVariantsDetailed,
   RESPONSE_VARIANT_MAX_OUTPUT_TOKENS,
   responseVariantPrompt,
+  responseFixtureMatchesSelector,
   type ResponseFixture,
   type ResponseVariantParseResult,
   type ResponseVariant,
@@ -29,7 +30,7 @@ import { OpenAIProvider } from "../providers/openai.js";
 import type { LlmProvider } from "../providers/provider.js";
 import type { SafetyConfig } from "../safety/guard.js";
 import { installDestructiveActionGuard } from "../safety/guard.js";
-import { logError } from "../logging/logger.js";
+import { logError, type Logger } from "../logging/logger.js";
 import type {
   ReportFlow,
   ReportResponseVariantAudit,
@@ -37,7 +38,7 @@ import type {
   ReportSafety,
   ReportStopReason,
 } from "../report/contract.js";
-import { extractActions, hasObservableReplayDifference, replay } from "../verify/replay.js";
+import { extractActions, hasObservableReplayDifference, replay, type ReplayResult } from "../verify/replay.js";
 import type { CliArgs } from "./args.js";
 import type { DiscoveryManifest, DiscoveryManifestFlow, DiscoveryManifestRun } from "./manifest.js";
 import { appLogger } from "./logger-state.js";
@@ -89,6 +90,35 @@ interface SafetyEvent {
   url: string;
 }
 
+const BROWSER_CLOSE_TIMEOUT_MS = 5_000;
+
+async function closeBrowserWithTimeout(browser: Browser | null | undefined, logger: Logger, phase: string): Promise<void> {
+  if (!browser || !browser.isConnected()) return;
+
+  logger.debug("browser.close_started", `Closing browser after ${phase}`, { phase });
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const closePromise = browser.close().then(
+    () => true,
+    (error: unknown) => {
+      logger.debug("browser.close_failed", "Browser close returned an error", { phase, error: logError(error) });
+      return true;
+    },
+  );
+  const closed = await Promise.race([
+    closePromise,
+    new Promise<boolean>((resolve) => {
+      timeoutId = setTimeout(() => resolve(false), BROWSER_CLOSE_TIMEOUT_MS);
+    }),
+  ]);
+  if (timeoutId !== undefined) clearTimeout(timeoutId);
+  if (!closed) {
+    logger.warn(`  Browser cleanup exceeded ${BROWSER_CLOSE_TIMEOUT_MS}ms; continuing finalization`);
+    logger.debug("browser.close_timeout", "Browser close did not finish before the cleanup deadline", { phase, timeoutMs: BROWSER_CLOSE_TIMEOUT_MS });
+  } else {
+    logger.debug("browser.close_completed", "Browser cleanup completed", { phase });
+  }
+}
+
 function emptySafety(): ReportSafety {
   return { blockedRequests: 0, explorationBlocked: 0, replayBlocked: 0, byMethod: {}, samples: [], safetyRelatedRuntimeErrors: 0 };
 }
@@ -128,7 +158,7 @@ function summarizeRuntimeErrors(
   const grouped = new Map<string, ReportRuntimeError>();
   for (const entry of entries) {
     const { error, phase, flowIndex } = entry;
-    const key = JSON.stringify([phase, flowIndex, error.kind, error.message, error.method, error.url, error.status, error.safetyRelated]);
+    const key = JSON.stringify([phase, flowIndex, error.kind, error.message, error.method, error.url, error.status, error.safetyRelated, error.lifecycle]);
     const existing = grouped.get(key);
     if (existing) {
       existing.occurrences += 1;
@@ -137,6 +167,23 @@ function summarizeRuntimeErrors(
     grouped.set(key, { ...error, phase, flowIndex, occurrences: 1 });
   }
   return [...grouped.values()];
+}
+
+function classifyReplayFailure(
+  result: ReplayResult,
+  runtimeErrors: RuntimeErrorEntry[],
+): NonNullable<ReportFlow["replayFailure"]>["cause"] {
+  const authenticationSnapshot = /(?:sign\s*in|log\s*in|username|password)/i.test(result.finalSnapshot);
+  const unauthorizedResponse = runtimeErrors.some((error) =>
+    error.status === 401 || error.status === 403 || /status(?: of)? (?:401|403)/i.test(error.message),
+  );
+  if (/\/login(?:[/?#]|$)/i.test(result.finalUrl) || authenticationSnapshot || unauthorizedResponse) return "authentication";
+  if (/loading|skeleton|spinner/i.test(result.finalSnapshot)) return "loading";
+  if (runtimeErrors.some((error) => !error.lifecycle && (error.kind === "http_error" || error.kind === "request_failed"))) return "request";
+  if (result.safetyBlocked > 0) return "safety";
+  if (result.failedAt) return "action";
+  if (!result.expectationsReproduced) return "expectation";
+  return "verification";
 }
 
 function loadSafetyConfig(path: string | undefined): SafetyConfig | undefined {
@@ -254,6 +301,21 @@ function derivedEvidenceEntries(
   expectationInput?: Record<string, unknown>,
 ): EvidenceEntry[] {
   const entries: EvidenceEntry[] = [];
+  if (expectationResult && expectationStepIndex === -1) {
+    entries.push({
+      index: entries.length,
+      flowIndex,
+      runId,
+      scenarioId,
+      origin: "derived",
+      timestamp: new Date().toISOString(),
+      toolCall: { name: "verifyExpectation", input: expectationInput ?? {} },
+      result: expectationResult,
+      network: [],
+      console: [],
+      runtimeErrors: [],
+    });
+  }
   actions.forEach((action, index) => {
     entries.push({
       index: entries.length,
@@ -303,12 +365,12 @@ function derivedEvidenceEntries(
 }
 
 async function exploreAndVerify(args: CliArgs, evidenceLog: EvidenceLog, runId: string, runName: string): Promise<ExplorationRun> {
-  appLogger.info("  Launching browser");
+  appLogger.phase("  Launching browser");
   const browser = await chromium.launch();
   try {
     return await exploreAndVerifyInBrowser(args, evidenceLog, runId, runName, browser);
   } finally {
-    await browser.close();
+    await closeBrowserWithTimeout(browser, appLogger.child({ runId }), "exploration owner");
   }
 }
 
@@ -360,7 +422,7 @@ async function exploreAndVerifyInBrowser(
   configurePageTimeouts(page);
   const runEntries: EvidenceEntry[] = [];
 
-  runLogger.info("  Navigating to application URL");
+  runLogger.phase("  Navigating to application URL");
   await navigateOrLogin(page, args, false, args.url, runLogger);
   // Authentication is setup, not discovered application behavior. Enable the destructive
   // request guard after login so a required login POST is not blocked by the default policy.
@@ -369,7 +431,7 @@ async function exploreAndVerifyInBrowser(
   const recorder = new EvidenceRecorder(page, runLogger);
   activeRecorder = recorder;
 
-  runLogger.info("  Exploring application");
+  runLogger.phase("  Exploring application");
   const discovery = await runAgentLoop(page, createProvider(provider, model, apiKey, runLogger), {
     maxSteps: args.maxSteps,
     recorder,
@@ -395,11 +457,13 @@ async function exploreAndVerifyInBrowser(
         evidenceLog.append(entry);
     },
   });
+  runLogger.debug("exploration.finalization_started", "Finalizing exploration evidence and browser session");
   await recorder.waitForPendingBodies();
-  await discovery.finalPage.context().browser()?.close();
+  await closeBrowserWithTimeout(discovery.finalPage.context().browser(), runLogger, "exploration");
+  runLogger.debug("exploration.finalization_completed", "Exploration cleanup completed");
   const explorationBlockedRequests = safetyEvents.filter((event) => event.phase === "exploration").length;
   if (explorationBlockedRequests > 0) {
-    runLogger.info(`  Safety: ${explorationBlockedRequests} destructive request${explorationBlockedRequests === 1 ? "" : "s"} blocked during exploration`);
+    runLogger.warn(`  Safety policy blocked ${explorationBlockedRequests} destructive request${explorationBlockedRequests === 1 ? "" : "s"} during exploration`);
   }
   runLogger.info(`  Exploration completed: ${discovery.flows.length} flow(s) found${discovery.exhausted ? "; action budget reached" : ""}`);
   runLogger.debug("exploration.completed", "Exploration completed", { flowsFound: discovery.flows.length, exhausted: discovery.exhausted });
@@ -417,7 +481,7 @@ async function exploreAndVerifyInBrowser(
   let runError: string | undefined;
 
   if (verifiedFlows.length > 0) {
-    runLogger.info(`  Verifying ${verifiedFlows.length} of ${discovery.flows.length} discovered flow(s) by replay in a clean session`);
+    runLogger.phase(`  Verifying ${verifiedFlows.length} of ${discovery.flows.length} discovered flow(s) by replay in a clean session`);
     let replayBrowser: Browser | undefined;
     try {
       replayBrowser = await chromium.launch();
@@ -470,7 +534,8 @@ async function exploreAndVerifyInBrowser(
                 ? "Replay was limited by the safety policy."
                 : !replayResult.expectationsReproduced
                   ? "The replay did not reproduce the recorded expectation signals."
-                  : "The replay did not reach the recorded verification state.",
+                : "The replay did not reach the recorded verification state.",
+            cause: classifyReplayFailure(replayResult, replayRecorder.runtimeErrors),
             step: replayResult.failedAt ? replayResult.failedAt.index + 1 : undefined,
             action: replayResult.failedAt?.action,
             error: replayResult.failedAt?.error,
@@ -520,7 +585,7 @@ async function exploreAndVerifyInBrowser(
           }
           continue;
         }
-        flowLogger.info(`    Flow ${index + 1} replay confirmed`);
+        flowLogger.success(`    Flow ${index + 1} replay confirmed`);
         replayConfirmedIds.push(index + 1);
         const baseFlow: ConfirmedFlow = {
           name: flow.finalText || "Flow " + (index + 1),
@@ -606,6 +671,24 @@ async function exploreAndVerifyInBrowser(
               variantStorageState ? { storageState: variantStorageState } : undefined,
             );
             configurePageTimeouts(variantPage);
+            let variantSourceMatched = false;
+            await installResponseFixtures(variantPage, variantFixtures, {
+              onFixtureApplied: (fixture, requestUrl) => {
+                if (responseFixtureMatchesSelector(fixture, {
+                  method: variant.sourceMethod,
+                  url: variant.sourceUrl,
+                  occurrence: variant.sourceOccurrence,
+                })) {
+                  variantSourceMatched = true;
+                  flowLogger.debug("response_variant.source_applied", "Variant source response was applied", {
+                    method: fixture.method,
+                    sourceUrl: fixture.url,
+                    occurrence: fixture.occurrence,
+                    requestUrl,
+                  });
+                }
+              },
+            });
             await navigateOrLogin(
               variantPage,
               args,
@@ -614,7 +697,6 @@ async function exploreAndVerifyInBrowser(
               flowLogger,
             );
             await installDestructiveActionGuard(variantPage, guardOptions);
-            await installResponseFixtures(variantPage, variantFixtures);
             const variantRecorder = new EvidenceRecorder(variantPage, flowLogger);
             activeRecorder = variantRecorder;
             const variantResult = await replay(
@@ -626,6 +708,7 @@ async function exploreAndVerifyInBrowser(
               variant.expectation,
               flowLogger.child({ scenarioId }),
               () => safetyEvents.filter((event) => event.phase === "replay").length,
+              { selector: { method: variant.sourceMethod, url: variant.sourceUrl, occurrence: variant.sourceOccurrence }, isMatched: () => variantSourceMatched },
             );
             runtimeErrorEntries.push(...variantRecorder.runtimeErrors.map((error) => ({ error, phase: "replay" as const, flowIndex: index + 1 })));
             const variantExpectationResult = variantResult.variantExpectationResult;
@@ -638,12 +721,16 @@ async function exploreAndVerifyInBrowser(
                 ? `Replay failed at step ${variantResult.failedAt.index}: ${variantResult.failedAt.error}`
                 : variantResult.safetyBlocked > 0
                   ? `Replay was limited by safety policy: ${variantResult.safetyBlocked} request${variantResult.safetyBlocked === 1 ? "" : "s"} blocked.`
+                : variantResult.variantSourceMatched === false
+                  ? "The source response was not observed during replay."
+                : variantResult.variantExpectationResult?.expectation?.status !== "met"
+                  ? "The derived expectation was not observed after the source response was applied."
                 : variantResult.expectationsReproduced ? "Replay did not satisfy the flow verification." : "Replay did not reproduce the original expectation signals." });
               flowLogger.verbose(`      Response scenario "${variant.name}": replay failed`);
               continue;
             }
             if (variantExpectationResult?.expectation?.status !== "met") {
-              responseVariantAudit.skipped.push({ name: variant.name, reason: "The derived expectation was not observed at any replay step." });
+              responseVariantAudit.skipped.push({ name: variant.name, reason: "The derived expectation was not observed after the source response was applied." });
               flowLogger.verbose(`      Response scenario "${variant.name}": expectation not observed`);
               continue;
             }
@@ -692,15 +779,15 @@ async function exploreAndVerifyInBrowser(
               flowLogger.debug("response_variant.failed", "Response scenario replay failed", { name: variant.name, error: logError(error) });
             }
           }
-          flowLogger.verbose(`    Flow ${index + 1}: response scenarios proposed=${responseVariantAudit.proposed}, confirmed=${responseVariantAudit.confirmed}, skipped=${responseVariantAudit.skipped.length}`);
+          flowLogger.verbose(`    Flow ${index + 1}: response scenarios accepted=${responseVariantAudit.proposed}, rejected=${responseVariantAudit.plannerRejected}, confirmed=${responseVariantAudit.confirmed}, skipped=${responseVariantAudit.skipped.length}`);
         }
         }
       } finally {
         const replayBlockedRequests = safetyEvents.filter((event) => event.phase === "replay").length;
         if (replayBlockedRequests > 0) {
-          runLogger.info(`  Safety: ${replayBlockedRequests} destructive request${replayBlockedRequests === 1 ? "" : "s"} blocked during replay`);
+          runLogger.warn(`  Safety policy blocked ${replayBlockedRequests} destructive request${replayBlockedRequests === 1 ? "" : "s"} during replay`);
         }
-        await replayBrowser.close();
+        await closeBrowserWithTimeout(replayBrowser, runLogger, "replay");
       }
     } catch (error) {
       runError = logError(error);
@@ -768,17 +855,24 @@ export async function exploreCoverage(args: CliArgs, executionId: string): Promi
   const configuredRuns = createCoverageRuns(args);
   for (const [runIndex, configuredRun] of configuredRuns.entries()) {
     const personaLabel = configuredRun.args.personaName ?? configuredRun.name;
-    appLogger.info(`Persona ${runIndex + 1}/${configuredRuns.length}: ${personaLabel}`);
+    appLogger.phase(`Persona ${runIndex + 1}/${configuredRuns.length}: ${personaLabel}`);
     try {
       const run = await exploreAndVerify(configuredRun.args, evidenceLog, configuredRun.id, configuredRun.name);
       runs.push(run);
-      const needsReview = Boolean(run.error) || Boolean(run.discovery?.exhausted) || run.safety.blockedRequests > 0 || run.runtimeErrors.length > 0;
-      appLogger.info(`  ${needsReview ? "Partial results" : "Completed"}: ${run.replayConfirmedIds.length} of ${run.discovery?.flows.length ?? 0} discovered flow(s) replay-confirmed`, {
+      appLogger.phase(`  Summary: ${run.replayConfirmedIds.length} of ${run.discovery?.flows.length ?? 0} discovered flow(s) replay-confirmed`, {
         runId: configuredRun.id,
         flowsFound: run.discovery?.flows.length ?? 0,
         replayConfirmed: run.replayConfirmedIds.length,
         findings: run.findings.length,
       });
+      if (runOutcome(run).stopReason !== "completed") {
+        const reason = runOutcome(run).stopReason === "budget_exhausted"
+          ? "the action budget was exhausted"
+          : runOutcome(run).stopReason === "no_progress"
+            ? "exploration stopped after repeated no-progress attempts"
+            : "exploration ended before the next flow was completed";
+        appLogger.warn(`  Coverage incomplete for ${personaLabel}: ${reason}`);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       appLogger.error(`  Persona failed: ${message}`);

@@ -26,8 +26,8 @@ flowchart TD
 | `src/agent/personas.ts` | Define built-in persona goals, intent, verification mode, and core actions. |
 | `src/browser/*` | Execute browser actions, login, page observations, timeout setup, and browser lifecycle operations. |
 | `src/evidence/*` | Record per-step browser evidence and read append-only JSONL safely. |
-| `src/verify/replay.ts` | Re-execute successful actions without an LLM and compare the expected result. |
-| `src/response/variants.ts` | Capture eligible JSON fixtures, parse conservative patches, install fixture queues, and validate derived scenarios. |
+| `src/verify/replay.ts` | Re-execute successful actions without an LLM and compare the expected result, including whether a derived fixture source was actually observed. |
+| `src/response/variants.ts` | Capture eligible JSON fixtures, parse conservative patches, install fixture queues, and report which selected fixture was applied during derived replay. |
 | `src/report/contract.ts` | Build the structured report contract and render the human-facing HTML report. |
 | `src/codegen/spec.ts` | Convert confirmed flows into Playwright test source. |
 | `src/providers/*` | Adapt provider-specific tool calling, history, response parsing, and rate-limit metadata to one `LlmProvider` interface. |
@@ -69,3 +69,8 @@ Appwalk's own tests are local and focused on contracts with a high regression ri
 - the agent loop's behavior when a provider ends with plain text.
 
 Generated application tests are a separate artifact and are not a substitute for tests of Appwalk itself.
+
+Response variant confirmation is causal: a UI expectation that happens to be true before the mocked
+request is made cannot confirm the variant. The replay installs fixtures before navigation, records the
+selected `method + URL + occurrence`, and evaluates the derived expectation only after that response is
+applied. When the source response is not observed, the scenario is skipped with a diagnostic reason.

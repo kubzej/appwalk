@@ -32,12 +32,17 @@ export interface ReportFlow {
   title: string;
   summary: string;
   origin: 'discovered' | 'derived';
+  /** Set for a derived response scenario so reports can place it under its baseline flow. */
+  parentFlowId?: string;
+  /** Set when discovery found another baseline flow with the same normalized journey shape. */
+  similarTo?: string;
   discoveryVerified: boolean;
   replayConfirmed: boolean;
   runtimeIssues: ReportRuntimeError[];
   steps: ReportStep[];
   replayFailure?: {
     reason: string;
+    cause?: 'action' | 'authentication' | 'loading' | 'request' | 'safety' | 'expectation' | 'verification';
     step?: number;
     action?: string;
     error?: string;
@@ -84,6 +89,7 @@ export interface ReportRuntimeError {
   status?: number;
   occurrences: number;
   safetyRelated?: boolean;
+  lifecycle?: boolean;
 }
 
 export interface ReportSafety {
@@ -235,9 +241,9 @@ export function buildExecutionReport(
   const errors = runs.filter((run) => Boolean(run.error)).length;
   const safetyBlockedRequests = runs.reduce((total, run) => total + run.safety.blockedRequests, 0);
   const runtimeErrors = runs.reduce((total, run) => total + run.runtimeErrors
-    .filter((error) => !error.safetyRelated)
+    .filter((error) => !error.safetyRelated && !error.lifecycle)
     .reduce((count, error) => count + error.occurrences, 0), 0);
-  const coverageIncomplete = runs.some((run) => run.exhausted || Boolean(run.error) || run.safety.blockedRequests > 0 || run.runtimeErrors.some((error) => !error.safetyRelated));
+  const coverageIncomplete = runs.some((run) => run.exhausted || Boolean(run.error) || run.safety.blockedRequests > 0 || run.runtimeErrors.some((error) => !error.safetyRelated && !error.lifecycle));
   const flowsFound = runs.reduce((total, run) => total + run.flowsFound, 0);
   const replayConfirmed = runs.reduce(
     (total, run) => total + run.replayConfirmed,

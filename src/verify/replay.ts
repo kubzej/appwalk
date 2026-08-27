@@ -7,7 +7,7 @@ import { captureSnapshot } from "../browser/snapshot.js";
 import type { EvidenceEntry } from "../evidence/log.js";
 import type { EvidenceRecorder } from "../evidence/recorder.js";
 import type { ToolCall } from "../providers/provider.js";
-import type { ResponseExpectation } from "../response/variants.js";
+import type { ResponseExpectation, ResponseFixtureSelector } from "../response/variants.js";
 import type { ExpectationObservation, StepResult } from "../types.js";
 import type { Logger } from "../logging/logger.js";
 
@@ -25,6 +25,8 @@ export interface ReplayResult {
   /** The first successful observation of a derived scenario expectation, if one was supplied. */
   variantExpectationResult?: import("../agent/tools.js").ToolCallResult;
   variantExpectationStep?: number;
+  /** Whether the response selected by the variant was actually applied during replay. */
+  variantSourceMatched?: boolean;
   /** The page actually active when replay ended — the same page it was called with, unless an action
    * (a new tab, a reopened browser) switched it. The caller must close this page's browser. */
   finalPage: Page;
@@ -54,6 +56,7 @@ export async function replay(
   variantExpectation?: ResponseExpectation,
   logger?: Logger,
   getSafetyBlockCount?: () => number,
+  variantSource?: { selector: ResponseFixtureSelector; isMatched: () => boolean },
 ): Promise<ReplayResult> {
   const flowStartUrl = page.url();
   const flowStartSnapshot = await captureSnapshot(page);
@@ -63,6 +66,29 @@ export async function replay(
   let variantExpectationStep: number | undefined;
   let finalUrl = flowStartUrl;
   const safetyCountBefore = getSafetyBlockCount?.() ?? 0;
+
+  const sourceMatched = () => variantSource?.isMatched() ?? true;
+  const checkVariantExpectation = async (step: number): Promise<void> => {
+    if (!variantExpectation || variantExpectationResult || !sourceMatched()) return;
+    const expectationResult = await executeToolCall(page, {
+      id: `replay-variant-expectation-${step}`,
+      name: "verifyExpectation",
+      input: {
+        expectationIndex: 1,
+        assertion: variantExpectation.assertion,
+        locator: variantExpectation.locator,
+        value: variantExpectation.value,
+      },
+    });
+    if (expectationResult.expectation?.status === "met") {
+      variantExpectationResult = expectationResult;
+      variantExpectationStep = step;
+    }
+  };
+
+  // A response can be consumed while the initial page is loading, before the first recorded action.
+  // Evaluate it against the captured initial state, but only after the fixture matcher confirms it.
+  await checkVariantExpectation(-1);
 
   for (const [index, action] of actions.entries()) {
     logger?.debug("replay.step_started", "Replay action started", { stepIndex: index, action: action.name, input: action.input });
@@ -75,22 +101,7 @@ export async function replay(
         configurePageTimeouts(page);
         recorder?.reattach(page);
       }
-      if (variantExpectation && !variantExpectationResult) {
-        const expectationResult = await executeToolCall(page, {
-          id: `replay-variant-expectation-${index}`,
-          name: "verifyExpectation",
-          input: {
-            expectationIndex: 1,
-            assertion: variantExpectation.assertion,
-            locator: variantExpectation.locator,
-            value: variantExpectation.value,
-          },
-        });
-        if (expectationResult.expectation?.status === "met") {
-          variantExpectationResult = expectationResult;
-          variantExpectationStep = index;
-        }
-      }
+      await checkVariantExpectation(index);
       logger?.debug("replay.step_completed", "Replay action completed", { stepIndex: index, action: action.name, url: result.url });
     } catch (err) {
       logger?.debug("replay.step_failed", "Replay action failed", { stepIndex: index, action: action.name, error: (err as Error).message });
@@ -104,6 +115,7 @@ export async function replay(
         failedAt: { index, action: action.name, error: (err as Error).message },
         safetyBlocked: Math.max(0, (getSafetyBlockCount?.() ?? safetyCountBefore) - safetyCountBefore),
         finalPage: page,
+        variantSourceMatched: variantSource ? sourceMatched() : undefined,
       };
     }
   }
@@ -130,9 +142,26 @@ export async function replay(
     network: recorder?.network.slice(replayNetworkStart) ?? [],
   });
   const safetyBlocked = Math.max(0, (getSafetyBlockCount?.() ?? safetyCountBefore) - safetyCountBefore);
-  const reproduced = safetyBlocked === 0 && expectationsReproduced && verificationPassed;
+  const variantSourceMatched = variantSource ? sourceMatched() : undefined;
+  const variantExpectationReproduced = !variantExpectation || variantExpectationResult?.expectation?.status === "met";
+  const reproduced = safetyBlocked === 0 && expectationsReproduced && verificationPassed &&
+    variantSourceMatched !== false && variantExpectationReproduced;
+  if (variantSource && !variantSourceMatched) {
+    logger?.debug("response_variant.source_not_observed", "Variant source response was not observed during replay", {
+      method: variantSource.selector.method,
+      sourceUrl: variantSource.selector.url,
+      occurrence: variantSource.selector.occurrence,
+    });
+  }
   logger?.debug("replay.completed", "Replay verification completed", {
-    reproduced, verificationPassed, expectationsReproduced, safetyBlocked, steps: steps.length, finalUrl,
+    reproduced,
+    verificationPassed,
+    expectationsReproduced,
+    variantSourceMatched,
+    variantExpectationObserved: variantExpectationResult?.expectation?.status === "met",
+    safetyBlocked,
+    steps: steps.length,
+    finalUrl,
   });
   return {
     reproduced,
@@ -145,6 +174,7 @@ export async function replay(
     safetyBlocked,
     variantExpectationResult,
     variantExpectationStep,
+    variantSourceMatched,
   };
 }
 

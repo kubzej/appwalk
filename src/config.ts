@@ -17,6 +17,7 @@ export interface AppwalkConfig {
   output?: string;
   provider?: ProviderName;
   model?: string;
+  persona?: string;
   maxSteps?: number;
   screenshots?: boolean;
   responses?: {
@@ -132,6 +133,7 @@ function validateConfig(value: unknown, path: string): AppwalkConfig {
   if (config.version !== 1) throw new Error(`Unsupported config version in ${path}. Expected version: 1.`);
   if (config.provider !== undefined && !isProvider(config.provider)) throw new Error(`Invalid provider in ${path}.`);
   if (config.model !== undefined && !isNonEmptyString(config.model)) throw new Error(`model must be a non-empty string in ${path}.`);
+  if (config.persona !== undefined && !isNonEmptyString(config.persona)) throw new Error(`persona must be a non-empty string in ${path}.`);
   if (config.url !== undefined && !isNonEmptyString(config.url)) throw new Error(`url must be a non-empty string in ${path}.`);
   if (config.output !== undefined && !isNonEmptyString(config.output)) throw new Error(`output must be a non-empty string in ${path}.`);
   if (config.maxSteps !== undefined) validateMaxSteps(config.maxSteps, "maxSteps", path);

@@ -92,15 +92,40 @@ function badge(label: string, tone: string): string {
   return `<span class="r-badge r-badge-${tone}">${escapeHtml(label)}</span>`;
 }
 
+function similarFlowLabel(id: string): string {
+  const match = /-flow-(\d+)$/.exec(id);
+  return match ? `Similar to Flow ${match[1]}` : 'Similar baseline flow';
+}
+
 function renderIndex(report: ExecutionReport): string {
   const personas = report.runs
     .map((run, runIndex) => {
-      const flows = run.flows
-        .map((flow, flowIndex) => {
-          const status = flowStatus(flow);
-          return `<a class="r-link r-link-flow" href="#${panelId('flow', runIndex, flowIndex)}" data-target="${panelId('flow', runIndex, flowIndex)}"><span class="r-link-title">${escapeHtml(flow.title)}</span>${badge(status.label, status.tone)}</a>`;
-        })
-        .join('');
+      const renderFlowLink = (flow: ReportFlow, flowIndex: number, variant = false): string => {
+        const status = flowStatus(flow);
+        const similar = !variant && flow.similarTo
+          ? `<span class="r-flow-secondary">${escapeHtml(similarFlowLabel(flow.similarTo))}</span>`
+          : '';
+        return `<a class="r-link r-link-flow${variant ? ' r-link-variant' : ''}" href="#${panelId('flow', runIndex, flowIndex)}" data-target="${panelId('flow', runIndex, flowIndex)}"><span class="r-link-title">${variant ? '<span class="r-variant-label">Variant</span>' : ''}<span>${escapeHtml(flow.title)}</span>${similar}</span>${badge(status.label, status.tone)}</a>`;
+      };
+      const variantsByParent = new Map<string, Array<{ flow: ReportFlow; index: number }>>();
+      run.flows.forEach((flow, flowIndex) => {
+        if (!flow.parentFlowId) return;
+        const variants = variantsByParent.get(flow.parentFlowId) ?? [];
+        variants.push({ flow, index: flowIndex });
+        variantsByParent.set(flow.parentFlowId, variants);
+      });
+      const renderedFlowIndexes = new Set<number>();
+      const flows = run.flows.map((flow, flowIndex) => {
+        if (flow.origin === 'derived' || renderedFlowIndexes.has(flowIndex)) return '';
+        renderedFlowIndexes.add(flowIndex);
+        const variants = variantsByParent.get(flow.id) ?? [];
+        variants.forEach((variant) => renderedFlowIndexes.add(variant.index));
+        return `${renderFlowLink(flow, flowIndex)}${variants.length ? `<div class="r-index-variants"><span class="r-variant-group-label">Variants</span>${variants.map((variant) => renderFlowLink(variant.flow, variant.index, true)).join('')}</div>` : ''}`;
+      }).join('') + run.flows.map((flow, flowIndex) =>
+        flow.origin === 'derived' && !renderedFlowIndexes.has(flowIndex)
+          ? renderFlowLink(flow, flowIndex, true)
+          : '',
+      ).join('');
       const name = personaName(run);
       const primary = name
         ? `${escapeHtml(name)}${run.personaIntent ? `, ${escapeHtml(run.personaIntent)}` : ''}`
@@ -157,9 +182,15 @@ function renderResponseScenariosCard(
       : audit.planningStatus === 'incomplete'
         ? 'Incomplete'
         : 'Not run';
+  const variantSummary = [
+    `${audit.proposed} accepted`,
+    ...(audit.plannerRejected > 0 ? [`${audit.plannerRejected} rejected`] : []),
+    `${audit.confirmed} replay confirmed`,
+    `${audit.skipped.length} skipped`,
+  ].join(' · ');
   const summary = `<div class="r-meta-list r-response-meta">
     <div class="r-meta-row"><strong class="r-meta-label">Fixtures:</strong><span class="r-meta-value">${audit.fixturesFound} captured</span></div>
-    <div class="r-meta-row"><strong class="r-meta-label">Variants:</strong><span class="r-meta-value">${audit.proposed} accepted · ${audit.confirmed} replay confirmed · ${audit.skipped.length} skipped</span></div>
+    <div class="r-meta-row"><strong class="r-meta-label">Variants:</strong><span class="r-meta-value">${variantSummary}</span></div>
     <div class="r-meta-row"><strong class="r-meta-label">Planner:</strong><span class="r-meta-value">${escapeHtml(plannerStatus)}</span></div>
   </div>`;
   const fixtures = audit.fixtures.length
@@ -175,11 +206,11 @@ function renderResponseScenariosCard(
     ? `<p class="r-response-note r-tone-danger">Variant planning failed${audit.plannerReason ? `: ${escapeHtml(cleanDiagnostic(audit.plannerReason))}` : '.'}</p>`
     : audit.planningStatus === 'incomplete'
       ? `<p class="r-response-note r-tone-danger">Variant planning was incomplete${audit.plannerReason ? `: ${escapeHtml(cleanDiagnostic(audit.plannerReason))}` : '.'}</p>`
-    : audit.plannerReason
+    : audit.plannerReason && audit.plannerRejected === 0
       ? `<p class="r-response-note r-muted">${escapeHtml(cleanDiagnostic(audit.plannerReason))}</p>`
       : '';
   const rejected = audit.plannerRejected > 0
-    ? `<p class="r-response-note r-muted">${audit.plannerRejected} planner proposal${audit.plannerRejected === 1 ? '' : 's'} rejected${audit.plannerRejectionReasons.length ? `: ${escapeHtml(audit.plannerRejectionReasons.map(cleanDiagnostic).join('; '))}` : '.'}</p>`
+    ? `<div class="r-response-section"><p class="r-label">Rejected proposals</p><p><strong>${audit.plannerRejected} planner proposal${audit.plannerRejected === 1 ? '' : 's'}</strong> rejected by Appwalk validation.</p>${audit.plannerRejectionReasons.length ? `<p class="r-scenario-reason">Reason: ${escapeHtml(audit.plannerRejectionReasons.map(cleanDiagnostic).join('; '))}</p>` : ''}</div>`
     : '';
   return `<div class="r-card">
     <p class="r-label">Response scenarios</p>
@@ -214,13 +245,23 @@ function renderFlowRuntimeIssues(errors: ReportRuntimeError[]): string {
 function renderReplayFailure(failure: ReportFlow['replayFailure']): string {
   if (!failure) return '';
   const diagnostic = failure.error ? cleanDiagnostic(failure.error) : '';
+  const causeLabels: Record<NonNullable<ReportFlow['replayFailure']>['cause'] & string, string> = {
+    action: 'The recorded action could not be completed.',
+    authentication: 'The replay session was not authenticated when the flow expected an application page.',
+    loading: 'The application was still loading when the recorded action was replayed.',
+    request: 'A request failed while the replay was restoring the flow state.',
+    safety: 'The safety policy blocked a request needed by the flow.',
+    expectation: 'The replay did not reproduce the recorded expectation.',
+    verification: 'The replay reached a different final state than the recorded flow.',
+  };
+  const cause = failure.cause ? `<p class="r-failure-cause"><strong>Likely cause:</strong> ${causeLabels[failure.cause]}</p>` : '';
   const step = failure.step !== undefined
     ? `<p class="r-failure-line"><strong>Step:</strong> <code>${failure.step}</code>${failure.action ? ` <span class="r-muted">(${escapeHtml(failure.action)})</span>` : ''}</p>`
     : '';
   const technicalError = diagnostic
     ? `<pre class="r-code-block"><code>${escapeHtml(diagnostic)}</code></pre>`
     : '';
-  return callout('warning', `<p class="r-callout-title">REPLAY NOT CONFIRMED</p><p class="r-failure-description">${escapeHtml(failure.reason)}</p><p class="r-failure-line"><strong>Last URL:</strong> <code>${escapeHtml(failure.lastUrl)}</code></p>${step}${technicalError}<details><summary>Last captured page state</summary><pre class="r-code-block"><code>${escapeHtml(failure.lastSnapshot || '(empty)')}</code></pre></details>`);
+  return callout('warning', `<p class="r-callout-title">REPLAY NOT CONFIRMED</p><p class="r-failure-description">${escapeHtml(failure.reason)}</p>${cause}<p class="r-failure-line"><strong>Last URL:</strong> <code>${escapeHtml(failure.lastUrl)}</code></p>${step}${technicalError}<details><summary>Last captured page state</summary><pre class="r-code-block"><code>${escapeHtml(failure.lastSnapshot || '(empty)')}</code></pre></details>`);
 }
 
 function renderSafetyCard(safety: ReportSafety): string {
@@ -296,7 +337,7 @@ function renderOverviewPanel(report: ExecutionReport): string {
       <div class="r-stat-grid">
         <div><p class="r-label">Personas</p><p class="r-stat">${report.summary.runs}</p></div>
         <div><p class="r-label">Flows found</p><p class="r-stat">${report.summary.flowsFound}</p></div>
-        <div><p class="r-label">Replay confirmed</p><p class="r-stat">${report.summary.replayConfirmed}</p></div>
+        <div><p class="r-label">Baseline replay confirmed</p><p class="r-stat">${report.summary.replayConfirmed}</p></div>
         <div><p class="r-label">Generated tests</p><p class="r-stat">${report.summary.generatedTests}</p></div>
         <div><p class="r-label">Potential bugs</p><p class="r-stat">${report.summary.confirmedFindings}</p></div>
         <div><p class="r-label">Needs review</p><p class="r-stat">${report.summary.inconclusiveFindings}</p></div>
@@ -316,7 +357,7 @@ function renderPersonaPanel(run: ReportRun, runIndex: number): string {
     : 'Persona';
   const meta = `<div class="r-persona-stat-grid">
     <div><p class="r-label">Flows found</p><p class="r-stat">${run.flowsFound}</p></div>
-    <div><p class="r-label">Replay confirmed</p><p class="r-stat">${run.replayConfirmed}</p></div>
+    <div><p class="r-label">Baseline replay confirmed</p><p class="r-stat">${run.replayConfirmed}</p></div>
     <div><p class="r-label">Generated tests</p><p class="r-stat">${run.generatedTests}</p></div>
   </div>`;
   const head = name
@@ -349,11 +390,16 @@ function renderFlowPanel(
       )
     : '';
   const name = personaName(run);
+  const relationship = flow.origin === 'derived'
+    ? '<p class="r-label">Response variant</p>'
+    : flow.similarTo
+      ? '<p class="r-muted r-flow-note">A similar baseline flow was also discovered in this persona.</p>'
+      : '';
   const crumb = name
-    ? `<a class="r-crumb-link" href="#${panelId('persona', runIndex)}" data-target="${panelId('persona', runIndex)}">${escapeHtml(name)}</a><span class="r-crumb-sep">/</span><span>${escapeHtml(run.name)}</span><span class="r-crumb-sep">/</span><span>${escapeHtml(flow.origin)} flow</span>`
-    : `<a class="r-crumb-link" href="#${panelId('persona', runIndex)}" data-target="${panelId('persona', runIndex)}">${escapeHtml(run.name)}</a><span class="r-crumb-sep">/</span><span>${escapeHtml(flow.origin)} flow</span>`;
+    ? `<a class="r-crumb-link" href="#${panelId('persona', runIndex)}" data-target="${panelId('persona', runIndex)}">${escapeHtml(name)}</a><span class="r-crumb-sep">/</span><span>${escapeHtml(run.name)}</span><span class="r-crumb-sep">/</span><span>${flow.origin === 'derived' ? 'response variant' : 'discovered flow'}</span>`
+    : `<a class="r-crumb-link" href="#${panelId('persona', runIndex)}" data-target="${panelId('persona', runIndex)}">${escapeHtml(run.name)}</a><span class="r-crumb-sep">/</span><span>${flow.origin === 'derived' ? 'response variant' : 'discovered flow'}</span>`;
   return `<section id="${panelId('flow', runIndex, flowIndex)}" class="r-panel" hidden>
-    <div class="r-panel-head"><p class="r-crumb">${crumb}</p><h1 class="r-h1">${escapeHtml(flow.title)}</h1></div>
+    <div class="r-panel-head"><p class="r-crumb">${crumb}</p>${relationship}<h1 class="r-h1">${escapeHtml(flow.title)}</h1></div>
     <div class="r-card">
       <p class="r-flow-status r-tone-${status.tone}">${escapeHtml(status.label)}</p>
       <div class="r-flow-checks">
@@ -378,17 +424,26 @@ export function renderHtmlReport(report: ExecutionReport): string {
       const auditsByFlowIndex = new Map(
         run.responseVariants.map((audit) => [audit.flowIndex, audit]),
       );
-      const flowPanels = run.flows
-        .map((flow, flowIndex) =>
-          renderFlowPanel(
-            flow,
-            run,
-            runIndex,
-            flowIndex,
-            auditsByFlowIndex.get(flowIndex),
-          ),
-        )
-        .join('');
+      const variantsByParent = new Map<string, Array<{ flow: ReportFlow; index: number }>>();
+      run.flows.forEach((flow, flowIndex) => {
+        if (!flow.parentFlowId) return;
+        const variants = variantsByParent.get(flow.parentFlowId) ?? [];
+        variants.push({ flow, index: flowIndex });
+        variantsByParent.set(flow.parentFlowId, variants);
+      });
+      const renderedFlowIndexes = new Set<number>();
+      const flowPanels = run.flows.map((flow, flowIndex) => {
+        if (flow.origin === 'derived' || renderedFlowIndexes.has(flowIndex)) return '';
+        renderedFlowIndexes.add(flowIndex);
+        const variants = variantsByParent.get(flow.id) ?? [];
+        variants.forEach((variant) => renderedFlowIndexes.add(variant.index));
+        return renderFlowPanel(flow, run, runIndex, flowIndex, auditsByFlowIndex.get(flowIndex)) +
+          variants.map((variant) => renderFlowPanel(variant.flow, run, runIndex, variant.index, undefined)).join('');
+      }).join('') + run.flows.map((flow, flowIndex) =>
+        flow.origin === 'derived' && !renderedFlowIndexes.has(flowIndex)
+          ? renderFlowPanel(flow, run, runIndex, flowIndex, undefined)
+          : '',
+      ).join('');
       return renderPersonaPanel(run, runIndex) + flowPanels;
     })
     .join('');
@@ -426,12 +481,17 @@ export function renderHtmlReport(report: ExecutionReport): string {
     '.r-link { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 10px; padding: 7px 10px; border-radius: 7px; color: #5b6670; }',
     '.r-link-title { min-width: 0; display: flex; flex-direction: column; }',
     '.r-persona-secondary { margin-top: 2px; color: #6b7680; font-weight: 400; }',
+    '.r-flow-secondary { margin-top: 2px; color: #89939b; font-size: 11px; font-weight: 500; }',
     '.r-link:hover { background: #f6f7f7; text-decoration: none; }',
     '.r-link.r-active { background: var(--brand-tint); color: var(--brand-ink); font-weight: 600; }',
     '.r-link-overview { font-weight: 600; margin-bottom: 8px; }',
     '.r-link-persona { font-weight: 600; margin-top: 14px; }',
     '.r-index-group:first-child .r-link-persona { margin-top: 0; }',
     '.r-index-flows { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 0 22px; padding-left: 10px; }',
+    '.r-index-variants { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 6px 18px; padding-left: 14px; }',
+    '.r-variant-group-label, .r-variant-label { color: #7a858d; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }',
+    '.r-variant-group-label { padding: 4px 10px 2px; }',
+    '.r-link-variant { padding-top: 5px; padding-bottom: 5px; font-size: 13px; }',
     '.r-panel { display: none; }',
     '.r-panel:not([hidden]) { display: flex; flex-direction: column; gap: 18px; }',
     '.r-panel-head p.r-label, .r-panel-head p.r-crumb { margin-bottom: 6px; }',
@@ -448,6 +508,7 @@ export function renderHtmlReport(report: ExecutionReport): string {
     '.r-flow-check-value { color: #6b7680; font-weight: 700; }',
     '.r-callout-title { color: #6b7680; font-size: 16px; font-weight: 700; letter-spacing: .04em; }',
     '.r-failure-description { margin-top: 8px; }',
+    '.r-failure-cause { margin-top: 10px; }',
     '.r-failure-line { overflow-wrap: anywhere; }',
     '.r-failure-line code { color: #33424c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }',
     '.r-code-block { max-height: 280px; margin: 8px 0 0; padding: 12px 14px; overflow: auto; background: #f3f5f6; border-radius: 7px; white-space: pre-wrap; overflow-wrap: anywhere; color: #33424c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; }',

@@ -24,7 +24,16 @@ export interface RuntimeErrorEntry {
   status?: number;
   /** True when the browser error is a direct side effect of Appwalk's safety guard. */
   safetyRelated?: boolean;
+  /** True when the browser cancelled a request as part of normal navigation or page teardown. */
+  lifecycle?: boolean;
 }
+
+export interface EvidenceRecorderOptions {
+  /** Maximum time to wait for an individual JSON response body before leaving it unset. */
+  bodyReadTimeoutMs?: number;
+}
+
+const DEFAULT_BODY_READ_TIMEOUT_MS = 5_000;
 
 /**
  * Attaches to a page and keeps a running log of network + console activity.
@@ -43,8 +52,10 @@ export class EvidenceRecorder {
   private readonly pendingSafetyBlocks = new Map<string, number>();
   private safetyBlocksSeen = 0;
   private lastSafetyBlockAt = 0;
+  private readonly bodyReadTimeoutMs: number;
 
-  constructor(page: Page, private readonly logger?: Logger) {
+  constructor(page: Page, private readonly logger?: Logger, options: EvidenceRecorderOptions = {}) {
+    this.bodyReadTimeoutMs = Math.max(0, options.bodyReadTimeoutMs ?? DEFAULT_BODY_READ_TIMEOUT_MS);
     this.attach(page);
   }
 
@@ -94,15 +105,7 @@ export class EvidenceRecorder {
 
       const contentType = response.headers()["content-type"] ?? "";
       if (contentType.includes("application/json")) {
-        const bodyRead = response
-          .json()
-          .then((body) => {
-            entry.body = body; // mutates the already-pushed entry, order unaffected
-          })
-          .catch(() => {
-            // Not actually available (redirected, empty, malformed despite the header) — leave unset.
-          });
-        this.pendingBodyReads.push(bodyRead);
+        this.pendingBodyReads.push(this.readJsonBody(response, entry));
       }
     });
 
@@ -123,17 +126,52 @@ export class EvidenceRecorder {
     });
     page.on("requestfailed", (request) => {
       const safetyRelated = this.consumeSafetyBlock({ method: request.method(), url: request.url() });
+      const message = request.failure()?.errorText ?? "Request failed";
+      const lifecycle = isLifecycleRequestFailure(message);
       this.runtimeErrors.push({
         kind: "request_failed",
-        message: String(redact(request.failure()?.errorText ?? "Request failed")),
+        message: String(redact(message)),
         method: request.method(),
         url: safeUrl(request.url()),
         safetyRelated,
+        lifecycle,
       });
-      this.logger?.debug("browser.request_failed", "Browser request failed", {
-        method: request.method(), url: request.url(), error: request.failure()?.errorText,
+      this.logger?.debug(lifecycle ? "browser.lifecycle_noise" : "browser.request_failed", lifecycle ? "Browser cancelled a request during navigation or cleanup" : "Browser request failed", {
+        method: request.method(), url: request.url(), error: message, lifecycle,
       });
     });
+  }
+
+  private async readJsonBody(response: { json: () => Promise<unknown>; url: () => string }, entry: NetworkEntry): Promise<void> {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    try {
+      await new Promise<void>((resolve) => {
+        timeoutId = setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, this.bodyReadTimeoutMs);
+        try {
+          response.json()
+            .then((body) => {
+              entry.body = body; // mutates the already-pushed entry, order unaffected
+              resolve();
+            })
+            .catch(() => resolve());
+        } catch {
+          // Not actually available (redirected, empty, malformed despite the header) — leave unset.
+          resolve();
+        }
+      });
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    }
+    if (timedOut) {
+      this.logger?.debug("evidence.body_read_timeout", "JSON response body was not available before cleanup", {
+        url: safeUrl(response.url()),
+        timeoutMs: this.bodyReadTimeoutMs,
+      });
+    }
   }
 
   private isSafetyRelatedConsoleError(message: string): boolean {
@@ -144,7 +182,11 @@ export class EvidenceRecorder {
 
   /** Waits for any in-flight JSON body reads to settle. Call before relying on `.body` being populated everywhere it can be (e.g. before diffing two runs). */
   async waitForPendingBodies(): Promise<void> {
-    await Promise.all(this.pendingBodyReads);
+    const pending = this.pendingBodyReads.splice(0);
+    if (pending.length === 0) return;
+    this.logger?.debug("evidence.body_reads_wait_started", "Finalizing captured response bodies", { pending: pending.length });
+    await Promise.allSettled(pending);
+    this.logger?.debug("evidence.body_reads_finalized", "Captured response bodies finalized", { pending: pending.length });
   }
 
   drain(): { network: NetworkEntry[]; console: ConsoleEntry[]; runtimeErrors: RuntimeErrorEntry[] } {
@@ -169,4 +211,8 @@ function safeUrl(url: string): string {
   } catch {
     return url;
   }
+}
+
+function isLifecycleRequestFailure(message: string): boolean {
+  return /ERR_ABORTED|ERR_CANCELED|ERR_CANCELLED|ERR_ABORT/i.test(message);
 }

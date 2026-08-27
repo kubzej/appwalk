@@ -77,11 +77,21 @@ function reportSteps(entries: EvidenceEntry[], errorLabel: string): ReportStep[]
     });
 }
 
+function flowSimilarityKey(flow: ReportFlow): string {
+  return flow.title
+    .toLocaleLowerCase()
+    .replace(/\b(?:flow|journey|scenario|order|request|session)\b/g, "")
+    .replace(/[0-9]+/g, "#")
+    .replace(/[^a-z#]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function reportFlowsForRun(run: ExplorationRun): ReportFlow[] {
   const discovered = (run.discovery?.flows ?? []).map((flow, index): ReportFlow => {
     const entries = run.allEntries.filter((entry) => entry.flowIndex === index && entry.scenarioId === undefined);
     const finding = run.findings.find((candidate) => candidate.flowIndex === index);
-    const runtimeIssues = run.runtimeErrors.filter((error) => error.phase === "replay" && error.flowIndex === index + 1);
+    const runtimeIssues = run.runtimeErrors.filter((error) => error.phase === "replay" && error.flowIndex === index + 1 && !error.lifecycle);
     return {
       id: `${run.runId}-flow-${index + 1}`,
       title: flow.title ?? formatTestTitle(flow.finalText || `Flow ${index + 1}`),
@@ -99,6 +109,9 @@ function reportFlowsForRun(run: ExplorationRun): ReportFlow[] {
     .filter((flow) => flow.origin === "derived")
     .map((flow, index): ReportFlow => ({
       id: flow.scenarioId ?? `${run.runId}-derived-${index + 1}`,
+      ...(flow.sourceFlowIndex !== undefined
+        ? { parentFlowId: `${run.runId}-flow-${flow.sourceFlowIndex + 1}` }
+        : {}),
       title: flow.title ?? formatTestTitle(flow.name),
       summary: flow.name,
       origin: "derived",
@@ -107,7 +120,18 @@ function reportFlowsForRun(run: ExplorationRun): ReportFlow[] {
       runtimeIssues: [],
       steps: reportSteps(flow.entries, "Replay action failed"),
     }));
-  return [...discovered, ...derived];
+  const firstBySimilarity = new Map<string, string>();
+  return [...discovered, ...derived].map((flow) => {
+    if (flow.origin !== "discovered") return flow;
+    const key = flowSimilarityKey(flow);
+    if (!key) return flow;
+    const firstId = firstBySimilarity.get(key);
+    if (!firstId) {
+      firstBySimilarity.set(key, flow.id);
+      return flow;
+    }
+    return { ...flow, similarTo: firstId };
+  });
 }
 
 export function writeExecutionReport(

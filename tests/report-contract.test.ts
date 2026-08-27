@@ -142,7 +142,7 @@ test("renders persona coverage summary as centered stat cards", () => {
   })));
   assert.match(html, /class="r-persona-stat-grid"/);
   assert.match(html, /Flows found/);
-  assert.match(html, /Replay confirmed/);
+  assert.match(html, /Baseline replay confirmed/);
   assert.match(html, /Generated tests/);
   assert.match(html, /\.r-persona-stat-grid \.r-stat \{ text-align: center;/);
   assert.match(html, /<p class="r-stat">5<\/p>/);
@@ -191,6 +191,28 @@ test("safety-related runtime errors are excluded from potential bug review", () 
   assert.match(html, /excluded from potential bug review/);
 });
 
+test("lifecycle request cancellations do not make coverage incomplete", () => {
+  const input = reportInput({
+    runs: [{
+      ...reportInput().runs[0]!,
+      exhausted: false,
+      stopReason: "completed",
+      replayConfirmed: 1,
+      safety: { blockedRequests: 0, explorationBlocked: 0, replayBlocked: 0, byMethod: {}, samples: [], safetyRelatedRuntimeErrors: 0 },
+      runtimeErrors: [{
+        phase: "replay" as const,
+        kind: "request_failed" as const,
+        message: "net::ERR_ABORTED",
+        occurrences: 1,
+        lifecycle: true,
+      }],
+    }],
+  });
+  const report = buildExecutionReport(input);
+  assert.equal(report.summary.runtimeErrors, 0);
+  assert.equal(report.summary.coverageIncomplete, false);
+});
+
 test("HTML report explains replay failures and flow-level runtime signals", () => {
   const input = reportInput({
     runs: [{
@@ -225,6 +247,7 @@ test("HTML report explains replay failures and flow-level runtime signals", () =
         }],
         replayFailure: {
           reason: "A recorded action could not be completed in the clean replay session.",
+          cause: "authentication",
           step: 3,
           action: "click",
           error: "locator.click: Timeout 5000ms exceeded",
@@ -255,6 +278,7 @@ test("HTML report explains replay failures and flow-level runtime signals", () =
   assert.match(html, /class="r-callout-title">APPLICATION ERROR OBSERVED<\/p>/);
   assert.match(html, /<strong>Phase:<\/strong> Replay/);
   assert.match(html, /<strong>Request:<\/strong> <code>GET https:\/\/example\.test\/orders<\/code>/);
+  assert.match(html, /Likely cause:<\/strong> The replay session was not authenticated/);
   assert.match(html, /not linked to a recorded action/);
   assert.doesNotMatch(html, /Runtime signals during replay/);
   assert.match(html, /Exploration action failed/);
@@ -354,4 +378,123 @@ test("response variant results have readable sections and diagnostics", () => {
   assert.match(html, /Zero quantity/);
   assert.match(html, /class="r-code-block r-scenario-code"><code>locator\.click: Timeout 5000ms exceeded<\/code>/);
   assert.doesNotMatch(html, /�\[2m/);
+});
+
+test("response variant report surfaces planner rejections as a separate result", () => {
+  const html = renderHtmlReport(buildExecutionReport(reportInput({
+    runs: [{
+      ...reportInput().runs[0]!,
+      exhausted: false,
+      stopReason: "completed",
+      safety: { blockedRequests: 0, explorationBlocked: 0, replayBlocked: 0, byMethod: {}, samples: [], safetyRelatedRuntimeErrors: 0 },
+      runtimeErrors: [],
+      flows: [{
+        id: "run-1-flow-1",
+        title: "Checkout",
+        summary: "Completed checkout.",
+        origin: "discovered" as const,
+        discoveryVerified: true,
+        replayConfirmed: true,
+        runtimeIssues: [],
+        steps: [],
+      }],
+      responseVariants: [{
+        flowIndex: 0,
+        enabled: true,
+        fixturesFound: 3,
+        fixtures: [],
+        planningStatus: "completed" as const,
+        plannerCandidates: 6,
+        plannerRejected: 6,
+        plannerRejectionReasons: ["patch did not apply to the captured response"],
+        proposed: 0,
+        confirmed: 0,
+        confirmedScenarios: [],
+        skipped: [],
+        plannerReason: "All planner proposals were rejected by Appwalk validation.",
+      }],
+    }],
+  })));
+  assert.match(html, /Variants:<\/strong><span class="r-meta-value">0 accepted · 6 rejected · 0 replay confirmed · 0 skipped/);
+  assert.match(html, /Rejected proposals/);
+  assert.match(html, /6 planner proposals<\/strong> rejected by Appwalk validation/);
+  assert.match(html, /Reason: patch did not apply to the captured response/);
+  assert.doesNotMatch(html, /All planner proposals were rejected by Appwalk validation\.<\/p>/);
+});
+
+test("marks similar baseline flows in navigation without changing their titles", () => {
+  const html = renderHtmlReport(buildExecutionReport(reportInput({
+    runs: [{
+      ...reportInput().runs[0]!,
+      exhausted: false,
+      stopReason: "completed",
+      safety: { blockedRequests: 0, explorationBlocked: 0, replayBlocked: 0, byMethod: {}, samples: [], safetyRelatedRuntimeErrors: 0 },
+      runtimeErrors: [],
+      flows: [
+        {
+          id: "run-1-flow-1",
+          title: "Complete checkout",
+          summary: "Completed checkout.",
+          origin: "discovered" as const,
+          discoveryVerified: true,
+          replayConfirmed: true,
+          runtimeIssues: [],
+          steps: [],
+        },
+        {
+          id: "run-1-flow-2",
+          title: "Complete checkout",
+          summary: "Completed checkout again.",
+          origin: "discovered" as const,
+          similarTo: "run-1-flow-1",
+          discoveryVerified: true,
+          replayConfirmed: true,
+          runtimeIssues: [],
+          steps: [],
+        },
+      ],
+    }],
+  })));
+  assert.match(html, /class="r-flow-secondary">Similar to Flow 1<\/span>/);
+});
+
+test("keeps response variants under their baseline flow in navigation and panels", () => {
+  const html = renderHtmlReport(buildExecutionReport(reportInput({
+    runs: [{
+      ...reportInput().runs[0]!,
+      exhausted: false,
+      stopReason: "completed",
+      safety: { blockedRequests: 0, explorationBlocked: 0, replayBlocked: 0, byMethod: {}, samples: [], safetyRelatedRuntimeErrors: 0 },
+      runtimeErrors: [],
+      flows: [
+        {
+          id: "run-1-flow-1",
+          title: "Checkout",
+          summary: "Completed checkout.",
+          origin: "discovered" as const,
+          discoveryVerified: true,
+          replayConfirmed: true,
+          runtimeIssues: [],
+          steps: [],
+        },
+        {
+          id: "scenario-1",
+          parentFlowId: "run-1-flow-1",
+          title: "Checkout — Cancelled order",
+          summary: "Checkout with a cancelled order.",
+          origin: "derived" as const,
+          discoveryVerified: true,
+          replayConfirmed: true,
+          runtimeIssues: [],
+          steps: [],
+        },
+      ],
+      responseVariants: [],
+    }],
+  })));
+  assert.match(html, /class="r-index-variants"/);
+  assert.match(html, /class="r-variant-group-label">Variants<\/span>/);
+  assert.match(html, /class="r-variant-label">Variant<\/span>/);
+  assert.ok(html.indexOf("Checkout") < html.indexOf("Checkout — Cancelled order"));
+  assert.ok(html.indexOf("panel-flow-0-0") < html.indexOf("panel-flow-0-1"));
 });

@@ -308,7 +308,7 @@ export async function runAgentLoop(
   let actionCount = 0;
   let flowActionStartCount = 0;
   let emptyFlowEndings = 0;
-  options.logger?.verbose("    Exploring flow 1");
+  options.logger?.phase("    Exploring flow 1");
 
   while (true) {
     const isFlowCompleteTool = turn.type === "tool_call" && turn.toolCall.name === "flowComplete";
@@ -317,7 +317,7 @@ export async function runAgentLoop(
       const stopStep: LoopStep = { finalText: turn.text, result: await toStepResult(page) };
       history.push(stopStep);
       options.onStep?.(stopStep, history.length - 1, flowIndex);
-      options.logger?.info(
+      options.logger?.warn(
         actionCount >= options.maxSteps
           ? `    Exploration reached the action budget before the next flow was completed; retained ${flows.length} completed flow(s)`
           : flows.length > 0
@@ -390,7 +390,7 @@ export async function runAgentLoop(
         startUrl: flowStartUrl,
         startStorageState: flowStartStorageState,
       });
-      options.logger?.info(`    Flow ${flows.length} discovered${title ? `: ${title}` : ""}`);
+      options.logger?.success(`    Flow ${flows.length} discovered${title ? `: ${title}` : ""}`);
       options.logger?.debug("flow.completed", "Agent completed a flow", {
         flowIndex, verified, actions: actionHistory.length, startUrl: flowStartUrl, finalUrl: url,
       });
@@ -434,7 +434,7 @@ export async function runAgentLoop(
           initialInput: nextFlowInput(flows, restartSnapshot, stepsRemaining),
           screenshot: restartScreenshot,
         });
-        options.logger?.verbose(`    Exploring flow ${flowIndex + 1}`);
+        options.logger?.phase(`    Exploring flow ${flowIndex + 1}`);
         options.logger?.debug("agent.turn_started", "New agent context started for the next flow", { flowIndex, remainingSteps: stepsRemaining });
         continue;
       }
@@ -460,7 +460,8 @@ export async function runAgentLoop(
     const safetyCountBefore = options.getSafetyBlockCount?.() ?? 0;
     let safetyBlocked = 0;
 
-    options.logger?.verbose(`      Action ${actionCount + 1}/${options.maxSteps}: ${actionDescription(toolCall.name, toolCall.input)}`);
+    const actionNumber = String(actionCount + 1).padStart(String(options.maxSteps).length, " ");
+    options.logger?.verbose(`      Action ${actionNumber}/${options.maxSteps}: ${actionDescription(toolCall.name, toolCall.input)}`);
     options.logger?.debug("agent.tool_call_requested", "Agent requested a tool call", {
       flowIndex, stepIndex: actionCount, tool: toolCall.name, input: toolCall.input,
     });
@@ -483,7 +484,7 @@ export async function runAgentLoop(
     } catch (err) {
       error = (err as Error).message;
       resultText = `Error: ${error}`;
-      options.logger?.verbose(`      Action ${actionCount + 1}/${options.maxSteps} failed: ${actionLabel(toolCall.name)} — ${actionFailureReason(error)}`);
+      options.logger?.actionFailure(`      Action ${actionNumber}/${options.maxSteps} failed: ${actionLabel(toolCall.name)} — ${actionFailureReason(error)}`);
       options.logger?.debug("agent.tool_call_failed", "Browser action failed", {
         flowIndex, stepIndex: actionCount, tool: toolCall.name, error,
       });
@@ -492,7 +493,7 @@ export async function runAgentLoop(
     safetyBlocked = Math.max(0, (options.getSafetyBlockCount?.() ?? safetyCountBefore) - safetyCountBefore);
     if (safetyBlocked > 0) {
       resultText += `\nSafety policy blocked ${safetyBlocked} network request${safetyBlocked === 1 ? "" : "s"} during this action. The request was not sent; do not repeat the same action. Choose a different safe path or leave the flow incomplete.`;
-      options.logger?.verbose(`      Action ${actionCount + 1}/${options.maxSteps} limited by safety policy: ${safetyBlocked} request${safetyBlocked === 1 ? "" : "s"} blocked`);
+      options.logger?.verbose(`      Action ${actionNumber}/${options.maxSteps} limited by safety policy: ${safetyBlocked} request${safetyBlocked === 1 ? "" : "s"} blocked`);
       options.logger?.debug("safety.action_blocked", "The action triggered one or more safety blocks", {
         flowIndex, stepIndex: actionCount, tool: toolCall.name, blockedRequests: safetyBlocked,
       });

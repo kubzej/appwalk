@@ -64,8 +64,8 @@ Read the report in this order:
 2. **Persona coverage**: see which independent exploration runs completed, which exhausted their action budget, and whether safety limited the result.
 3. **Flows**: review the status of each discovered or derived flow. Unconfirmed discoveries are useful leads, not regression coverage.
 4. **Findings**: inspect confirmed and inconclusive challenge results separately.
-5. **Response scenarios**: distinguish baseline fixtures used to stabilize the original flow from planner proposals and confirmed derived scenarios. If no variants were accepted, the report shows whether the planner returned none, Appwalk rejected its proposals, or planning failed.
-6. **Runtime issues, recorded steps, and evidence**: review potential browser/application errors, then use the exact action sequence and raw evidence when debugging. Errors caused directly by a safety-blocked request are labeled as safety-related and are excluded from potential-bug review; the safety limitation itself still makes coverage inconclusive.
+5. **Response scenarios**: distinguish baseline fixtures used to stabilize the original flow from planner proposals and confirmed derived scenarios. Variants are shown beneath their baseline flow in the report navigation and flow order. A variant is confirmed only when its selected source response was actually applied during replay and its derived expectation was observed afterwards. Accepted, rejected, and skipped proposals are reported separately, so a planner that returned invalid patches is not presented as if it returned no scenarios.
+6. **Runtime issues, recorded steps, and evidence**: review potential browser/application errors, then use the exact action sequence and raw evidence when debugging. Errors caused directly by a safety-blocked request are labeled as safety-related and are excluded from potential-bug review; navigation cancellations such as `ERR_ABORTED` are lifecycle noise and are excluded as well. The safety limitation itself still makes coverage inconclusive.
 
 ## Evidence warnings
 

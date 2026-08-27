@@ -80,6 +80,7 @@ coverage:
 | `output` | string | No | Output root. Defaults to `./appwalk-output`. |
 | `provider` | enum | Yes | `openai`, `anthropic`, `gemini`, `grok`, or `ollama`. |
 | `model` | string | Yes | Model name understood by the selected provider. |
+| `persona` | string | No | Built-in persona for a single run. Use `coverage.runs` for multiple independent personas. |
 | `maxSteps` | positive integer | No | Default action budget per run is 25. |
 | `screenshots` | boolean | No | Include screenshots in provider turns where supported. |
 | `scope` | string | No | Global exploration objective. |

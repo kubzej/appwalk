@@ -78,6 +78,17 @@ These switches control console presentation, not the evidence captured in the ou
 
 `--verbose` and `--debug` are CLI-only operational controls. They are intentionally not part of the YAML coverage model.
 
+Interactive terminals use color as a visual aid: phases are blue, confirmed results are green,
+warnings and incomplete coverage are yellow, and errors are red. The message itself always carries
+the meaning, so color is never required. Colors are disabled when output is redirected or
+`NO_COLOR` is set; `FORCE_COLOR=1` enables them explicitly. Debug records keep their stable
+`[debug] event.name` prefix for filtering and diagnosis.
+
+At the beginning of `run` and `explore`, Appwalk prints the resolved execution
+configuration. With `coverage.runs`, each persona run is listed separately with its
+effective persona, action budget, scope, and expectations. Credentials are represented
+by the authentication method and username only; passwords are never printed.
+
 ## Provider credentials
 
 | Provider | Environment variable | Local endpoint |
