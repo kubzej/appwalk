@@ -78,7 +78,7 @@ Generated tests use `@playwright/test` and are independent tests, one per confir
 npx playwright test ./appwalk-output/<execution-id>/discovered.spec.ts
 ```
 
-The generated file may include captured response fixtures. Appwalk does not persist captured auth tokens in discovery artifacts; provide credentials or a storage state explicitly when generating. Treat the file as source code: review it, place it in the appropriate test project, and decide how its credentials and environment should be supplied in CI.
+The generated suite may include a sibling `auth.ts` helper when credential login is configured, and captured response fixtures. In that case `discovered.spec.ts` loads the helper and fixtures through `fixtures.ts` and the `fixtures/` directory; keep all generated siblings together. Appwalk does not persist captured auth tokens in discovery artifacts; provide credentials or a storage state explicitly when generating. Treat the generated files as source code: review them, place them in the appropriate test project, and decide how their credentials and environment should be supplied in CI.
 
 ## 6. Use a focused exploration
 

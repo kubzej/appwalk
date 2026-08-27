@@ -531,6 +531,7 @@ async function exploreAndVerifyInBrowser(
           responseFixtures: extractResponseFixtures(flowEntries, args.url, args.responseFixtureMaxBytes),
           origin: "discovered",
           sourceFlowIndex: index,
+          fixtureBaseId: `${runId}-flow-${index + 1}`,
         };
         confirmedFlows.push(baseFlow);
 
@@ -675,6 +676,8 @@ async function exploreAndVerifyInBrowser(
               startUrl: baseFlow.startUrl,
               startStorageState: baseFlow.startStorageState,
               responseFixtures: variantFixtures,
+              fixtureBaseId: baseFlow.fixtureBaseId,
+              baseResponseFixtures: baseFlow.responseFixtures,
               origin: "derived",
               sourceFlowIndex: index,
               scenarioId,

@@ -1,5 +1,5 @@
 import type { EvidenceEntry } from "../evidence/log.js";
-import { responseFixtureUrlPattern, type ResponseFixture } from "../response/variants.js";
+import { type ResponseFixture, type ResponseVariant } from "../response/variants.js";
 import { escapeJsString, toLocatorExpression } from "./locator.js";
 
 export interface CodegenOptions {
@@ -21,7 +21,23 @@ export interface FlowEntries {
   startStorageState?: string;
   /** Observed JSON responses to replay deterministically before the flow starts. */
   responseFixtures?: ResponseFixture[];
+  /** Stable identity of the baseline fixture set shared by this flow and its variants. */
+  fixtureBaseId?: string;
+  /** Original fixtures used to derive a variant. Present when a variant is generated standalone. */
+  baseResponseFixtures?: ResponseFixture[];
+  /** Validated response patch that produced this derived flow. */
+  responseVariant?: ResponseVariant;
   origin?: "discovered" | "derived";
+}
+
+export interface GeneratedSpecArtifact {
+  relativePath: string;
+  content: string;
+}
+
+export interface GeneratedSpecBundle {
+  spec: string;
+  artifacts: GeneratedSpecArtifact[];
 }
 
 /**
@@ -66,7 +82,9 @@ export function formatTestTitle(name: string): string {
 // Mirrors src/browser/login.ts exactly — keep the two in sync. English label text only works
 // on English-language UIs; HTML input types (type="password", type="email", type="submit") are
 // language-independent, so structural signals are tried first, English text as a fallback.
-const FILL_FIRST_MATCH_HELPER = `async function findByLabelOrRole(page: Page, ...patterns: RegExp[]): Promise<Locator | null> {
+const GENERATED_AUTH_HELPER = `import type { Locator, Page } from '@playwright/test';
+
+async function findLoginField(page: Page, ...patterns: RegExp[]): Promise<Locator | null> {
   for (const pattern of patterns) {
     const byLabel = page.getByLabel(pattern);
     if ((await byLabel.count()) > 0) return byLabel.first();
@@ -78,7 +96,7 @@ const FILL_FIRST_MATCH_HELPER = `async function findByLabelOrRole(page: Page, ..
   return null;
 }
 
-async function loginFirstMatch(page: Page, username: string, password: string): Promise<void> {
+export async function loginWithCredentials(page: Page, username: string, password: string): Promise<void> {
   let passwordField = page.locator('input[type="password"]').first();
   const loginUrl = page.url();
   if ((await passwordField.count()) === 0) {
@@ -90,14 +108,14 @@ async function loginFirstMatch(page: Page, username: string, password: string): 
     }
   }
   if ((await passwordField.count()) === 0) {
-    const byLabel = await findByLabelOrRole(page, /password/i);
+    const byLabel = await findLoginField(page, /password/i);
     if (!byLabel) throw new Error('No password field found');
     passwordField = byLabel;
   }
 
   let usernameField = page.locator('input[type="email"]').first();
   if ((await usernameField.count()) === 0) {
-    const byLabel = await findByLabelOrRole(page, /username/i, /e-?mail/i);
+    const byLabel = await findLoginField(page, /username/i, /e-?mail/i);
     if (byLabel) {
       usernameField = byLabel;
     } else {
@@ -123,27 +141,132 @@ async function loginFirstMatch(page: Page, username: string, password: string): 
   ]).catch(() => undefined);
 }`;
 
-function fixtureRouteStatements(fixtures: ResponseFixture[] | undefined, contextExpression: string): string[] {
+const GENERATED_FIXTURES_HELPER = `import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { BrowserContext } from '@playwright/test';
+
+type ResponseFixture = {
+  method: string;
+  url: string;
+  occurrence?: number;
+  urlPattern?: string;
+  status: number;
+  body: unknown;
+};
+
+type ResponsePatch = { path: string; value: unknown };
+type VariantScenario = {
+  base: string;
+  sourceMethod?: string;
+  sourceUrl: string;
+  sourceOccurrence?: number;
+  patches: ResponsePatch[];
+};
+type FixtureQueue = { items: ResponseFixture[]; next: number };
+
+const fixtureDirectory = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
+
+function readJson<T>(path: string): T {
+  return JSON.parse(readFileSync(path, 'utf8')) as T;
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function parsePath(path: string): Array<string | number> | null {
+  if (path === '$' || !path.startsWith('$')) return null;
+  const tokens: Array<string | number> = [];
+  let offset = 1;
+  while (offset < path.length) {
+    if (path[offset] === '.') {
+      const match = /^\\.([A-Za-z_][A-Za-z0-9_-]*)/.exec(path.slice(offset));
+      if (!match) return null;
+      tokens.push(match[1]!);
+      offset += match[0].length;
+      continue;
+    }
+    if (path[offset] === '[') {
+      const match = /^\\[(\\d+)\\]/.exec(path.slice(offset));
+      if (!match) return null;
+      tokens.push(Number(match[1]));
+      offset += match[0].length;
+      continue;
+    }
+    return null;
+  }
+  return tokens.length > 0 ? tokens : null;
+}
+
+function setExistingJsonPath(root: unknown, path: string, value: unknown): boolean {
+  const tokens = parsePath(path);
+  if (!tokens) return false;
+  let current: unknown = root;
+  for (let index = 0; index < tokens.length - 1; index += 1) {
+    const token = tokens[index]!;
+    if (current === null || typeof current !== 'object' || !(token in current)) return false;
+    current = (current as Record<string | number, unknown>)[token];
+  }
+  const last = tokens[tokens.length - 1]!;
+  if (current === null || typeof current !== 'object' || !(last in current)) return false;
+  (current as Record<string | number, unknown>)[last] = clone(value);
+  return true;
+}
+
+export function loadScenario(name: string): ResponseFixture[] {
+  const source = readJson<ResponseFixture[] | VariantScenario>(join(fixtureDirectory, name + '.json'));
+  if (Array.isArray(source)) return source;
+  const fixtures = readJson<ResponseFixture[]>(join(fixtureDirectory, source.base)).map((fixture) => ({ ...fixture, body: clone(fixture.body) }));
+  const matches = fixtures.filter((fixture) => fixture.url === source.sourceUrl && (!source.sourceMethod || fixture.method === source.sourceMethod));
+  const target = source.sourceOccurrence === undefined
+    ? matches.length === 1 ? matches[0] : undefined
+    : matches.find((fixture) => fixture.occurrence === source.sourceOccurrence);
+  if (!target) throw new Error('Response variant could not locate its captured source response.');
+  for (const patch of source.patches) {
+    if (!setExistingJsonPath(target.body, patch.path, patch.value)) {
+      throw new Error('Response variant patch could not be applied: ' + patch.path);
+    }
+  }
+  return fixtures;
+}
+
+export async function installFixtures(context: BrowserContext, fixtures: ResponseFixture[]): Promise<void> {
   const patternGroups = new Map<string, ResponseFixture[]>();
-  for (const fixture of fixtures ?? []) {
-    const pattern = fixture.urlPattern ?? responseFixtureUrlPattern(fixture.url);
+  for (const fixture of fixtures) {
+    const pattern = fixture.urlPattern ?? fixture.url;
     const group = patternGroups.get(pattern) ?? [];
     group.push(fixture);
     patternGroups.set(pattern, group);
   }
-
-  return [...patternGroups.entries()].map(([pattern, group]) => {
-    const fixtureData = JSON.stringify(group.map((fixture) => ({
-      method: fixture.method,
-      url: fixture.url,
-      status: fixture.status,
-      body: fixture.body,
-    })));
-    return `await (async () => { const fixtures = ${fixtureData}; const exactQueues = new Map(); const methodQueues = new Map(); for (const fixture of fixtures) { const exactKey = fixture.method + ' ' + fixture.url; const exactQueue = exactQueues.get(exactKey) ?? { items: [], next: 0 }; exactQueue.items.push(fixture); exactQueues.set(exactKey, exactQueue); const methodKey = fixture.method + ' *'; const methodQueue = methodQueues.get(methodKey) ?? { items: [], next: 0 }; methodQueue.items.push(fixture); methodQueues.set(methodKey, methodQueue); } await ${contextExpression}.route('${escapeJsString(pattern)}', async (route) => { const method = route.request().method(); const queue = exactQueues.get(method + ' ' + route.request().url()) ?? methodQueues.get(method + ' *'); if (!queue || queue.items.length === 0) return route.continue(); const fixture = queue.items[Math.min(queue.next++, queue.items.length - 1)]; await route.fulfill({ status: fixture.status, contentType: 'application/json', body: JSON.stringify(fixture.body) }); }); })();`;
-  });
+  for (const [pattern, group] of patternGroups) {
+    const exactQueues = new Map<string, FixtureQueue>();
+    const methodQueues = new Map<string, FixtureQueue>();
+    for (const fixture of group) {
+      const exactKey = fixture.method + ' ' + fixture.url;
+      const exactQueue = exactQueues.get(exactKey) ?? { items: [], next: 0 };
+      exactQueue.items.push(fixture);
+      exactQueues.set(exactKey, exactQueue);
+      const methodKey = fixture.method + ' *';
+      const methodQueue = methodQueues.get(methodKey) ?? { items: [], next: 0 };
+      methodQueue.items.push(fixture);
+      methodQueues.set(methodKey, methodQueue);
+    }
+    await context.route(pattern, async (route) => {
+      const method = route.request().method();
+      const queue = exactQueues.get(method + ' ' + route.request().url()) ?? methodQueues.get(method + ' *');
+      if (!queue || queue.items.length === 0) {
+        await route.continue();
+        return;
+      }
+      const fixture = queue.items[Math.min(queue.next++, queue.items.length - 1)]!;
+      await route.fulfill({ status: fixture.status, contentType: 'application/json', body: JSON.stringify(fixture.body) });
+    });
+  }
 }
+`;
 
-function actionToStatement(name: string, input: Record<string, unknown>, responseFixtures?: ResponseFixture[]): string | null {
+function actionToStatement(name: string, input: Record<string, unknown>, fixtureScenario?: string): string | null {
   const locatorExpr = () => toLocatorExpression(input.locator as string);
 
   switch (name) {
@@ -183,11 +306,11 @@ function actionToStatement(name: string, input: Record<string, unknown>, respons
     // `page.context().newPage()` — Playwright rejects a second page on the implicit context every page
     // in this codebase is created with ("Please use browser.newContext()").
     case "openInNewTab":
-      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); const newContext = await browser.newContext({ storageState }); ${fixtureRouteStatements(responseFixtures, "newContext").join(" ")} page = await newContext.newPage(); await page.goto(url); }`;
+      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); const newContext = await browser.newContext({ storageState }); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url); }`;
     // Closes just the context, not the shared `browser` fixture the test runner owns — closing that
     // would break the runner, not just this one test's simulated "browser restart".
     case "reopenBrowser":
-      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); await page.context().close(); const newContext = await browser.newContext({ storageState }); ${fixtureRouteStatements(responseFixtures, "newContext").join(" ")} page = await newContext.newPage(); await page.goto(url); }`;
+      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); await page.context().close(); const newContext = await browser.newContext({ storageState }); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url); }`;
     case "scroll":
       return input.locator ? `await ${locatorExpr()}.scrollIntoViewIfNeeded();` : `await page.mouse.wheel(0, 10000);`;
     case "setViewportSize":
@@ -302,13 +425,18 @@ function findConfirmationAssertion(entries: EvidenceEntry[]): string | null {
   return `await expect(page).toHaveURL('${escapeJsString(lastWithResult.result.url)}');`;
 }
 
-function flowToTest(flow: FlowEntries, options: CodegenOptions, testTitle = formatTestTitle(flow.title ?? flow.name)): string {
+function flowToTest(
+  flow: FlowEntries,
+  options: CodegenOptions,
+  testTitle = formatTestTitle(flow.title ?? flow.name),
+  fixtureScenario?: string,
+): string {
   const toolCalls = flow.entries.filter((entry) => entry.toolCall && !entry.error && entry.toolCall.name !== "flowComplete");
   // Preserve the original timeline: an expectation may describe an intermediate state (e.g. an
   // item is present in the cart) and must run before later actions navigate away from that state.
   const bodyLines = toolCalls
     .flatMap((entry) => [
-      actionToStatement(entry.toolCall!.name, entry.toolCall!.input, flow.responseFixtures),
+      actionToStatement(entry.toolCall!.name, entry.toolCall!.input, fixtureScenario),
       expectationToStatement(entry),
     ])
     .filter((line): line is string => line !== null);
@@ -337,7 +465,7 @@ function flowToTest(flow: FlowEntries, options: CodegenOptions, testTitle = form
   return `test('${escapeJsString(testTitle)}', async (${fixtureParams}) => {
   const flowContext = await browser.newContext({ storageState: ${storageState} });
   let page = await flowContext.newPage();
-${fixtureRouteStatements(flow.responseFixtures, "page.context()").map((line) => `  ${line}`).join("\n")}
+${fixtureScenario ? `  await installFixtures(page.context(), loadScenario('${escapeJsString(fixtureScenario)}'));\n` : ''}
   await page.goto('${escapeJsString(flow.startUrl!)}');
   try {
 ${indentedBody}
@@ -348,29 +476,97 @@ ${indentedBody}
   }
 
   const setup = [
-    ...fixtureRouteStatements(flow.responseFixtures, "page.context()"),
+    ...(fixtureScenario ? [
+      `const responseFixtures = loadScenario('${escapeJsString(fixtureScenario)}');`,
+      "await installFixtures(page.context(), responseFixtures);",
+    ] : []),
     `await page.goto('${escapeJsString(options.url)}');`,
     ...(options.username && options.password
-      ? [`await loginFirstMatch(page, '${escapeJsString(options.username)}', '${escapeJsString(options.password)}');`]
+      ? [`await loginWithCredentials(page, '${escapeJsString(options.username)}', '${escapeJsString(options.password)}');`]
       : []),
   ].map((line) => `  ${line}`).join("\n");
   return `test('${escapeJsString(testTitle)}', async (${fixtureParams}) => {\n${setup}\n${body}\n});`;
 }
 
+function fixtureFileContent(fixtures: ResponseFixture[]): string {
+  return JSON.stringify(fixtures, null, 2) + "\n";
+}
+
+function variantFileContent(
+  baselineFile: string,
+  variant: ResponseVariant,
+): string {
+  return JSON.stringify({
+    base: baselineFile,
+    sourceMethod: variant.sourceMethod,
+    sourceUrl: variant.sourceUrl,
+    sourceOccurrence: variant.sourceOccurrence,
+    patches: variant.patches,
+  }, null, 2) + "\n";
+}
+
+interface FixtureScenarioPlan {
+  scenarioNames: string[];
+  artifacts: GeneratedSpecArtifact[];
+}
+
+function planFixtureScenarios(flows: FlowEntries[]): FixtureScenarioPlan {
+  const scenarioNames = new Array<string>(flows.length);
+  const artifacts: GeneratedSpecArtifact[] = [];
+  const baseFiles = new Map<string, string>();
+  const baseScenarioNames = new Map<string, string>();
+  const variantCounts = new Map<string, number>();
+
+  for (let index = 0; index < flows.length; index += 1) {
+    const flow = flows[index]!;
+    const hasFixtures = (flow.responseFixtures?.length ?? 0) > 0;
+    const hasBaseFixtures = (flow.baseResponseFixtures?.length ?? 0) > 0;
+    if (!hasFixtures && !hasBaseFixtures) continue;
+
+    const baseKey = flow.fixtureBaseId ?? `flow-${index + 1}`;
+    let baseScenario = baseScenarioNames.get(baseKey);
+    if (!baseScenario) {
+      const baseNumber = baseScenarioNames.size + 1;
+      baseScenario = `flow-${String(baseNumber).padStart(3, "0")}.base`;
+      baseScenarioNames.set(baseKey, baseScenario);
+      const baseFixtures = flow.baseResponseFixtures ?? flow.responseFixtures ?? [];
+      const baseFile = `${baseScenario}.json`;
+      baseFiles.set(baseKey, baseFile);
+      artifacts.push({ relativePath: `fixtures/${baseFile}`, content: fixtureFileContent(baseFixtures) });
+    }
+
+    if (flow.origin === "derived" && flow.responseVariant) {
+      const variantNumber = (variantCounts.get(baseKey) ?? 0) + 1;
+      variantCounts.set(baseKey, variantNumber);
+      const scenario = `${baseScenario.replace(/\.base$/, "")}-variant-${String(variantNumber).padStart(3, "0")}`;
+      const baseFile = baseFiles.get(baseKey)!;
+      artifacts.push({
+        relativePath: `fixtures/${scenario}.json`,
+        content: variantFileContent(baseFile, flow.responseVariant),
+      });
+      scenarioNames[index] = scenario;
+    } else {
+      scenarioNames[index] = baseScenario;
+    }
+  }
+
+  return { scenarioNames, artifacts };
+}
+
 /** One session can discover several distinct flows — each becomes its own independent `test()` with its own setup and response fixtures. */
-export function generateSpec(flows: FlowEntries[], options: CodegenOptions): string {
+export function generateSpecBundle(flows: FlowEntries[], options: CodegenOptions): GeneratedSpecBundle {
+  const fixturePlan = planFixtureScenarios(flows);
   const hasStorageState = Boolean(options.storageStatePath);
   const hasLogin = !hasStorageState && Boolean(options.username && options.password);
+  const hasFixtures = fixturePlan.artifacts.length > 0;
 
-  const parts: string[] = ["import { test, expect, type Locator, type Page } from '@playwright/test';"];
+  const parts: string[] = ["import { test, expect } from '@playwright/test';"];
+  if (hasLogin) parts.push("import { loginWithCredentials } from './auth.js';");
+  if (hasFixtures) parts.push("import { installFixtures, loadScenario } from './fixtures.js';");
 
   if (hasStorageState) {
     parts.push(`test.use({ storageState: '${escapeJsString(options.storageStatePath!)}' });`);
   }
-  if (hasLogin) {
-    parts.push(FILL_FIRST_MATCH_HELPER);
-  }
-
   const baseTitleCounts = new Map<string, number>();
   for (const flow of flows) {
     const baseTitle = formatTestTitle(flow.title ?? flow.name);
@@ -378,7 +574,7 @@ export function generateSpec(flows: FlowEntries[], options: CodegenOptions): str
   }
 
   const usedTitles = new Set<string>();
-  for (const flow of flows) {
+  for (const [index, flow] of flows.entries()) {
     const baseTitle = formatTestTitle(flow.title ?? flow.name);
     const detailTitle = formatTestTitle(flow.name);
     let testTitle = baseTitleCounts.get(baseTitle) === 1 || detailTitle === baseTitle
@@ -390,8 +586,18 @@ export function generateSpec(flows: FlowEntries[], options: CodegenOptions): str
       testTitle = `${titleRoot} (${suffix++})`;
     }
     usedTitles.add(testTitle);
-    parts.push(flowToTest(flow, options, testTitle));
+    parts.push(flowToTest(flow, options, testTitle, fixturePlan.scenarioNames[index]));
   }
 
-  return parts.join("\n\n") + "\n";
+  return {
+    spec: parts.join("\n\n") + "\n",
+    artifacts: [
+      ...(hasLogin ? [{ relativePath: "auth.ts", content: GENERATED_AUTH_HELPER }] : []),
+      ...(hasFixtures ? [{ relativePath: "fixtures.ts", content: GENERATED_FIXTURES_HELPER }, ...fixturePlan.artifacts] : []),
+    ],
+  };
+}
+
+export function generateSpec(flows: FlowEntries[], options: CodegenOptions): string {
+  return generateSpecBundle(flows, options).spec;
 }

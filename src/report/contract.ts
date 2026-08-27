@@ -156,6 +156,7 @@ export interface ExecutionReport {
     discovery: string;
     evidence: string;
     testSuite?: string;
+    fixtures?: string;
   };
 }
 

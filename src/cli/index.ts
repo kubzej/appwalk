@@ -8,9 +8,8 @@ import { writeExecutionReport } from "./report.js";
 import { logCodegenCompleted, logCodegenPlan } from "./codegen-log.js";
 import { appLogger, setAppLogger } from "./logger-state.js";
 import { Logger, logError } from "../logging/logger.js";
-import { generateSpec } from "../codegen/spec.js";
+import { writeGeneratedSuite } from "./generated-suite.js";
 import { join } from "node:path";
-import { writeFileSync } from "node:fs";
 
 async function main() {
   const parsedArgs = parseArgs(process.argv.slice(2));
@@ -53,16 +52,20 @@ async function main() {
 
   appLogger.info("Generating test suite");
   logCodegenPlan(appLogger, "run", batch.confirmedFlows);
-  const specPath = join(executionArgs.output, "discovered.spec.ts");
-  writeFileSync(specPath, generateSpec(batch.confirmedFlows, {
+  const generatedSuite = writeGeneratedSuite(executionArgs.output, batch.confirmedFlows, {
     url: executionArgs.url,
     username: executionArgs.email,
     password: executionArgs.password,
     storageStatePath: executionArgs.storageStatePath,
-  }));
+  });
   logCodegenCompleted(appLogger, "run", batch.confirmedFlows);
-  appLogger.result("test suite (" + batch.confirmedFlows.length + " test(s)): " + specPath);
-  const report = writeExecutionReport(batch, executionCommand, execution, batch.confirmedFlows.length);
+  appLogger.result("test suite (" + batch.confirmedFlows.length + " test(s)): " + generatedSuite.specPath);
+  if (generatedSuite.fixtureHelperPath) {
+    appLogger.result("fixtures: " + generatedSuite.fixtureHelperPath);
+  }
+  const report = writeExecutionReport(batch, executionCommand, execution, batch.confirmedFlows.length, {
+    fixtures: generatedSuite.fixtureHelperPath ? "fixtures.ts" : undefined,
+  });
   process.exitCode = report.exitCode;
   appLogger.result(`summary: ${report.summary.runs} persona(s), ${report.summary.flowsFound} flow(s) found, ${report.summary.replayConfirmed} replay-confirmed, ${report.summary.generatedTests} test(s) generated`);
 }

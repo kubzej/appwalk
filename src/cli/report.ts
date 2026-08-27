@@ -110,6 +110,7 @@ export function writeExecutionReport(
   command: "explore" | "run",
   execution: { id: string; startedAt: string },
   generatedTests: number,
+  generatedArtifacts?: { fixtures?: string },
 ): ExecutionReport {
   const artifacts = {
     reportJson: "report.json",
@@ -117,6 +118,7 @@ export function writeExecutionReport(
     discovery: "discovery.json",
     evidence: "evidence.jsonl",
     ...(generatedTests > 0 ? { testSuite: "discovered.spec.ts" } : {}),
+    ...(generatedArtifacts?.fixtures ? { fixtures: generatedArtifacts.fixtures } : {}),
   };
   const report = buildExecutionReport({
     executionId: execution.id,

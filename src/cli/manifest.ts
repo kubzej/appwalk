@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { generateSpec, type FlowEntries } from "../codegen/spec.js";
+import { type FlowEntries } from "../codegen/spec.js";
 import { readEvidenceLog } from "../evidence/log.js";
 import type { ResponseFixture, ResponseVariant } from "../response/variants.js";
 import type { PersonaIntent } from "../agent/personas.js";
@@ -9,6 +9,7 @@ import type { CliArgs } from "./args.js";
 import { createExecutionDirectory } from "./execution.js";
 import { logCodegenCompleted, logCodegenPlan } from "./codegen-log.js";
 import { appLogger } from "./logger-state.js";
+import { writeGeneratedSuite } from "./generated-suite.js";
 
 export interface DiscoveryManifestFlow {
   id: number;
@@ -130,6 +131,11 @@ export function generateFromManifest(args: CliArgs): void {
       startStorageState: useFlowState ? flow.startStorageState : flow.id === 1 ? undefined : flow.startStorageState,
       responseFixtures: flow.responseFixtures,
       origin: flow.origin,
+      fixtureBaseId: flow.sourceFlowId !== undefined ? `flow-${flow.sourceFlowId}` : `flow-${flow.id}`,
+      baseResponseFixtures: flow.origin === "derived"
+        ? manifest.flows.find((candidate) => candidate.id === flow.sourceFlowId)?.responseFixtures
+        : undefined,
+      responseVariant: flow.responseVariant,
     };
   });
   const emptyFlows = flows.filter((flow) => flow.entries.length === 0).map((flow) => flow.name);
@@ -138,13 +144,13 @@ export function generateFromManifest(args: CliArgs): void {
   }
   logCodegenPlan(appLogger, "generate", flows);
   const execution = createExecutionDirectory(args.output);
-  const specPath = join(execution.path, "discovered.spec.ts");
-  writeFileSync(specPath, generateSpec(flows, {
+  const generatedSuite = writeGeneratedSuite(execution.path, flows, {
     url: manifest.url,
     username: args.email,
     password: args.password,
     storageStatePath,
-  }));
+  });
   logCodegenCompleted(appLogger, "generate", flows);
-  appLogger.result("done:\n  execution:                           " + execution.path + "\n  test suite (" + flows.length + " test(s)): " + specPath);
+  appLogger.result("done:\n  execution:                           " + execution.path + "\n  test suite (" + flows.length + " test(s)): " + generatedSuite.specPath +
+    (generatedSuite.fixtureHelperPath ? "\n  fixtures:                             " + generatedSuite.fixtureHelperPath : ""));
 }
