@@ -1,0 +1,9 @@
+node_modules/
+dist/
+appwalk-output/
+test-results/
+dev-check-*.ts
+*.log
+.env
+test-fixtures/uma/large.bin
+.DS_Store

@@ -1,0 +1,151 @@
+import type { Page } from "playwright";
+import { executeToolCall } from "../agent/tools.js";
+import type { VerificationMode } from "../agent/verification.js";
+import { verifyFlow } from "../agent/verification.js";
+import { configurePageTimeouts } from "../browser/actions.js";
+import { captureSnapshot } from "../browser/snapshot.js";
+import type { EvidenceEntry } from "../evidence/log.js";
+import type { EvidenceRecorder } from "../evidence/recorder.js";
+import type { ToolCall } from "../providers/provider.js";
+import type { ResponseExpectation } from "../response/variants.js";
+import type { ExpectationObservation, StepResult } from "../types.js";
+import type { Logger } from "../logging/logger.js";
+
+export interface ReplayResult {
+  reproduced: boolean;
+  /** Whether the selected verification mode passed after all actions executed. */
+  verificationPassed: boolean;
+  finalUrl: string;
+  steps: StepResult[];
+  failedAt?: { index: number; action: string; error: string };
+  expectationsReproduced: boolean;
+  finalSnapshot: string;
+  /** The first successful observation of a derived scenario expectation, if one was supplied. */
+  variantExpectationResult?: import("../agent/tools.js").ToolCallResult;
+  variantExpectationStep?: number;
+  /** The page actually active when replay ended — the same page it was called with, unless an action
+   * (a new tab, a reopened browser) switched it. The caller must close this page's browser. */
+  finalPage: Page;
+}
+
+/** Pulls out just the successful tool calls from an evidence log — replay isn't interested in the agent's failed exploratory attempts, only the sequence that actually worked. `flowComplete` isn't a browser action, so it's excluded here too. */
+export function extractActions(entries: EvidenceEntry[]): ToolCall[] {
+  return entries
+    .filter((entry) => entry.toolCall && !entry.error && entry.toolCall.name !== "flowComplete")
+    .map((entry, i) => ({
+      id: `replay-${i}`,
+      name: entry.toolCall!.name,
+      input: entry.toolCall!.input,
+    }));
+}
+
+/** Re-executes a fixed action sequence deterministically — no LLM involved — and reports whether it
+ * reproduces the same outcome the original discovery run verified. Must use the *same* verification
+ * mode the flow was originally checked with — a hardcoded `completion`-only check here would fail
+ * every non-`completion` flow (e.g. a `rejection`-verified one) regardless of whether it truly reproduced. */
+export async function replay(
+  page: Page,
+  actions: ToolCall[],
+  mode: VerificationMode | VerificationMode[] = "completion",
+  recorder?: EvidenceRecorder,
+  expectedExpectations: ExpectationObservation[] = [],
+  variantExpectation?: ResponseExpectation,
+  logger?: Logger,
+): Promise<ReplayResult> {
+  const flowStartUrl = page.url();
+  const flowStartSnapshot = await captureSnapshot(page);
+  const replayNetworkStart = recorder?.network.length ?? 0;
+  const steps: StepResult[] = [];
+  let variantExpectationResult: import("../agent/tools.js").ToolCallResult | undefined;
+  let variantExpectationStep: number | undefined;
+  let finalUrl = flowStartUrl;
+
+  for (const [index, action] of actions.entries()) {
+    logger?.debug("replay.step_started", "Replay action started", { stepIndex: index, action: action.name, input: action.input });
+    try {
+      const result = await executeToolCall(page, action);
+      steps.push(result);
+      finalUrl = result.url;
+      if (result.activePage) {
+        page = result.activePage;
+        configurePageTimeouts(page);
+        recorder?.reattach(page);
+      }
+      if (variantExpectation && !variantExpectationResult) {
+        const expectationResult = await executeToolCall(page, {
+          id: `replay-variant-expectation-${index}`,
+          name: "verifyExpectation",
+          input: {
+            expectationIndex: 1,
+            assertion: variantExpectation.assertion,
+            locator: variantExpectation.locator,
+            value: variantExpectation.value,
+          },
+        });
+        if (expectationResult.expectation?.status === "met") {
+          variantExpectationResult = expectationResult;
+          variantExpectationStep = index;
+        }
+      }
+      logger?.debug("replay.step_completed", "Replay action completed", { stepIndex: index, action: action.name, url: result.url });
+    } catch (err) {
+      logger?.debug("replay.step_failed", "Replay action failed", { stepIndex: index, action: action.name, error: (err as Error).message });
+      return {
+        reproduced: false,
+        verificationPassed: false,
+        finalUrl,
+        steps,
+        expectationsReproduced: false,
+        finalSnapshot: steps[steps.length - 1]?.snapshot ?? flowStartSnapshot,
+        failedAt: { index, action: action.name, error: (err as Error).message },
+        finalPage: page,
+      };
+    }
+  }
+
+  const finalSnapshot = steps[steps.length - 1]?.snapshot ?? flowStartSnapshot;
+  const replayedExpectations = steps.flatMap((step) => step.expectation ? [step.expectation] : []);
+  const expectationsReproduced = expectedExpectations.every((expected, index) => {
+    const actual = replayedExpectations[index];
+    return Boolean(
+      actual &&
+        actual.expectationIndex === expected.expectationIndex &&
+        actual.status === expected.status &&
+        actual.assertion === expected.assertion &&
+        actual.locator === expected.locator &&
+        actual.value === expected.value,
+    );
+  }) && replayedExpectations.length === expectedExpectations.length;
+  const verificationPassed = verifyFlow(mode, {
+    flowStartUrl,
+    flowStartSnapshot,
+    finalUrl,
+    finalSnapshot,
+    network: recorder?.network.slice(replayNetworkStart) ?? [],
+  });
+  const reproduced = expectationsReproduced && verificationPassed;
+  logger?.debug("replay.completed", "Replay verification completed", {
+    reproduced, verificationPassed, expectationsReproduced, steps: steps.length, finalUrl,
+  });
+  return {
+    reproduced,
+    verificationPassed,
+    finalUrl,
+    steps,
+    expectationsReproduced,
+    finalSnapshot,
+    finalPage: page,
+    variantExpectationResult,
+    variantExpectationStep,
+  };
+}
+
+/** Detects a response variant that changed an observable intermediate page, even if the flow ends on the same screen. */
+export function hasObservableReplayDifference(base: ReplayResult, candidate: ReplayResult): boolean {
+  if (base.finalUrl !== candidate.finalUrl || base.finalSnapshot !== candidate.finalSnapshot) return true;
+  if (base.steps.length !== candidate.steps.length) return true;
+  return candidate.steps.some((step, index) => {
+    const original = base.steps[index];
+    return !original || original.url !== step.url || original.snapshot !== step.snapshot;
+  });
+}
