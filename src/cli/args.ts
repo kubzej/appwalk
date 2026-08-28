@@ -1,4 +1,4 @@
-import { loadAppwalkConfig, validateResolvedOptions, type CoverageRunConfig, type ProviderName } from "../config.js";
+import { loadAppwalkConfig, validateResolvedOptions, type BrowserEngine, type CoverageRunConfig, type ProviderName } from "../config.js";
 import type { LogLevel } from "../logging/logger.js";
 
 const DEFAULT_OUTPUT_DIR = "./appwalk-output";
@@ -17,6 +17,7 @@ export interface CliArgs {
   maxSteps: number;
   model?: string;
   provider?: ProviderName;
+  browserEngine: BrowserEngine;
   allowDestructive: boolean;
   blockMethods: string[];
   safetyConfigPath?: string;
@@ -49,6 +50,7 @@ function printUsage(error?: string): never {
     "  -n, --max-steps <number>                    Exploration action budget (default: 25)",
     "  -m, --model <model>                         Provider model (required)",
     "      --provider anthropic|gemini|ollama|grok|openai (required)",
+    "      --browser chromium|firefox|webkit         Browser engine to drive (default: chromium)",
     "      --allow-destructive",
     "      --block-methods METHOD,...",
     "      --safety-config <path>",
@@ -95,6 +97,7 @@ export function parseArgs(argv: string[]): CliArgs {
     output: DEFAULT_OUTPUT_DIR,
     outputSpecified: false,
     maxSteps: DEFAULT_MAX_STEPS,
+    browserEngine: "chromium",
     allowDestructive: false,
     blockMethods: DEFAULT_BLOCK_METHODS,
     screenshots: false,
@@ -105,7 +108,7 @@ export function parseArgs(argv: string[]): CliArgs {
   if (url) args.cliSpecified.add("url");
   const valueFlags = new Set([
     "--flows", "-e", "--email", "-p", "--password", "-o", "--output", "-n", "--max-steps",
-    "--response-variant-max", "--response-fixture-max-bytes", "-m", "--model", "--provider",
+    "--response-variant-max", "--response-fixture-max-bytes", "-m", "--model", "--provider", "--browser",
     "--block-methods", "--safety-config", "--storage-state", "--persona", "--scope", "--expect", "--config",
   ]);
 
@@ -161,6 +164,10 @@ export function parseArgs(argv: string[]): CliArgs {
       args.provider = value as ProviderName;
       args.cliSpecified.add("provider");
     }
+    else if (flag === "--browser" && value) {
+      args.browserEngine = value as BrowserEngine;
+      args.cliSpecified.add("browserEngine");
+    }
     else if (flag === "--block-methods" && value) {
       args.blockMethods = value.split(",").map((method) => method.trim().toUpperCase());
       args.cliSpecified.add("blockMethods");
@@ -212,6 +219,7 @@ export function applyConfig(args: CliArgs): CliArgs {
   if (!args.cliSpecified.has("output") && config.output) args.output = config.output;
   if (!args.cliSpecified.has("provider") && config.provider) args.provider = config.provider;
   if (!args.cliSpecified.has("model") && config.model) args.model = config.model;
+  if (!args.cliSpecified.has("browserEngine") && config.browser) args.browserEngine = config.browser;
   if (!args.cliSpecified.has("personaName") && config.persona) args.personaName = config.persona;
   if (!args.cliSpecified.has("maxSteps") && config.maxSteps !== undefined) args.maxSteps = config.maxSteps;
   if (!args.cliSpecified.has("screenshots") && config.screenshots !== undefined) args.screenshots = config.screenshots;

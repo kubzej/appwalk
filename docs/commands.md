@@ -50,6 +50,7 @@ Requirements below are evaluated after command-line values and the explicitly pa
 | `-n, --max-steps <number>` | `run`, `explore` | Never | Maximum browser actions per persona run. Defaults to `25`; must be a positive integer. |
 | `-m, --model <name>` | `run`, `explore` | Always for exploration | Provider model. Supply it via CLI or config. |
 | `--provider <name>` | `run`, `explore` | Always for exploration | `anthropic`, `gemini`, `ollama`, `grok`, or `openai`. Supply it via CLI or config. |
+| `--browser <engine>` | `run`, `explore` | No | `chromium`, `firefox`, or `webkit`. Defaults to `chromium`. |
 | `--storage-state <path>` | All | Only when using a pre-authenticated session or generating without fresh credentials | Playwright storage state to preload or use for generated tests. |
 | `--persona <name>` | `run`, `explore` | Never | Built-in exploration persona. See [Personas](personas.md). |
 | `--scope <text>` | `run`, `explore` | Never | Natural-language area or objective for the exploration. It can be used independently to focus discovery. |

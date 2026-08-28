@@ -52,4 +52,27 @@ test("rejects invalid shared option values", () => {
   assert.throws(() => validateResolvedOptions({ ...validOptions, maxSteps: 0 }), /maxSteps must be a positive integer/);
   assert.throws(() => validateResolvedOptions({ ...validOptions, screenshots: "yes" }), /screenshots must be a boolean/);
   assert.throws(() => validateResolvedOptions({ ...validOptions, blockMethods: ["DELETE", ""] }), /blockMethods must be a list/);
+  assert.throws(() => validateResolvedOptions({ ...validOptions, browserEngine: "safari" }), /browser must be one of chromium, firefox, or webkit/);
+});
+
+test("defaults to chromium and maps a YAML browser engine override", () => {
+  assert.equal(applyConfig(parseArgs(["run", "https://example.test", "--provider", "openai", "--model", "test-model"])).browserEngine, "chromium");
+
+  const directory = mkdtempSync(join(tmpdir(), "appwalk-config-"));
+  const path = join(directory, "config.yaml");
+  try {
+    writeFileSync(path, [
+      "version: 1",
+      "url: https://example.test",
+      "provider: openai",
+      "model: test-model",
+      "browser: firefox",
+    ].join("\n"));
+    assert.equal(loadAppwalkConfig(path).browser, "firefox");
+    assert.equal(applyConfig(parseArgs(["run", "--config", path])).browserEngine, "firefox");
+    // An explicit CLI flag still wins over the config file.
+    assert.equal(applyConfig(parseArgs(["run", "--config", path, "--browser", "webkit"])).browserEngine, "webkit");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

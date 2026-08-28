@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 
 export type ProviderName = "anthropic" | "gemini" | "ollama" | "grok" | "openai";
+export type BrowserEngine = "chromium" | "firefox" | "webkit";
 
 export interface CoverageRunConfig {
   name: string;
@@ -17,6 +18,8 @@ export interface AppwalkConfig {
   output?: string;
   provider?: ProviderName;
   model?: string;
+  /** Which Playwright engine drives the browser. Defaults to chromium when omitted. */
+  browser?: BrowserEngine;
   persona?: string;
   maxSteps?: number;
   screenshots?: boolean;
@@ -62,6 +65,10 @@ export function isProvider(value: unknown): value is ProviderName {
   return value === "anthropic" || value === "gemini" || value === "ollama" || value === "grok" || value === "openai";
 }
 
+export function isBrowserEngine(value: unknown): value is BrowserEngine {
+  return value === "chromium" || value === "firefox" || value === "webkit";
+}
+
 export function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -90,6 +97,9 @@ export function validateResolvedOptions(options: Record<string, unknown>, path =
   if (!isNonEmptyString(options.output)) throw new Error(`output must be a non-empty string in ${path}.`);
   if (!isProvider(options.provider)) throw new Error(`provider must be one of anthropic, gemini, ollama, grok, or openai in ${path}.`);
   if (!isNonEmptyString(options.model)) throw new Error(`model must be a non-empty string in ${path}.`);
+  if (options.browserEngine !== undefined && !isBrowserEngine(options.browserEngine)) {
+    throw new Error(`browser must be one of chromium, firefox, or webkit in ${path}.`);
+  }
   validateMaxSteps(options.maxSteps, "maxSteps", path);
 
   for (const key of ["screenshots", "allowDestructive"] as const) {
@@ -133,6 +143,9 @@ function validateConfig(value: unknown, path: string): AppwalkConfig {
   if (config.version !== 1) throw new Error(`Unsupported config version in ${path}. Expected version: 1.`);
   if (config.provider !== undefined && !isProvider(config.provider)) throw new Error(`Invalid provider in ${path}.`);
   if (config.model !== undefined && !isNonEmptyString(config.model)) throw new Error(`model must be a non-empty string in ${path}.`);
+  if (config.browser !== undefined && !isBrowserEngine(config.browser)) {
+    throw new Error(`browser must be one of chromium, firefox, or webkit in ${path}.`);
+  }
   if (config.persona !== undefined && !isNonEmptyString(config.persona)) throw new Error(`persona must be a non-empty string in ${path}.`);
   if (config.url !== undefined && !isNonEmptyString(config.url)) throw new Error(`url must be a non-empty string in ${path}.`);
   if (config.output !== undefined && !isNonEmptyString(config.output)) throw new Error(`output must be a non-empty string in ${path}.`);

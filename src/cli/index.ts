@@ -60,6 +60,7 @@ function logResolvedConfiguration(args: CliArgs): void {
   appLogger.info(`  Target: ${args.url}`);
   appLogger.info(`  Provider: ${args.provider}`);
   appLogger.info(`  Model: ${args.model}`);
+  appLogger.info(`  Browser: ${args.browserEngine}`);
   appLogger.info(`  Output root: ${args.output}`);
   appLogger.info(`  Authentication: ${auth}`);
   appLogger.info(`  Screenshots: ${args.screenshots ? "enabled" : "disabled"}`);
@@ -89,6 +90,7 @@ function resolvedConfigurationDetails(args: CliArgs): Record<string, unknown> {
     url: args.url,
     provider: args.provider,
     model: args.model,
+    browserEngine: args.browserEngine,
     output: args.output,
     configPath: args.configPath,
     screenshots: args.screenshots,

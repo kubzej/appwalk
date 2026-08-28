@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright";
+import { chromium, firefox, webkit, type Browser, type BrowserType, type Page } from "playwright";
+import type { BrowserEngine } from "../config.js";
 import { runAgentLoop, type LoopResult } from "../agent/loop.js";
 import { PERSONAS, type PersonaIntent } from "../agent/personas.js";
 import { login } from "../browser/login.js";
@@ -364,9 +365,20 @@ function derivedEvidenceEntries(
   return entries;
 }
 
+/** Maps the configured engine name to the Playwright BrowserType that launches it — chromium,
+ * firefox, and webkit share the same Browser/BrowserContext/Page API, so nothing downstream of
+ * launch needs to know which one is running. */
+function resolveBrowserType(engine: BrowserEngine): BrowserType {
+  switch (engine) {
+    case "firefox": return firefox;
+    case "webkit": return webkit;
+    default: return chromium;
+  }
+}
+
 async function exploreAndVerify(args: CliArgs, evidenceLog: EvidenceLog, runId: string, runName: string): Promise<ExplorationRun> {
   appLogger.phase("  Launching browser");
-  const browser = await chromium.launch();
+  const browser = await resolveBrowserType(args.browserEngine).launch();
   try {
     return await exploreAndVerifyInBrowser(args, evidenceLog, runId, runName, browser);
   } finally {
@@ -493,7 +505,7 @@ async function exploreAndVerifyInBrowser(
     runLogger.phase(`  Verifying ${verifiedFlows.length} of ${discovery.flows.length} discovered flow(s) by replay in a clean session`);
     let replayBrowser: Browser | undefined;
     try {
-      replayBrowser = await chromium.launch();
+      replayBrowser = await resolveBrowserType(args.browserEngine).launch();
       try {
         for (const { flow, index } of verifiedFlows) {
         safetyPhase = "replay";

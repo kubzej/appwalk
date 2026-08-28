@@ -1,4 +1,3 @@
-import { chromium } from 'playwright';
 import type { Page, Route } from 'playwright';
 import { toStepResult } from './snapshot.js';
 import { resolveLocator } from './locator.js';
@@ -279,8 +278,11 @@ export async function reopenBrowser(page: Page): Promise<StepResult & { activePa
   const storageState = await page.context().storageState({ indexedDB: true });
   const browser = page.context().browser();
   if (!browser) throw new Error('reopenBrowser: page has no browser (persistent context?)');
+  // Relaunches whichever engine was actually running (chromium/firefox/webkit), not hardcoded —
+  // a run configured for firefox must reopen as firefox, not silently switch engines mid-flow.
+  const browserType = browser.browserType();
   await browser.close();
-  const newBrowser = await chromium.launch();
+  const newBrowser = await browserType.launch();
   const newPage = await newBrowser.newPage({ storageState });
   configurePageTimeouts(newPage);
   await newPage.goto(url);
