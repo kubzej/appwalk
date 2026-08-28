@@ -62,6 +62,55 @@ test("executes expanded pointer, drag, download, and state assertion actions", a
   }
 });
 
+test("verifyExpectation catches a value that becomes true shortly after the check starts, not just an already-true one", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`
+      <div id="status" hidden>Saved</div>
+      <input id="field" value="">
+      <script>
+        setTimeout(() => {
+          document.getElementById('status').hidden = false;
+          document.getElementById('field').value = 'saved-value';
+        }, 300);
+      </script>
+    `);
+
+    // Fired immediately, the same instant the delayed update is only just armed — this is exactly
+    // the race a real async re-render creates, and would have read as "violated" before polling.
+    const visibleResult = await executeToolCall(page, {
+      id: "1", name: "verifyExpectation",
+      input: { expectationIndex: 1, assertion: "visible", locator: "#status" },
+    });
+    assert.equal(visibleResult.expectation?.status, "met");
+
+    const valueResult = await executeToolCall(page, {
+      id: "2", name: "verifyExpectation",
+      input: { expectationIndex: 2, assertion: "value", locator: "#field", value: "saved-value" },
+    });
+    assert.equal(valueResult.expectation?.status, "met");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("verifyExpectation still reports violated for a condition that never becomes true", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<div id="status" hidden>Saved</div>`);
+
+    const result = await executeToolCall(page, {
+      id: "1", name: "verifyExpectation",
+      input: { expectationIndex: 1, assertion: "visible", locator: "#status" },
+    });
+    assert.equal(result.expectation?.status, "violated");
+  } finally {
+    await browser.close();
+  }
+});
+
 test("openTab and switchTab track multiple pages by id and share live storage like real browser tabs", async () => {
   const browser = await chromium.launch({ headless: true });
   try {

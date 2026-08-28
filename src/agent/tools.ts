@@ -1,5 +1,6 @@
 import type { Page } from "playwright";
 import * as actions from "../browser/actions.js";
+import { ACTION_TIMEOUT_MS } from "../browser/actions.js";
 import { toStepResult } from "../browser/snapshot.js";
 import { resolveLocator } from "../browser/locator.js";
 import type { ToolCall, ToolDefinition } from "../providers/provider.js";
@@ -290,6 +291,42 @@ export interface ToolCallResult extends StepResult {
   activePage?: Page;
 }
 
+const EXPECTATION_POLL_INTERVAL_MS = 100;
+
+/** Repeatedly evaluates `read` until `isMet` accepts its result or `timeoutMs` elapses, instead of
+ * checking once — the raw Locator methods used below (isVisible/textContent/inputValue/...) have
+ * no built-in retry, unlike Playwright's own `expect(locator).toBeVisible()` and friends. Without
+ * this, a condition that's genuinely about to become true (an async fetch that hasn't rendered
+ * yet) reads as violated purely because the check ran a beat too early — appwalk's own timing, not
+ * the app's behavior. A transient error mid-poll (the element briefly detached during a re-render)
+ * is treated as "not yet met" and retried; only if every attempt errored is the last error
+ * rethrown, so a genuine failure still reaches the caller's "unknown" handling instead of being
+ * silently reported as a confident false. */
+export async function pollUntil<T>(
+  read: () => Promise<T>,
+  isMet: (value: T) => boolean,
+  timeoutMs: number = ACTION_TIMEOUT_MS,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let lastValue: T | undefined;
+  let lastError: unknown;
+  let succeededOnce = false;
+  while (true) {
+    try {
+      lastValue = await read();
+      succeededOnce = true;
+      if (isMet(lastValue)) return lastValue;
+    } catch (error) {
+      lastError = error;
+    }
+    if (Date.now() >= deadline) {
+      if (!succeededOnce) throw lastError;
+      return lastValue as T;
+    }
+    await new Promise((resolve) => setTimeout(resolve, EXPECTATION_POLL_INTERVAL_MS));
+  }
+}
+
 async function verifyExpectation(
   page: Page,
   expectationIndex: number,
@@ -307,7 +344,10 @@ async function verifyExpectation(
       if (!locatorInput || !locator) {
         detail = `The ${assertion} check needs a locator.`;
       } else {
-        const isVisible = (await locator.count()) > 0 && await locator.isVisible();
+        const isVisible = await pollUntil(
+          async () => (await locator.count()) > 0 && await locator.isVisible(),
+          (visible) => visible === (assertion === "visible"),
+        );
         const passed = assertion === "visible" ? isVisible : !isVisible;
         status = passed ? "met" : "violated";
         detail = passed ? `Locator ${locatorInput} is ${assertion}.` : `Locator ${locatorInput} is not ${assertion}.`;
@@ -316,7 +356,7 @@ async function verifyExpectation(
       if (!locatorInput || value === undefined) {
         detail = "The containsText check needs both a locator and a value.";
       } else {
-        const text = await locator!.textContent();
+        const text = await pollUntil(() => locator!.textContent(), (t) => t?.includes(value) ?? false);
         const passed = text?.includes(value) ?? false;
         status = passed ? "met" : "violated";
         detail = passed ? `Locator ${locatorInput} contains the expected text.` : `Locator ${locatorInput} does not contain the expected text.`;
@@ -325,7 +365,10 @@ async function verifyExpectation(
       if (value === undefined) {
         detail = `The ${assertion} check needs a value.`;
       } else {
-        const currentUrl = page.url();
+        const currentUrl = await pollUntil(
+          async () => page.url(),
+          (url) => assertion === "urlContains" ? url.includes(value) : url === value,
+        );
         const passed = assertion === "urlContains" ? currentUrl.includes(value) : currentUrl === value;
         status = passed ? "met" : "violated";
         detail = passed ? `Current URL satisfies ${assertion}.` : `Current URL does not satisfy ${assertion}.`;
@@ -334,7 +377,7 @@ async function verifyExpectation(
       if (!locatorInput || value === undefined) {
         detail = "The value check needs both a locator and a value.";
       } else {
-        const actual = await locator!.inputValue();
+        const actual = await pollUntil(() => locator!.inputValue(), (a) => a === value);
         const passed = actual === value;
         status = passed ? "met" : "violated";
         detail = passed ? `Locator ${locatorInput} has the expected value.` : `Locator ${locatorInput} does not have the expected value.`;
@@ -343,7 +386,7 @@ async function verifyExpectation(
       if (!locatorInput) {
         detail = `The ${assertion} check needs a locator.`;
       } else {
-        const checked = await locator!.isChecked();
+        const checked = await pollUntil(() => locator!.isChecked(), (c) => c === (assertion === "checked"));
         const passed = assertion === "checked" ? checked : !checked;
         status = passed ? "met" : "violated";
         detail = passed ? `Locator ${locatorInput} is ${assertion}.` : `Locator ${locatorInput} is not ${assertion}.`;
@@ -352,7 +395,7 @@ async function verifyExpectation(
       if (!locatorInput) {
         detail = `The ${assertion} check needs a locator.`;
       } else {
-        const enabled = await locator!.isEnabled();
+        const enabled = await pollUntil(() => locator!.isEnabled(), (e) => e === (assertion === "enabled"));
         const passed = assertion === "enabled" ? enabled : !enabled;
         status = passed ? "met" : "violated";
         detail = passed ? `Locator ${locatorInput} is ${assertion}.` : `Locator ${locatorInput} is not ${assertion}.`;
@@ -363,7 +406,7 @@ async function verifyExpectation(
       } else if (!locatorInput) {
         detail = "The count check needs a locator.";
       } else {
-        const actual = await resolveLocator(page, locatorInput).count();
+        const actual = await pollUntil(() => resolveLocator(page, locatorInput).count(), (c) => c === expectedCount);
         const passed = actual === expectedCount;
         status = passed ? "met" : "violated";
         detail = passed ? `Locator count is ${expectedCount}.` : `Locator count is ${actual}, expected ${expectedCount}.`;
