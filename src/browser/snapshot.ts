@@ -24,6 +24,10 @@ interface PageObservation {
   accessibilityTree: string;
   interactiveElements: InteractiveElementObservation[];
   frames: FrameObservation[];
+  /** document.documentElement.scrollWidth exceeding its clientWidth — the page has real horizontal
+   * scroll, which is almost always unintentional on the open web. A cheap, deterministic signal for
+   * personas like Mia/Max that ask about this explicitly, whether or not screenshots are enabled. */
+  hasHorizontalOverflow: boolean;
 }
 
 export async function captureSnapshot(page: Page): Promise<string> {
@@ -95,6 +99,20 @@ async function capturePageObservation(page: Page): Promise<PageObservation> {
         if (htmlElement.getAttribute("aria-checked") === "true") state.push("checked");
         if (htmlElement.getAttribute("aria-expanded") !== null) state.push(`expanded=${htmlElement.getAttribute("aria-expanded")}`);
         if (htmlElement.hasAttribute("required")) state.push("required");
+        // A small tolerance absorbs normal subpixel rounding. This is a neutral "look here" signal,
+        // not a verdict — single-line horizontal overflow (a long unbroken word bleeding out of its
+        // box) is almost always accidental, but vertical overflow is dominated by a legitimate,
+        // extremely common pattern: a multi-line description clamped with -webkit-line-clamp and an
+        // ellipsis. That case is excluded so the flag stays a useful signal instead of firing on
+        // most product/article card descriptions on the open web.
+        const CLIP_TOLERANCE_PX = 2;
+        const lineClamp = style.getPropertyValue("-webkit-line-clamp");
+        const isLineClamped = lineClamp !== "" && lineClamp !== "none";
+        const overflowsHorizontally = htmlElement.scrollWidth > htmlElement.clientWidth + CLIP_TOLERANCE_PX;
+        const overflowsVertically = !isLineClamped && htmlElement.scrollHeight > htmlElement.clientHeight + CLIP_TOLERANCE_PX;
+        if (overflowsHorizontally || overflowsVertically) {
+          state.push("content-overflows");
+        }
 
         const multiple = tag === "select" && (htmlElement as HTMLSelectElement).multiple;
         const options = tag === "select"
@@ -121,7 +139,9 @@ async function capturePageObservation(page: Page): Promise<PageObservation> {
                 : undefined,
         };
       });
-      return { interactiveElements: interactiveElements.slice(0, 80), frames };
+      const PAGE_OVERFLOW_TOLERANCE_PX = 2;
+      const hasHorizontalOverflow = document.documentElement.scrollWidth > document.documentElement.clientWidth + PAGE_OVERFLOW_TOLERANCE_PX;
+      return { interactiveElements: interactiveElements.slice(0, 80), frames, hasHorizontalOverflow };
 
       function implicitRole(element: HTMLElement): string | undefined {
         switch (element.tagName.toLowerCase()) {
@@ -184,7 +204,10 @@ function formatPageObservation(observation: PageObservation): string {
   const frames = observation.frames.length
     ? observation.frames.map((frame) => `- iframe${frame.title ? ` title=${JSON.stringify(frame.title)}` : ""}${frame.name ? ` name=${JSON.stringify(frame.name)}` : ""}${frame.src ? ` src=${frame.src}` : ""}${frame.locator ? ` | frame selector: ${frame.locator}` : ""}`).join("\n")
     : "(none detected)";
-  return `Accessibility tree:\n${observation.accessibilityTree}\n\nInteractive elements:\n${interactive}\n\nFrames:\n${frames}`;
+  const layoutNote = observation.hasHorizontalOverflow
+    ? "Layout: the page is wider than its own viewport (unexpected horizontal scroll).\n\n"
+    : "";
+  return `${layoutNote}Accessibility tree:\n${observation.accessibilityTree}\n\nInteractive elements:\n${interactive}\n\nFrames:\n${frames}`;
 }
 
 export async function captureScreenshot(page: Page): Promise<string> {
