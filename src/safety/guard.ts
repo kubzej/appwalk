@@ -1,4 +1,4 @@
-import type { Page } from "playwright";
+import type { BrowserContext } from "playwright";
 import type { Logger } from "../logging/logger.js";
 
 const DEFAULT_BLOCK_METHODS = ["POST", "DELETE", "PUT", "PATCH"];
@@ -28,16 +28,28 @@ function matchesAny(url: string, patterns: string[] | undefined): boolean {
   return patterns.some((pattern) => globToRegExp(pattern).test(url));
 }
 
+// Registering the same context twice would stack a second, redundant route handler (harmless —
+// Playwright always dispatches the most-recently-registered one for an overlapping pattern — but
+// wasteful, and every activePage switch calls this since a context switch can't be told apart
+// from a same-context one without it). Keyed by context so multiple independent runs/contexts in
+// one process never collide.
+const guardedContexts = new WeakSet<BrowserContext>();
+
+/** Context-scoped, not page-scoped: a browser context can hold more than one page (a tab opened
+ * via openTab, or one the target app opens itself), and `context.route()` — unlike `page.route()`
+ * — automatically covers every page already in the context plus every page created in it later. */
 export async function installDestructiveActionGuard(
-  page: Page,
+  context: BrowserContext,
   options: GuardOptions,
 ): Promise<void> {
   if (options.allowDestructive) return;
+  if (guardedContexts.has(context)) return;
+  guardedContexts.add(context);
 
   const blockMethods = new Set(options.blockMethods ?? DEFAULT_BLOCK_METHODS);
   const { block, allow } = options.config ?? {};
 
-  await page.route("**/*", async (route) => {
+  await context.route("**/*", async (route) => {
     const request = route.request();
     const url = request.url();
 

@@ -46,7 +46,7 @@ async function runVariantReplay(fetchOnClick: boolean) {
     },
   });
   await page.goto(startUrl);
-  const recorder = new EvidenceRecorder(page);
+  const recorder = new EvidenceRecorder(page.context());
   const actions: ToolCall[] = [{ id: "click", name: "click", input: { locator: "role=button[name=\"Load state\"]" } }];
   const result = await replay(
     page,

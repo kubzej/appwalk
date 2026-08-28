@@ -1,4 +1,4 @@
-import type { ConsoleMessage, Page } from "playwright";
+import type { BrowserContext, ConsoleMessage, Page } from "playwright";
 import { redact, type Logger } from "../logging/logger.js";
 
 export interface NetworkEntry {
@@ -36,7 +36,9 @@ export interface EvidenceRecorderOptions {
 const DEFAULT_BODY_READ_TIMEOUT_MS = 5_000;
 
 /**
- * Attaches to a page and keeps a running log of network + console activity.
+ * Attaches to a browser context and keeps a running log of network + console activity across
+ * every page in it — a new tab opened via `openTab`, or one the target app opens itself, is
+ * covered automatically without any reattachment.
  * - `network`/`consoleLog`: read non-destructively at any time (used by the loop's success heuristic).
  * - `drain()`: a separate, cumulative cursor for per-step evidence capture — the two don't interfere.
  */
@@ -53,17 +55,23 @@ export class EvidenceRecorder {
   private safetyBlocksSeen = 0;
   private lastSafetyBlockAt = 0;
   private readonly bodyReadTimeoutMs: number;
+  // A same-context page switch (openTab, switchTab) is already covered by the constructor's
+  // attachment; only a genuinely different context (openInNewTab, reopenBrowser both create one)
+  // needs a fresh attachment. Tracking which contexts are already attached keeps `reattach` safe
+  // to call on every activePage switch without double-counting a single event twice.
+  private readonly attachedContexts = new WeakSet<BrowserContext>();
 
-  constructor(page: Page, private readonly logger?: Logger, options: EvidenceRecorderOptions = {}) {
+  constructor(context: BrowserContext, private readonly logger?: Logger, options: EvidenceRecorderOptions = {}) {
     this.bodyReadTimeoutMs = Math.max(0, options.bodyReadTimeoutMs ?? DEFAULT_BODY_READ_TIMEOUT_MS);
-    this.attach(page);
+    this.attach(context);
   }
 
-  /** Re-attaches these same listeners to a different page, appending to the same running `network`/
-   * `consoleLog` arrays — needed when the active page changes mid-run (a new tab, a reopened browser),
-   * since the listeners set up in the constructor are bound to the original page object only. */
+  /** Attaches to the active page's context — a no-op if that context is already covered (the
+   * common case: openTab/switchTab stay within the same context as the constructor's). Only a
+   * page that landed in a genuinely new context (openInNewTab, reopenBrowser) causes real work
+   * here. */
   reattach(page: Page): void {
-    this.attach(page);
+    this.attach(page.context());
   }
 
   /** Associates the next failed browser request with an intentional safety abort. */
@@ -83,8 +91,11 @@ export class EvidenceRecorder {
     return true;
   }
 
-  private attach(page: Page): void {
-    page.on("response", (response) => {
+  private attach(context: BrowserContext): void {
+    if (this.attachedContexts.has(context)) return;
+    this.attachedContexts.add(context);
+
+    context.on("response", (response) => {
       const entry: NetworkEntry = {
         method: response.request().method(),
         url: response.url(),
@@ -109,7 +120,7 @@ export class EvidenceRecorder {
       }
     });
 
-    page.on("console", (msg: ConsoleMessage) => {
+    context.on("console", (msg: ConsoleMessage) => {
       this.consoleLog.push({ type: msg.type(), text: msg.text() });
       if (msg.type() === "error") {
         this.runtimeErrors.push({
@@ -120,11 +131,14 @@ export class EvidenceRecorder {
       }
       this.logger?.debug("browser.console", "Page console message", { type: msg.type(), text: msg.text() });
     });
-    page.on("pageerror", (error) => {
+    // Context-level equivalent of page.on("pageerror") — the same uncaught-exception signal,
+    // aggregated across every page in the context instead of bound to just one.
+    context.on("weberror", (webError) => {
+      const error = webError.error();
       this.runtimeErrors.push({ kind: "page_error", message: String(redact(error.message)) });
       this.logger?.debug("browser.page_error", "Page JavaScript error", { error: error.message });
     });
-    page.on("requestfailed", (request) => {
+    context.on("requestfailed", (request) => {
       const safetyRelated = this.consumeSafetyBlock({ method: request.method(), url: request.url() });
       const message = request.failure()?.errorText ?? "Request failed";
       const lifecycle = isLifecycleRequestFailure(message);

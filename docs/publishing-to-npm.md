@@ -103,6 +103,8 @@ Two ways to handle this — pick one and document it clearly, don't leave it imp
 
 Given this is a CLI tool people run interactively (not a library embedded in someone else's build), a documented manual step is the safer default — it keeps `npm install -g appwalk` fast and avoids surprising anyone running it inside CI/Docker where a browser download mid-install can break the build.
 
+Either way, this only installs Chromium — the default engine and the only one covered by either option above. `--browser firefox` or `--browser webkit` needs its own `npx playwright install firefox`/`webkit` first; neither is fetched automatically by the postinstall script or the manual step as written. Document that alongside whichever option is chosen, rather than leaving a user who reaches for a non-default engine to hit a missing-executable error.
+
 ## 5. Pick a license and add the file
 
 No `LICENSE` file exists yet. MIT is the conventional default for a CLI tool like this (permissive, no obligations on downstream users) unless there's a specific reason to choose otherwise. Add:

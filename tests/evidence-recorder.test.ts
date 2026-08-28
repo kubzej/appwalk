@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { chromium, type Page, type Response } from "playwright";
+import { chromium, type BrowserContext, type Response } from "playwright";
 import { EvidenceRecorder } from "../src/evidence/recorder.js";
 
 test("records browser runtime errors without exposing sensitive values", async () => {
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
-    const recorder = new EvidenceRecorder(page);
+    const recorder = new EvidenceRecorder(page.context());
     await page.evaluate(() => {
       console.error("token=do-not-print");
       setTimeout(() => { throw new Error("password=do-not-print"); }, 0);
@@ -29,7 +29,7 @@ test("marks request failures caused by a safety block", async () => {
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
-    const recorder = new EvidenceRecorder(page);
+    const recorder = new EvidenceRecorder(page.context());
     const url = "https://example.test/api/cart";
     await page.route(url, async (route) => route.abort());
     recorder.markSafetyBlocked({ method: "POST", url });
@@ -53,7 +53,7 @@ test("marks a related fetch console error as safety-related without matching an 
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
-    const recorder = new EvidenceRecorder(page);
+    const recorder = new EvidenceRecorder(page.context());
     recorder.markSafetyBlocked({ method: "POST", url: "https://example.test/api/cart" });
     await page.evaluate(() => console.error("Request failed: Failed to fetch"));
 
@@ -65,8 +65,8 @@ test("marks a related fetch console error as safety-related without matching an 
 });
 
 test("does not block cleanup on a JSON response body that never settles", async () => {
-  const page = new EventEmitter() as unknown as Page;
-  const recorder = new EvidenceRecorder(page, undefined, { bodyReadTimeoutMs: 10 });
+  const context = new EventEmitter() as unknown as BrowserContext;
+  const recorder = new EvidenceRecorder(context, undefined, { bodyReadTimeoutMs: 10 });
   const response = {
     request: () => ({ method: () => "GET" }),
     url: () => "https://example.test/api/stream",
@@ -75,22 +75,79 @@ test("does not block cleanup on a JSON response body that never settles", async 
     json: () => new Promise<unknown>(() => undefined),
   } as unknown as Response;
 
-  (page as unknown as { emit: (event: string, value: unknown) => boolean }).emit("response", response);
+  (context as unknown as { emit: (event: string, value: unknown) => boolean }).emit("response", response);
   await recorder.waitForPendingBodies();
 
   assert.equal(recorder.network[0]?.body, undefined);
 });
 
+test("captures network and console activity from a second page in the same context with no reattach", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext();
+    await context.route("https://app.test/**", async (route) => {
+      await route.fulfill({ status: 200, contentType: "text/html", body: "<h1>ok</h1>" });
+    });
+    const recorder = new EvidenceRecorder(context);
+
+    const firstPage = await context.newPage();
+    await firstPage.goto("https://app.test/");
+
+    // A page opened later in the same context (openTab's mechanism, or a popup the app opens
+    // itself) — reattach() is never called for it, unlike before this change.
+    const secondPage = await context.newPage();
+    await secondPage.goto("https://app.test/second");
+    await secondPage.evaluate(() => console.error("second-page-error"));
+    await secondPage.waitForTimeout(20);
+
+    const urls = recorder.network.map((entry) => entry.url);
+    assert.ok(urls.some((url) => url === "https://app.test/"), "first page's navigation was captured");
+    assert.ok(urls.some((url) => url === "https://app.test/second"), "second page's navigation was captured with no reattach");
+    assert.ok(
+      recorder.runtimeErrors.some((error) => error.kind === "console_error" && error.message.includes("second-page-error")),
+      "second page's console error was captured with no reattach",
+    );
+  } finally {
+    await browser.close();
+  }
+});
+
+test("reattach is idempotent — calling it twice for the same context does not double-count events", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext();
+    await context.route("https://app.test/**", async (route) => {
+      await route.fulfill({ status: 200, contentType: "text/html", body: "<h1>ok</h1>" });
+    });
+    const page = await context.newPage();
+    const recorder = new EvidenceRecorder(context);
+
+    // Simulates what happens on every activePage switch (openTab, switchTab) within one context —
+    // reattach(page) is called unconditionally; it must not add a second listener each time.
+    recorder.reattach(page);
+    recorder.reattach(page);
+    recorder.reattach(page);
+
+    await page.goto("https://app.test/");
+    await page.waitForTimeout(20);
+
+    const matchingEntries = recorder.network.filter((entry) => entry.url === "https://app.test/");
+    assert.equal(matchingEntries.length, 1);
+  } finally {
+    await browser.close();
+  }
+});
+
 test("classifies navigation cancellation as lifecycle noise", () => {
-  const page = new EventEmitter() as unknown as Page;
-  const recorder = new EvidenceRecorder(page);
+  const context = new EventEmitter() as unknown as BrowserContext;
+  const recorder = new EvidenceRecorder(context);
   const request = {
     method: () => "GET",
     url: () => "https://example.test/catalog",
     failure: () => ({ errorText: "net::ERR_ABORTED" }),
   };
 
-  (page as unknown as { emit: (event: string, value: unknown) => boolean }).emit("requestfailed", request);
+  (context as unknown as { emit: (event: string, value: unknown) => boolean }).emit("requestfailed", request);
 
   assert.equal(recorder.runtimeErrors[0]?.kind, "request_failed");
   assert.equal(recorder.runtimeErrors[0]?.lifecycle, true);

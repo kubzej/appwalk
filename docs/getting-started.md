@@ -11,6 +11,8 @@ npm install
 npx playwright install chromium
 ```
 
+The command above installs Chromium, the default engine. `--browser firefox` or `--browser webkit` (see [Commands and options](commands.md)) needs its own `npx playwright install firefox`/`webkit` first.
+
 Appwalk currently runs from the repository with `tsx`:
 
 ```bash

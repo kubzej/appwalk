@@ -376,6 +376,27 @@ function resolveBrowserType(engine: BrowserEngine): BrowserType {
   }
 }
 
+// A page the agent explicitly switches to (openTab, switchTab, openInNewTab, reopenBrowser) all
+// go through this, so calling it more than once on the same page (e.g. switchTab revisiting a
+// tab already instrumented) must not double up the listener — that would double-log every future
+// popup from that page.
+const popupInstrumentedPages = new WeakSet<Page>();
+
+/** Visibility only (no automatic switchTab/registration yet): logs a new tab the target app opens
+ * on its own — a target="_blank" link, window.open(), an OAuth popup — which the agent otherwise
+ * has no way to notice, since it only ever sees a fresh snapshot of whichever page it already knew
+ * about. `page.on('popup')` (unlike `context.on('page')`) fires only for pages the page itself
+ * opens, so it doesn't also fire for tabs appwalk opens deliberately via context.newPage(). */
+export function attachPopupDetection(page: Page, logger: Logger): void {
+  if (popupInstrumentedPages.has(page)) return;
+  popupInstrumentedPages.add(page);
+  page.on("popup", (popup) => {
+    configurePageTimeouts(popup);
+    logger.verbose(`  The page opened a new tab on its own: ${popup.url()}`);
+    logger.debug("browser.popup_opened", "The page opened a popup", { url: popup.url() });
+  });
+}
+
 async function exploreAndVerify(args: CliArgs, evidenceLog: EvidenceLog, runId: string, runName: string): Promise<ExplorationRun> {
   appLogger.phase("  Launching browser");
   const browser = await resolveBrowserType(args.browserEngine).launch();
@@ -438,15 +459,19 @@ async function exploreAndVerifyInBrowser(
   );
   const page = await context.newPage();
   configurePageTimeouts(page);
+  attachPopupDetection(page, runLogger);
   const runEntries: EvidenceEntry[] = [];
 
   runLogger.phase("  Navigating to application URL");
   await navigateOrLogin(page, args, false, args.url, runLogger);
   // Authentication is setup, not discovered application behavior. Enable the destructive
   // request guard after login so a required login POST is not blocked by the default policy.
-  await installDestructiveActionGuard(page, guardOptions);
-  // Start recording after setup so login and token-refresh traffic never become application fixtures.
-  const recorder = new EvidenceRecorder(page, runLogger);
+  // Context-scoped: covers every page in this context automatically, including ones opened later
+  // via openTab or by the app itself, with no reinstallation needed for either.
+  await installDestructiveActionGuard(context, guardOptions);
+  // Start recording after setup so login and token-refresh traffic never become application
+  // fixtures. Also context-scoped, for the same reason.
+  const recorder = new EvidenceRecorder(context, runLogger);
   activeRecorder = recorder;
 
   runLogger.phase("  Exploring application");
@@ -461,7 +486,14 @@ async function exploreAndVerifyInBrowser(
     getSafetyBlockCount: () => safetyEvents.filter((event) => event.phase === "exploration").length,
     // A new tab (openTab, openInNewTab, reopenBrowser) is a fresh Page — the destructive-action guard
     // is installed with `page.route`, which is page-scoped and does not follow a page switch on its own.
-    onActivePageChange: (newPage) => installDestructiveActionGuard(newPage, guardOptions),
+    // A same-context switch (openTab, switchTab) is already covered by the context-level guard
+    // and recorder installed above; a genuinely new context (openInNewTab, reopenBrowser) is not,
+    // so both re-run here unconditionally — cheap no-ops for the former, essential for the latter.
+    // Popup detection is page-scoped either way and always needs (re-)attaching.
+    onActivePageChange: async (newPage) => {
+      await installDestructiveActionGuard(newPage.context(), guardOptions);
+      attachPopupDetection(newPage, runLogger);
+    },
     onStep: (step, index, flowIndex) => {
       const { network, console: consoleEntries, runtimeErrors } = recorder.drain();
         const entry = {
@@ -523,6 +555,7 @@ async function exploreAndVerifyInBrowser(
         const replayContext = await replayBrowser.newContext(flowStorageState ? { storageState: flowStorageState } : undefined);
         const replayPage = await replayContext.newPage();
         configurePageTimeouts(replayPage);
+        attachPopupDetection(replayPage, flowLogger);
         await navigateOrLogin(
           replayPage,
           args,
@@ -530,8 +563,8 @@ async function exploreAndVerifyInBrowser(
           index > 0 && flow.startUrl ? flow.startUrl : args.url,
           flowLogger,
         );
-        await installDestructiveActionGuard(replayPage, guardOptions);
-        const replayRecorder = new EvidenceRecorder(replayPage, flowLogger);
+        await installDestructiveActionGuard(replayContext, guardOptions);
+        const replayRecorder = new EvidenceRecorder(replayContext, flowLogger);
         activeRecorder = replayRecorder;
         const expectedExpectations = flowEntries
           .filter((entry) => entry.result?.expectation)
@@ -546,7 +579,10 @@ async function exploreAndVerifyInBrowser(
           flowLogger,
           () => safetyEvents.filter((event) => event.phase === "replay").length,
           undefined,
-          (newPage) => installDestructiveActionGuard(newPage, guardOptions),
+          async (newPage) => {
+            await installDestructiveActionGuard(newPage.context(), guardOptions);
+            attachPopupDetection(newPage, flowLogger);
+          },
         );
         runtimeErrorEntries.push(...replayRecorder.runtimeErrors.map((error) => ({ error, phase: "replay" as const, flowIndex: index + 1 })));
         if (!replayResult.reproduced) {
@@ -696,6 +732,7 @@ async function exploreAndVerifyInBrowser(
             );
             const variantPage = await variantContext.newPage();
             configurePageTimeouts(variantPage);
+            attachPopupDetection(variantPage, flowLogger);
             let variantSourceMatched = false;
             await installResponseFixtures(variantPage, variantFixtures, {
               onFixtureApplied: (fixture, requestUrl) => {
@@ -721,8 +758,8 @@ async function exploreAndVerifyInBrowser(
               index > 0 && flow.startUrl ? flow.startUrl : args.url,
               flowLogger,
             );
-            await installDestructiveActionGuard(variantPage, guardOptions);
-            const variantRecorder = new EvidenceRecorder(variantPage, flowLogger);
+            await installDestructiveActionGuard(variantContext, guardOptions);
+            const variantRecorder = new EvidenceRecorder(variantContext, flowLogger);
             activeRecorder = variantRecorder;
             const variantResult = await replay(
               variantPage,
@@ -734,7 +771,10 @@ async function exploreAndVerifyInBrowser(
               flowLogger.child({ scenarioId }),
               () => safetyEvents.filter((event) => event.phase === "replay").length,
               { selector: { method: variant.sourceMethod, url: variant.sourceUrl, occurrence: variant.sourceOccurrence }, isMatched: () => variantSourceMatched },
-              (newPage) => installDestructiveActionGuard(newPage, guardOptions),
+              async (newPage) => {
+                await installDestructiveActionGuard(newPage.context(), guardOptions);
+                attachPopupDetection(newPage, flowLogger);
+              },
             );
             runtimeErrorEntries.push(...variantRecorder.runtimeErrors.map((error) => ({ error, phase: "replay" as const, flowIndex: index + 1 })));
             const variantExpectationResult = variantResult.variantExpectationResult;
