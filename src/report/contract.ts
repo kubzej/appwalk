@@ -81,7 +81,7 @@ export interface ReportIssue {
 
 export interface ReportRuntimeError {
   phase: 'exploration' | 'replay';
-  kind: 'console_error' | 'page_error' | 'request_failed' | 'http_error';
+  kind: 'console_error' | 'page_error' | 'request_failed' | 'http_error' | 'page_crash';
   message: string;
   flowIndex?: number;
   method?: string;

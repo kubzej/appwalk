@@ -98,7 +98,24 @@ test("generates iframe locators and expanded actions as Playwright APIs", () => 
   assert.match(spec, /\.dblclick\(\);/);
   assert.match(spec, /page\.locator\('#source'\)\.dragTo\(page\.locator\('#drop'\)\);/);
   assert.match(spec, /page\.waitForEvent\('download'\)/);
+  assert.match(spec, /expect\(await download\.failure\(\)\)\.toBeNull\(\);/);
+  assert.match(spec, /expect\(downloadPath\)\.toBeTruthy\(\);/);
   assert.match(spec, /page\.locator\('#tags'\)\.selectOption\(\['one', 'three'\]\);/);
+});
+
+test("generates a genuine context-wide setOffline call, not a route mock", () => {
+  const spec = generateSpec([
+    {
+      name: "Offline resilience",
+      entries: [
+        { index: 0, flowIndex: 0, timestamp: "2026-01-01T00:00:00.000Z", toolCall: { name: "setOffline", input: { offline: true } }, network: [], console: [] },
+        { index: 1, flowIndex: 0, timestamp: "2026-01-01T00:00:00.000Z", toolCall: { name: "setOffline", input: { offline: false } }, network: [], console: [] },
+      ],
+    },
+  ], { url: "https://example.test" });
+
+  assert.match(spec, /await page\.context\(\)\.setOffline\(true\);/);
+  assert.match(spec, /await page\.context\(\)\.setOffline\(false\);/);
 });
 
 test("a flow with a device preset gets its own context with the device spread in, and imports devices", () => {

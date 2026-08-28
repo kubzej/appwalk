@@ -14,7 +14,14 @@ export interface ConsoleEntry {
   text: string;
 }
 
-export type RuntimeErrorKind = "console_error" | "page_error" | "request_failed" | "http_error";
+export interface WebSocketFrameEntry {
+  url: string;
+  direction: "sent" | "received";
+  /** Binary frames are summarized rather than serialized raw, to stay JSON-safe in evidence.jsonl. */
+  payload: string;
+}
+
+export type RuntimeErrorKind = "console_error" | "page_error" | "request_failed" | "http_error" | "page_crash";
 
 export interface RuntimeErrorEntry {
   kind: RuntimeErrorKind;
@@ -46,10 +53,12 @@ export class EvidenceRecorder {
   readonly network: NetworkEntry[] = [];
   readonly consoleLog: ConsoleEntry[] = [];
   readonly runtimeErrors: RuntimeErrorEntry[] = [];
+  readonly webSocketFrames: WebSocketFrameEntry[] = [];
 
   private drainedNetwork = 0;
   private drainedConsole = 0;
   private drainedRuntimeErrors = 0;
+  private drainedWebSocketFrames = 0;
   private pendingBodyReads: Promise<void>[] = [];
   private readonly pendingSafetyBlocks = new Map<string, number>();
   private safetyBlocksSeen = 0;
@@ -80,6 +89,21 @@ export class EvidenceRecorder {
     this.pendingSafetyBlocks.set(key, (this.pendingSafetyBlocks.get(key) ?? 0) + 1);
     this.safetyBlocksSeen += 1;
     this.lastSafetyBlockAt = Date.now();
+  }
+
+  /** Records a renderer-process crash as its own diagnosable kind, distinct from every other
+   * failure that can follow one — `page.on('crash')` is page-scoped (there is no context-level
+   * equivalent), so the caller attaches it directly rather than through `attach()`. */
+  recordCrash(url?: string): void {
+    this.runtimeErrors.push({ kind: "page_crash", message: "The page's renderer process crashed.", url: url ? safeUrl(url) : undefined });
+    this.logger?.debug("browser.page_crash", "The page's renderer process crashed", { url });
+  }
+
+  /** Records one WebSocket frame — the caller (`attachWebSocketCapture` in orchestrate.ts) owns
+   * the actual `page.on('websocket')` wiring, the same split as `recordCrash`, since `websocket`
+   * is page-scoped with no context-level equivalent either. */
+  recordWebSocketFrame(entry: WebSocketFrameEntry): void {
+    this.webSocketFrames.push(entry);
   }
 
   private consumeSafetyBlock(request: { method: string; url: string }): boolean {
@@ -203,14 +227,16 @@ export class EvidenceRecorder {
     this.logger?.debug("evidence.body_reads_finalized", "Captured response bodies finalized", { pending: pending.length });
   }
 
-  drain(): { network: NetworkEntry[]; console: ConsoleEntry[]; runtimeErrors: RuntimeErrorEntry[] } {
+  drain(): { network: NetworkEntry[]; console: ConsoleEntry[]; runtimeErrors: RuntimeErrorEntry[]; webSocketFrames: WebSocketFrameEntry[] } {
     const network = this.network.slice(this.drainedNetwork);
     const consoleEntries = this.consoleLog.slice(this.drainedConsole);
     const runtimeErrors = this.runtimeErrors.slice(this.drainedRuntimeErrors);
+    const webSocketFrames = this.webSocketFrames.slice(this.drainedWebSocketFrames);
     this.drainedNetwork = this.network.length;
     this.drainedConsole = this.consoleLog.length;
     this.drainedRuntimeErrors = this.runtimeErrors.length;
-    return { network, console: consoleEntries, runtimeErrors };
+    this.drainedWebSocketFrames = this.webSocketFrames.length;
+    return { network, console: consoleEntries, runtimeErrors, webSocketFrames };
   }
 }
 

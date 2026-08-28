@@ -1,6 +1,6 @@
 import type { Page } from "playwright";
 import { executeToolCall } from "../agent/tools.js";
-import type { TabRegistry } from "../agent/tools.js";
+import type { TabRegistryHandle } from "../agent/tools.js";
 import type { VerificationMode } from "../agent/verification.js";
 import { verifyFlow } from "../agent/verification.js";
 import { configurePageTimeouts } from "../browser/actions.js";
@@ -62,11 +62,17 @@ export async function replay(
    * browser) — the caller re-applies whatever is page-scoped, such as the destructive-action
    * safety guard, which doesn't follow a page switch on its own. */
   onActivePageChange?: (page: Page) => Promise<void>,
+  /** Kept pointed at this replay's tab registry so a popup listener attached by the caller
+   * (before this function ever runs) can register a tab the target app opens on its own — this
+   * matters when the recorded action sequence includes a switchTab to a tab that originally came
+   * from a popup during exploration, not from openTab. A caller with no popup-registration story
+   * (e.g. a variant replay that doesn't need it) can omit this and get a private, unshared registry. */
+  tabRegistryHandle: TabRegistryHandle = { tabs: new Map() },
 ): Promise<ReplayResult> {
   const flowStartUrl = page.url();
   const flowStartSnapshot = await captureSnapshot(page);
   const replayNetworkStart = recorder?.network.length ?? 0;
-  const tabs: TabRegistry = new Map([["tab-0", page]]);
+  tabRegistryHandle.tabs = new Map([["tab-0", page]]);
   const steps: StepResult[] = [];
   let variantExpectationResult: import("../agent/tools.js").ToolCallResult | undefined;
   let variantExpectationStep: number | undefined;
@@ -85,7 +91,7 @@ export async function replay(
         locator: variantExpectation.locator,
         value: variantExpectation.value,
       },
-    }, tabs);
+    }, tabRegistryHandle.tabs);
     if (expectationResult.expectation?.status === "met") {
       variantExpectationResult = expectationResult;
       variantExpectationStep = step;
@@ -99,7 +105,7 @@ export async function replay(
   for (const [index, action] of actions.entries()) {
     logger?.debug("replay.step_started", "Replay action started", { stepIndex: index, action: action.name, input: action.input });
     try {
-      const result = await executeToolCall(page, action, tabs);
+      const result = await executeToolCall(page, action, tabRegistryHandle.tabs);
       steps.push(result);
       finalUrl = result.url;
       if (result.activePage) {

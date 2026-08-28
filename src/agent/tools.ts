@@ -144,7 +144,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "switchTab",
     description:
-      "Switch the active tab to a previously opened one, by the id reported when it was opened (from openTab or, in the background, the tab you started in). Use this to interleave actions between two open tabs — for example, saving a change in one tab, then switching to another tab that still shows the old state to see whether it warns about the conflict or silently overwrites it.",
+      "Switch the active tab to a previously opened one, by the id reported when it was opened. That id can come from openTab, the tab you started in, or a tab the application opened on its own (a target=\"_blank\" link, window.open(), an OAuth popup) — when that happens, the action result right after it names the new tab id so you can follow it. Use this to interleave actions between two open tabs — for example, saving a change in one tab, then switching to another tab that still shows the old state to see whether it warns about the conflict or silently overwrites it — or simply to see what a self-opened tab actually contains.",
     inputSchema: {
       type: "object",
       properties: { tabId: { type: "string", description: "The id of the tab to switch to, e.g. \"tab-1\"." } },
@@ -245,6 +245,34 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         delayMs: { type: "number", description: "How long to delay the matching request in milliseconds, typically 2000-5000." },
       },
       required: ["urlPattern", "delayMs"],
+    },
+  },
+  {
+    name: "setOffline",
+    description:
+      "Toggles genuine offline for the whole browser session — every request on every page, not just one armed request. Unlike simulateFailure's offline mode, this stays in effect until you call it again with offline set to false; remember to restore connectivity before continuing a flow that needs the network.",
+    inputSchema: {
+      type: "object",
+      properties: { offline: { type: "boolean", description: "true to go offline, false to restore connectivity." } },
+      required: ["offline"],
+    },
+  },
+  {
+    name: "apiRequest",
+    description:
+      "Sends a real, direct GET or HEAD HTTP request using the current session's cookies — reaches the API layer directly, not just what a rendered page happens to link to. Use it to check whether a URL or resource is actually protected server-side, independent of whether the UI exposes a link to it (e.g. a suspected admin endpoint, or a resource ID you only guessed at). Read-only: only GET and HEAD are supported, so this can't be used to mutate anything or bypass the safety policy that governs destructive requests.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        method: { type: "string", enum: ["GET", "HEAD"] },
+        url: { type: "string", description: "Absolute URL to request." },
+        headers: {
+          type: "object",
+          description: "Optional extra request headers, e.g. { \"Accept\": \"application/json\" }.",
+          additionalProperties: { type: "string" },
+        },
+      },
+      required: ["method", "url"],
     },
   },
   {
@@ -432,7 +460,40 @@ async function verifyExpectation(
  */
 export type TabRegistry = Map<string, Page>;
 
+/**
+ * A mutable box around the *currently active* TabRegistry. Registries are rebuilt per flow (loop.ts)
+ * or created once per replay (replay.ts) — plain values that get reassigned or scoped inside those
+ * functions. A popup can arrive asynchronously at any moment from a `page.on('popup')` listener that
+ * was attached outside either function and has no way to observe a reassignment, so it needs a
+ * long-lived handle whose `.tabs` field the owning function keeps pointed at whichever registry is
+ * current, rather than a snapshot of the registry itself.
+ */
+export interface TabRegistryHandle {
+  tabs: TabRegistry;
+}
+
+/**
+ * Registering a popup into the tab registry (attachPopupDetection, orchestrate.ts) is invisible to
+ * the model on its own — nothing about that registration reaches the text the model actually reads.
+ * Diffing the registry's keys before and after each dispatched call surfaces it the same way openTab
+ * already surfaces its own new tab, without needing every call site that mutates the registry outside
+ * this function to also know how to phrase it. `openTab` is excluded since it already announces its
+ * own result explicitly; duplicating that here would just repeat the same tab id twice.
+ */
 export async function executeToolCall(page: Page, call: ToolCall, tabs?: TabRegistry): Promise<ToolCallResult> {
+  const tabsBefore = tabs ? new Set(tabs.keys()) : undefined;
+  const result = await dispatchToolCall(page, call, tabs);
+  if (tabs && tabsBefore && call.name !== "openTab") {
+    const newTabIds = [...tabs.keys()].filter((id) => !tabsBefore.has(id));
+    if (newTabIds.length > 0) {
+      const notes = newTabIds.map((id) => `${id} (${tabs.get(id)!.url()})`).join(", ");
+      return { ...result, snapshot: `${result.snapshot}\n\nA new tab opened on its own during this action: ${notes}. Use switchTab to view it if relevant.` };
+    }
+  }
+  return result;
+}
+
+async function dispatchToolCall(page: Page, call: ToolCall, tabs?: TabRegistry): Promise<ToolCallResult> {
   const input = call.input;
   switch (call.name) {
     case "navigate":
@@ -509,6 +570,15 @@ export async function executeToolCall(page: Page, call: ToolCall, tabs?: TabRegi
     case "simulateLatency":
       await actions.simulateLatency(page, input.urlPattern as string, input.delayMs as number);
       return toStepResult(page);
+    case "setOffline":
+      return actions.setOffline(page, input.offline as boolean);
+    case "apiRequest":
+      return actions.apiRequest(
+        page,
+        input.method as "GET" | "HEAD",
+        input.url as string,
+        input.headers as Record<string, string> | undefined,
+      );
     case "verifyExpectation":
       return verifyExpectation(
         page,

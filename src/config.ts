@@ -23,6 +23,7 @@ export interface AppwalkConfig {
   persona?: string;
   maxSteps?: number;
   screenshots?: boolean;
+  trace?: boolean;
   responses?: {
     maxVariants?: number;
     maxFixtureBytes?: number;
@@ -102,7 +103,7 @@ export function validateResolvedOptions(options: Record<string, unknown>, path =
   }
   validateMaxSteps(options.maxSteps, "maxSteps", path);
 
-  for (const key of ["screenshots", "allowDestructive"] as const) {
+  for (const key of ["screenshots", "trace", "allowDestructive"] as const) {
     if (options[key] !== undefined && typeof options[key] !== "boolean") {
       throw new Error(`${key} must be a boolean in ${path}.`);
     }
@@ -152,6 +153,9 @@ function validateConfig(value: unknown, path: string): AppwalkConfig {
   if (config.maxSteps !== undefined) validateMaxSteps(config.maxSteps, "maxSteps", path);
   if (config.screenshots !== undefined && typeof config.screenshots !== "boolean") {
     throw new Error(`screenshots must be a boolean in ${path}.`);
+  }
+  if (config.trace !== undefined && typeof config.trace !== "boolean") {
+    throw new Error(`trace must be a boolean in ${path}.`);
   }
   if (config.responses !== undefined) {
     const responses = validateObject(config.responses, "responses", path);

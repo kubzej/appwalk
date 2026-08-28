@@ -23,6 +23,7 @@ export interface CliArgs {
   safetyConfigPath?: string;
   storageStatePath?: string;
   screenshots: boolean;
+  trace: boolean;
   responseVariantMax?: number;
   responseFixtureMaxBytes?: number;
   personaName?: string;
@@ -56,6 +57,7 @@ function printUsage(error?: string): never {
     "      --safety-config <path>",
     "      --storage-state <path>",
     "      --screenshots",
+    "      --trace                                    Save a Playwright trace (.zip) for exploration and each replayed flow",
     "      --response-variant-max <number>           Maximum derived response scenarios",
     "      --response-fixture-max-bytes <number>     Maximum captured fixture size",
     "      --persona <name>",
@@ -101,6 +103,7 @@ export function parseArgs(argv: string[]): CliArgs {
     allowDestructive: false,
     blockMethods: DEFAULT_BLOCK_METHODS,
     screenshots: false,
+    trace: false,
     expectations: [],
     cliSpecified: new Set<string>(),
     logLevel: "normal",
@@ -122,6 +125,11 @@ export function parseArgs(argv: string[]): CliArgs {
     if (flag === "--screenshots") {
       args.screenshots = true;
       args.cliSpecified.add("screenshots");
+      continue;
+    }
+    if (flag === "--trace") {
+      args.trace = true;
+      args.cliSpecified.add("trace");
       continue;
     }
     if (flag === "--quiet" || flag === "--verbose" || flag === "--debug") {
@@ -223,6 +231,7 @@ export function applyConfig(args: CliArgs): CliArgs {
   if (!args.cliSpecified.has("personaName") && config.persona) args.personaName = config.persona;
   if (!args.cliSpecified.has("maxSteps") && config.maxSteps !== undefined) args.maxSteps = config.maxSteps;
   if (!args.cliSpecified.has("screenshots") && config.screenshots !== undefined) args.screenshots = config.screenshots;
+  if (!args.cliSpecified.has("trace") && config.trace !== undefined) args.trace = config.trace;
   if (!args.cliSpecified.has("email") && config.auth?.email) args.email = config.auth.email;
   if (!args.cliSpecified.has("password") && config.auth?.password) args.password = config.auth.password;
   if (!args.cliSpecified.has("storageStatePath") && config.auth?.storageState) args.storageStatePath = config.auth.storageState;

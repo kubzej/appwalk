@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import test from "node:test";
 import { chromium } from "playwright";
 import { buildSystemPrompt, runAgentLoop } from "../src/agent/loop.js";
 import { captureSnapshot } from "../src/browser/snapshot.js";
+import { attachPopupDetection } from "../src/cli/orchestrate.js";
+import type { TabRegistryHandle } from "../src/agent/tools.js";
+import { Logger } from "../src/logging/logger.js";
 import type { LlmProvider, ProviderTurn, ToolDefinition, ToolResult } from "../src/providers/provider.js";
 
 class TextOnlyProvider implements LlmProvider {
@@ -13,6 +17,14 @@ class TextOnlyProvider implements LlmProvider {
   async continue(_toolResult: ToolResult): Promise<ProviderTurn> {
     return { type: "text", text: "stop" };
   }
+}
+
+/** Plays back a fixed sequence of turns, ignoring whatever the loop passes in — for tests that need
+ * exact, predetermined tool calls rather than a text-generation model's actual reasoning. */
+class ScriptedProvider implements LlmProvider {
+  constructor(private readonly turns: ProviderTurn[]) {}
+  async start(): Promise<ProviderTurn> { return this.turns.shift()!; }
+  async continue(): Promise<ProviderTurn> { return this.turns.shift()!; }
 }
 
 test("stops on plain provider text without inventing a flow", async () => {
@@ -28,6 +40,58 @@ test("stops on plain provider text without inventing a flow", async () => {
     assert.equal(result.stopReason, "agent_stopped");
   } finally {
     await browser.close();
+  }
+});
+
+test("a popup discovered mid-flow is reachable via switchTab inside the real agent loop", async () => {
+  // A target="_blank" link to a data: URI never actually opens (Chromium blocks top-level
+  // navigation to data: URLs), so this needs a real same-origin destination to pop up at all.
+  const server = createServer((req, res) => {
+    if (req.url === "/popped") {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<h1>popped</h1>");
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end('<a id="opener" href="/popped" target="_blank">open</a>');
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.goto(`http://127.0.0.1:${port}/`);
+    // Wired the same way orchestrate.ts wires it in production: attached before the loop starts,
+    // and handed to runAgentLoop so a popup registered while flow N's registry is current lands in
+    // that same registry, not a stale one.
+    const tabRegistryHandle: TabRegistryHandle = { tabs: new Map() };
+    attachPopupDetection(page, new Logger("quiet"), tabRegistryHandle);
+
+    const provider = new ScriptedProvider([
+      { type: "tool_call", toolCall: { id: "1", name: "click", input: { locator: "#opener" } } },
+      { type: "tool_call", toolCall: { id: "2", name: "switchTab", input: { tabId: "tab-1" } } },
+      { type: "tool_call", toolCall: { id: "3", name: "flowComplete", input: { summary: "Reached the popup via switchTab." } } },
+    ]);
+
+    // maxSteps matches the two real actions exactly, so the loop returns right after flowComplete
+    // instead of starting a second flow context that would need a fourth scripted turn.
+    const result = await runAgentLoop(page, provider, { maxSteps: 2, tabRegistryHandle });
+
+    // The model has no way to see attachPopupDetection's own logging (that's CLI output for a
+    // human) — the click step's own result text is the only channel it actually reads, so the new
+    // tab id must be named there, not just mechanically registered in the background.
+    const clickStep = result.history[0];
+    assert.match(clickStep!.result!.snapshot, /new tab opened on its own.*tab-1/is);
+
+    const switchStep = result.history[1];
+    assert.equal(switchStep?.toolCall?.name, "switchTab");
+    assert.equal(switchStep?.error, undefined, "switchTab must not fail to find the popup's tab id");
+    assert.match(switchStep!.result!.snapshot, /popped/);
+    assert.equal(result.flows.length, 1);
+  } finally {
+    await browser.close();
+    server.close();
   }
 });
 

@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ConsoleEntry, NetworkEntry, RuntimeErrorEntry } from "./recorder.js";
+import type { ConsoleEntry, NetworkEntry, RuntimeErrorEntry, WebSocketFrameEntry } from "./recorder.js";
 import type { StepResult } from "../types.js";
 
 export interface EvidenceEntry {
@@ -20,6 +20,9 @@ export interface EvidenceEntry {
   runtimeErrors?: RuntimeErrorEntry[];
   /** Number of network requests intentionally blocked by safety during this action. */
   safetyBlocked?: number;
+  /** WebSocket frames sent/received during this step — a real-time target (live inventory, chat,
+   * price tickers) pushes state over a channel HTTP-only capture can't see at all. */
+  webSocketFrames?: WebSocketFrameEntry[];
 }
 
 export interface EvidenceReadIssue {

@@ -40,7 +40,7 @@ test("executes expanded pointer, drag, download, and state assertion actions", a
     assert.equal(await page.locator("#drop").getAttribute("data-dropped"), "true");
 
     const downloadResult = await executeToolCall(page, { id: "3", name: "download", input: { locator: "#download" } });
-    assert.match(downloadResult.snapshot, /Download - export\.txt/);
+    assert.match(downloadResult.snapshot, /Download - export\.txt \(6 bytes\)/);
 
     await executeToolCall(page, { id: "3b", name: "select", input: { locator: "#tags", value: ["one", "three"] } });
     assert.deepEqual(
@@ -59,6 +59,165 @@ test("executes expanded pointer, drag, download, and state assertion actions", a
     }
   } finally {
     await browser.close();
+  }
+});
+
+test("apiRequest reaches the API directly, using the current session's cookies", async () => {
+  // page.request is a real, separate HTTP client — page.route() mocks (which don't touch real
+  // DNS/network) can't stand in for the target here the way they do for browser-driven requests;
+  // a real local server is needed, same reasoning as the WebSocket and setOffline tests above.
+  const { createServer } = await import("node:http");
+  let seenCookie: string | undefined;
+  const server = createServer((req, res) => {
+    if (req.url === "/login") {
+      res.writeHead(200, { "content-type": "text/html", "set-cookie": "session=abc123; Path=/" });
+      res.end("<h1>ok</h1>");
+      return;
+    }
+    if (req.url === "/api/admin") {
+      seenCookie = req.headers.cookie;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ secret: true }));
+      return;
+    }
+    res.writeHead(404);
+    res.end("not found");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.goto(`http://127.0.0.1:${port}/login`);
+
+    const apiUrl = `http://127.0.0.1:${port}/api/admin`;
+    const result = await executeToolCall(page, { id: "1", name: "apiRequest", input: { method: "GET", url: apiUrl } });
+
+    assert.equal(seenCookie, "session=abc123", "the request must carry the same session cookies as the browser");
+    assert.match(result.snapshot, new RegExp(`API GET ${apiUrl.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")} -> 200`));
+    assert.match(result.snapshot, /"secret":true/);
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test("apiRequest rejects a non-GET/HEAD method at runtime, not just via the tool schema", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.goto("about:blank");
+
+    // A nonexistent domain: if the runtime guard didn't run before dispatch, this would instead
+    // reject with a DNS/network error, not the guard's own message — proving the check happens
+    // before any request is attempted, not just that *some* rejection occurred.
+    await assert.rejects(
+      executeToolCall(page, { id: "1", name: "apiRequest", input: { method: "DELETE", url: "https://this-domain-does-not-exist.invalid/api/thing" } }),
+      /apiRequest: method must be GET or HEAD/,
+    );
+  } finally {
+    await browser.close();
+  }
+});
+
+test("documents why apiRequest is read-only-only: page.request bypasses the context-level safety guard entirely", async () => {
+  const { createServer } = await import("node:http");
+  const server = createServer((_req, res) => { res.writeHead(200, { "content-type": "text/plain" }); res.end("ok"); });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext();
+    let routeSawIt = false;
+    await context.route("**/*", async (route) => { routeSawIt = true; await route.abort(); });
+    const page = await context.newPage();
+
+    // If this ever starts failing because Playwright made page.request respect context.route(),
+    // that's good news — it would mean apiRequest could safely support mutating methods too by
+    // routing them through the same guard, instead of being restricted to GET/HEAD.
+    const response = await page.request.get(`http://127.0.0.1:${port}/`).catch((error: Error) => error);
+    assert.equal(routeSawIt, false, "context.route() must not see an APIRequestContext call");
+    assert.ok(!(response instanceof Error), "the request must succeed unblocked, proving the guard never saw it");
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test("download flags a 0-byte file as an empty download, not a silent success", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.route("https://app.test/empty.txt", async (route) => {
+      await route.fulfill({ status: 200, headers: { "content-disposition": "attachment; filename=empty.txt" }, body: "" });
+    });
+    await page.setContent(`<a id="download" href="https://app.test/empty.txt" download>Download</a>`);
+
+    const result = await executeToolCall(page, { id: "1", name: "download", input: { locator: "#download" } });
+    assert.match(result.snapshot, /Download - empty\.txt \(0 bytes — an empty file was downloaded\)/);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("download reports a real failure reason instead of claiming success", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.route("https://app.test/**", async (route) => {
+      if (route.request().url().endsWith("/page")) {
+        await route.fulfill({ status: 200, contentType: "text/html", body: `<a id="download" href="/broken.bin" download>Download</a>` });
+        return;
+      }
+      // A Content-Length promising far more than the body actually delivers reliably makes
+      // Playwright report the download as failed/canceled — a real, reproducible failure, not a
+      // contrived one.
+      await route.fulfill({
+        status: 200,
+        headers: { "content-disposition": "attachment; filename=broken.bin", "content-length": "1000000" },
+        body: "short",
+      });
+    });
+    await page.goto("https://app.test/page");
+
+    const result = await executeToolCall(page, { id: "1", name: "download", input: { locator: "#download" } });
+    assert.match(result.snapshot, /Download - broken\.bin FAILED: /);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("setOffline drops every request in the context, not just one armed request, and restores it again", async () => {
+  // A page.route() mock never actually reaches Chromium's network layer, so setOffline (which
+  // simulates that layer being down) wouldn't affect it — a real local server is needed to
+  // genuinely exercise the same network path a real request takes, without depending on the
+  // outside internet being reachable from wherever this test runs.
+  const { createServer } = await import("node:http");
+  const server = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end("{}"); });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.goto(`http://127.0.0.1:${port}/`);
+
+    const beforeOk = await page.evaluate((p) => fetch(`http://127.0.0.1:${p}/api`).then(() => true).catch(() => false), port);
+    assert.equal(beforeOk, true, "sanity check: the real local server is reachable before going offline");
+
+    await executeToolCall(page, { id: "1", name: "setOffline", input: { offline: true } });
+    const firstFailed = await page.evaluate((p) => fetch(`http://127.0.0.1:${p}/api/one`).then(() => false).catch(() => true), port);
+    const secondFailed = await page.evaluate((p) => fetch(`http://127.0.0.1:${p}/api/two`).then(() => false).catch(() => true), port);
+    assert.equal(firstFailed, true, "first request must fail while offline");
+    assert.equal(secondFailed, true, "a second, different request must also fail — not just the first one armed");
+
+    await executeToolCall(page, { id: "2", name: "setOffline", input: { offline: false } });
+    const restored = await page.evaluate((p) => fetch(`http://127.0.0.1:${p}/api/one`).then(() => true).catch(() => false), port);
+    assert.equal(restored, true, "connectivity must be restored after setOffline(false)");
+  } finally {
+    await browser.close();
+    server.close();
   }
 });
 

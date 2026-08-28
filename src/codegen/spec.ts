@@ -355,7 +355,10 @@ function actionToStatement(name: string, input: Record<string, unknown>, fixture
     case "uploadFile":
       return `await ${locatorExpr()}.setInputFiles(${JSON.stringify(input.filePaths)});`;
     case "download":
-      return `{ const downloadPromise = page.waitForEvent('download'); await ${locatorExpr()}.click(); const download = await downloadPromise; await download.path(); }`;
+      // A real, non-empty saved file, not just the event having fired — the same distinction the
+      // live download() action checks (suggestedFilename() alone can't tell a real file from a
+      // broken/empty one).
+      return `{ const downloadPromise = page.waitForEvent('download'); await ${locatorExpr()}.click(); const download = await downloadPromise; expect(await download.failure()).toBeNull(); const downloadPath = await download.path(); expect(downloadPath).toBeTruthy(); }`;
     case "handleDialog":
       return `page.once('dialog', (dialog) => dialog.${input.behavior as string}());`;
     case "burst": {
@@ -403,6 +406,14 @@ function actionToStatement(name: string, input: Record<string, unknown>, fixture
       const delayMs = Number(input.delayMs);
       if (!Number.isFinite(delayMs) || delayMs < 0 || delayMs > 60000) return null;
       return `await page.route('` + pattern + `', async (route) => { await new Promise((resolve) => setTimeout(resolve, ${delayMs})); await route.continue(); await page.unroute('` + pattern + `'); });`;
+    }
+    case "setOffline":
+      return `await page.context().setOffline(${input.offline ? "true" : "false"});`;
+    case "apiRequest": {
+      const method = escapeJsString((input.method as string) ?? "GET");
+      const requestUrl = escapeJsString(input.url as string);
+      const headers = input.headers && typeof input.headers === "object" ? JSON.stringify(input.headers) : undefined;
+      return `await page.request.fetch('${requestUrl}', { method: '${method}'${headers ? `, headers: ${headers}` : ""} });`;
     }
     case "verifyExpectation":
       return null;

@@ -89,11 +89,11 @@ You are done with one attempt once you've fired a burst at a real, consequential
     intent: "challenge",
     goal: `You are testing this web application's access control by never logging in. Starting from whatever an anonymous visitor sees, deliberately try to reach a page or resource that normally requires being logged in — by navigating directly to its URL, not through any login form. Try plausible protected paths: patterns you've seen referenced anywhere on the page (a link, a redirect target, a script), or common guesses like /account, /orders, /dashboard, /admin, /profile, /settings, /cart, or a specific item/detail page.
 
-You are NOT trying to find a way to log in, guess valid credentials, or bypass the login form itself — you're checking what happens when you skip login entirely and go straight to a URL that should be protected. A well-defended app blocks you: redirects you back to a login/landing page, shows an access-denied message, or otherwise refuses to show the real content. An app that instead shows you genuine protected content without ever asking you to log in has a serious, real problem.
+You are NOT trying to find a way to log in, guess valid credentials, or bypass the login form itself — you're checking what happens when you skip login entirely and go straight to a URL that should be protected. A well-defended app blocks you: redirects you back to a login/landing page, shows an access-denied message, or otherwise refuses to show the real content. An app that instead shows you genuine protected content without ever asking you to log in has a serious, real problem. The \`apiRequest\` tool (GET/HEAD only) is a second way to try this — a page reachable through the browser might redirect you to login, while the same URL's underlying API endpoint might not enforce that at all; try both when a page has an obvious API behind it.
 
 You are done with one attempt once you've navigated directly to a real, specific protected-looking URL and observed the result — call \`flowComplete\` and state exactly which URL you tried and what happened: were you blocked (and how — redirected, an error/access-denied message, an empty result), or did you see real protected content?`,
     verificationMode: "rejection",
-    coreActionTypes: ["navigate"],
+    coreActionTypes: ["navigate", "apiRequest"],
   },
   iris: {
     name: "Iris, the ID Swapper",
@@ -103,9 +103,9 @@ You are done with one attempt once you've navigated directly to a real, specific
 1. Horizontal (IDOR): once you've seen a URL that reveals an identifier for one of your own resources — an order, an item, a document, a profile, anything with an ID or slug in its URL, like /orders/123 or /account/42 — navigate directly to a nearby or different identifier you have no reason to own (e.g. /orders/124, /orders/122, /account/41). A well-defended app blocks or denies this; a vulnerable one shows you someone else's data.
 2. Vertical (privilege escalation): as your ordinary user, navigate directly to an area that looks like it should require a higher privilege level than you have — an admin panel, a manager area, a settings page scoped to administrators, anything referenced or hinted at but that you were never actually given a link to click.
 
-You are NOT trying to log in as someone else or guess credentials — you're checking what a valid session for your own, ordinary account can reach by URL alone. You are done with one attempt once you've tried a real, specific URL under one of these two approaches and observed the result — call \`flowComplete\`, state which category you tried (horizontal ID-swap or vertical privilege escalation), the exact URL, and whether the app blocked you or exposed something it shouldn't have.`,
+You are NOT trying to log in as someone else or guess credentials — you're checking what a valid session for your own, ordinary account can reach by URL alone. The \`apiRequest\` tool (GET/HEAD only) works for either approach too, and is worth trying alongside \`navigate\` — an API endpoint underneath a page is sometimes less carefully guarded than the page itself. You are done with one attempt once you've tried a real, specific URL under one of these two approaches and observed the result — call \`flowComplete\`, state which category you tried (horizontal ID-swap or vertical privilege escalation), the exact URL, and whether the app blocked you or exposed something it shouldn't have.`,
     verificationMode: "rejection",
-    coreActionTypes: ["navigate"],
+    coreActionTypes: ["navigate", "apiRequest"],
   },
   dana: {
     name: "Dana, the Duplicator",
@@ -125,9 +125,11 @@ You are done with one attempt once you've tried the identical creation twice and
 
 Try different failure modes across your attempts: 500/503/404 (a broken server response), malformed (a corrupted response body), offline/connectionReset (the connection drops before any response comes back), and especially timeout — this one is the most revealing, because unlike the others, the real request actually completes on the server (a real mutation may genuinely happen) while the client is left thinking it failed. After a timeout specifically, try retrying the same action once more, exactly as a real frustrated user would — this can expose whether the app double-processes the retry (a second resource, a duplicate side effect) on top of the attempt that silently succeeded server-side.
 
-A well-behaved app either recovers and completes successfully despite the injected failure, or shows an honest, clear error/retry state — not a silent, broken half-completed state, not a crash, and (after a timeout-then-retry) not a duplicate side effect. You are done with one attempt once you've armed and triggered a failure against a real, consequential request and observed the result — call \`flowComplete\` and state exactly which request you targeted, which failure mode, and what happened: did the app recover cleanly, show an honest error, or break/duplicate?`,
+You also have the \`setOffline\` tool — a genuinely different scenario from \`simulateFailure\`'s offline mode. \`simulateFailure\`'s offline only fails the one request it's armed against; \`setOffline\` drops the connection for the entire session, closer to a real user's wifi actually cutting out mid-session. Call it with offline true, try to continue using the app (click something, submit something) and see whether it notices and shows an honest offline state instead of hanging or silently failing, then call it again with offline false to restore connectivity before finishing your attempt — a flow left offline can't complete anything afterward.
+
+A well-behaved app either recovers and completes successfully despite the injected failure, or shows an honest, clear error/retry state — not a silent, broken half-completed state, not a crash, and (after a timeout-then-retry) not a duplicate side effect. You are done with one attempt once you've triggered a failure — either a targeted request via \`simulateFailure\`, or a real connectivity drop via \`setOffline\` — against something consequential and observed the result — call \`flowComplete\` and state exactly what you targeted, which technique, and what happened: did the app recover cleanly, show an honest error, or break/duplicate?`,
     verificationMode: ["recovery", "rejection"],
-    coreActionTypes: ["simulateFailure"],
+    coreActionTypes: ["simulateFailure", "setOffline"],
   },
   kai: {
     name: "Kai, the Keyboard-only",
@@ -261,7 +263,7 @@ Do not reset application state or manufacture history merely to make the persona
     intent: "journey",
     goal: `You are testing this web application's file-download and export controls — the ones that hand the user a real file to keep, not just information displayed on screen. Look for exports, receipts, invoices, generated reports, data downloads (CSV, PDF, or similar), or any other control whose whole point is producing a downloadable file, and use the \`download\` tool to trigger it.
 
-You are checking whether the download tool actually completes with a real file, not whether the button merely looks like it responded — a control that shows a spinner, a fake success toast, or navigates elsewhere without ever producing a download is a real bug, not a success. If the app offers more than one exportable thing, prefer whichever is most central to its actual purpose (an order receipt, not a decorative sample export).
+You are checking whether the download tool actually completes with a real file, not whether the button merely looks like it responded — a control that shows a spinner, a fake success toast, or navigates elsewhere without ever producing a download is a real bug, not a success. The tool's result reports the real saved file's size (or a failure reason if Playwright couldn't complete it) — a 0-byte result is exactly as real a finding as no download at all, so treat it that way rather than as a technicality. If the app offers more than one exportable thing, prefer whichever is most central to its actual purpose (an order receipt, not a decorative sample export).
 
 You are done with one attempt once you've triggered a real download control and observed whether the file download actually completed — call \`flowComplete\` and state which control you used, the filename reported, and whether the download completed, stalled, or errored. If this application genuinely has no control whose purpose is producing a downloadable file, say so plainly instead of forcing an attempt that doesn't fit.`,
     verificationMode: "completion",
@@ -272,11 +274,11 @@ You are done with one attempt once you've triggered a real download control and 
     intent: "challenge",
     goal: `You are testing this web application's entitlement boundaries as an ordinary, already-logged-in user — not whether you can log in (that's Owen) or whether your session lets you reach someone else's data (that's Iris), but whether being on a lower plan, an expired trial, or an exhausted quota is actually enforced rather than just visually hidden. Look for any signal of a tiered or limited feature: an "upgrade to unlock" banner, a paid-only badge, a usage counter or limit shown in the UI, a feature mentioned in pricing or marketing copy that your own account doesn't have, a trial period, or a page or action that visibly nudges you toward paying.
 
-Once you've spotted a plausible gated feature, area, or action, try to reach it directly — by navigating straight to its URL, or by driving the normal in-app control past the point where the app is supposed to stop you (submitting past a stated limit, continuing past a "trial expired" notice). You are NOT trying to find a payment bypass, tamper with pricing, or forge a payment — you're checking whether the application actually blocks access server-side, or only hides the option client-side while leaving the underlying page or action reachable.
+Once you've spotted a plausible gated feature, area, or action, try to reach it directly — by navigating straight to its URL, by using the \`apiRequest\` tool (GET/HEAD only) against its underlying API endpoint, or by driving the normal in-app control past the point where the app is supposed to stop you (submitting past a stated limit, continuing past a "trial expired" notice). You are NOT trying to find a payment bypass, tamper with pricing, or forge a payment — you're checking whether the application actually blocks access server-side, or only hides the option client-side while leaving the underlying page or action reachable.
 
 A well-defended app blocks or redirects you — an upgrade prompt that actually stops you, a clear "limit reached" rejection, a real paywall. An app that lets you reach the real gated content or complete the gated action anyway, just because the UI happened not to show you the button, has a real problem. You are done with one attempt once you've tried a real, specific gated URL or action and observed the result — call \`flowComplete\` and state exactly what you tried to reach, how you tried to reach it, and whether the app enforced the boundary or let you through. If this application genuinely has no plan, trial, or quota distinction anywhere, say so plainly instead of forcing an attempt that doesn't fit.`,
     verificationMode: "rejection",
-    coreActionTypes: ["navigate"],
+    coreActionTypes: ["navigate", "apiRequest"],
   },
   talia: {
     name: "Talia, the Two-Tabber",

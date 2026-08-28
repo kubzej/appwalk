@@ -7,7 +7,7 @@ import type { ExpectationObservation, ExpectationStatus, StepResult } from "../t
 import type { Logger } from "../logging/logger.js";
 import type { Persona } from "./personas.js";
 import { executeToolCall, TOOL_DEFINITIONS } from "./tools.js";
-import type { TabRegistry } from "./tools.js";
+import type { TabRegistryHandle } from "./tools.js";
 import type { VerificationMode } from "./verification.js";
 import { verifyFlow } from "./verification.js";
 
@@ -277,6 +277,10 @@ export async function runAgentLoop(
      * caller re-applies whatever is page-scoped and doesn't follow a page switch on its own,
      * such as the destructive-action safety guard (`page.route`, not `context`-wide). */
     onActivePageChange?: (page: Page) => Promise<void>;
+    /** Kept pointed at whichever tab registry is current for the flow in progress, so a popup
+     * listener attached outside this function (see attachPopupDetection) can register a tab the
+     * target app opens on its own, making it reachable via switchTab like an agent-opened tab. */
+    tabRegistryHandle?: TabRegistryHandle;
     logger?: Logger;
   },
 ): Promise<LoopResult> {
@@ -312,8 +316,11 @@ export async function runAgentLoop(
   let flowStartSnapshot = initialSnapshot.snapshot;
   let flowStartStorageState = JSON.stringify(await page.context().storageState({ indexedDB: true }));
   // Reset at the start of every flow (below) so tab ids stay predictable ("tab-0" is always the flow's
-  // starting page) and a flow never sees a tab left open by a previous, independent flow.
-  let tabs: TabRegistry = new Map([["tab-0", page]]);
+  // starting page) and a flow never sees a tab left open by a previous, independent flow. Kept behind
+  // a stable handle (not a plain local) so attachPopupDetection, wired up before this function was
+  // even called, can register a self-opened popup into whichever registry is current right now.
+  const tabRegistryHandle: TabRegistryHandle = options.tabRegistryHandle ?? { tabs: new Map() };
+  tabRegistryHandle.tabs = new Map([["tab-0", page]]);
   let actionCount = 0;
   let flowActionStartCount = 0;
   let emptyFlowEndings = 0;
@@ -435,7 +442,7 @@ export async function runAgentLoop(
         flowStartUrl = restartSnapshot.url;
         flowStartSnapshot = restartSnapshot.snapshot;
         flowStartStorageState = JSON.stringify(await page.context().storageState({ indexedDB: true }));
-        tabs = new Map([["tab-0", page]]);
+        tabRegistryHandle.tabs = new Map([["tab-0", page]]);
         flowActionStartCount = actionCount;
 
         turn = await provider.start({
@@ -477,7 +484,7 @@ export async function runAgentLoop(
     });
 
     try {
-      const toolResult = await executeToolCall(page, toolCall, tabs);
+      const toolResult = await executeToolCall(page, toolCall, tabRegistryHandle.tabs);
       result = toolResult;
       resultText = `URL: ${result.url}\n${clipForCheckpoint(result.snapshot, MODEL_SNAPSHOT_MAX_CHARS)}`;
       if (result.expectation) {

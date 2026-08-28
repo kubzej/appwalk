@@ -84,6 +84,7 @@ coverage:
 | `persona` | string | No | Built-in persona for a single run. Use `coverage.runs` for multiple independent personas. |
 | `maxSteps` | positive integer | No | Default action budget per run is 25. |
 | `screenshots` | boolean | No | Include screenshots in provider turns where supported. |
+| `trace` | boolean | No | Save a Playwright trace (`.zip`) for exploration and each replayed flow. |
 | `scope` | string | No | Global exploration objective. |
 | `expect` | string list | No | Global expectations. Requires a global or run scope. |
 | `responses.maxVariants` | non-negative integer | No | Maximum derived response scenarios per confirmed flow. |

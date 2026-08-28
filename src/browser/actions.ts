@@ -1,3 +1,4 @@
+import { stat } from 'node:fs/promises';
 import type { Page, Route } from 'playwright';
 import { toStepResult } from './snapshot.js';
 import { resolveLocator } from './locator.js';
@@ -321,14 +322,34 @@ export async function uploadFile(
   return toStepResult(page);
 }
 
-/** Clicks a download control and waits until Playwright has received the file. The generated test
+/** Clicks a download control and waits until Playwright has received the file — then actually
+ * checks it, instead of only confirming the download event fired. A control that shows a spinner,
+ * a fake success toast, or silently produces an empty file all look identical to "the event fired"
+ * alone; reading the real saved file's size (and Playwright's own failure reason, if any) is the
+ * difference between "a download started" and "a download actually happened". The generated test
  * performs the same event handshake without committing an environment-specific filesystem path. */
 export async function download(page: Page, locator: string): Promise<StepResult> {
   const downloadPromise = page.waitForEvent('download');
   await resolveLocator(page, locator).click();
   const file = await downloadPromise;
   const result = await toStepResult(page);
-  return { ...result, snapshot: `${result.snapshot}\n\nDownload - ${file.suggestedFilename()}` };
+
+  const failure = await file.failure();
+  if (failure) {
+    return { ...result, snapshot: `${result.snapshot}\n\nDownload - ${file.suggestedFilename()} FAILED: ${failure}` };
+  }
+
+  let sizeNote = ' (could not verify the saved file)';
+  const savedPath = await file.path().catch(() => null);
+  if (savedPath) {
+    try {
+      const { size } = await stat(savedPath);
+      sizeNote = size > 0 ? ` (${size} bytes)` : ' (0 bytes — an empty file was downloaded)';
+    } catch {
+      // Path reported but unreadable — leave the default "could not verify" note.
+    }
+  }
+  return { ...result, snapshot: `${result.snapshot}\n\nDownload - ${file.suggestedFilename()}${sizeNote}` };
 }
 
 /** Arms the page's *next* native dialog (alert/confirm/prompt) to auto-accept or auto-dismiss. Call before the action expected to trigger it. */
@@ -464,4 +485,53 @@ export async function simulateLatency(page: Page, urlPattern: string, delayMs: n
     await page.unroute(urlPattern, handler);
   };
   await page.route(urlPattern, handler);
+}
+
+/** Toggles genuine context-wide offline: unlike `simulateFailure`'s `offline` mode, which fails
+ * only the one armed request that matches its URL pattern, this drops network for every request on
+ * every page in the context — new ones included — the same way a real dropped connection does. */
+export async function setOffline(page: Page, offline: boolean): Promise<StepResult> {
+  await page.context().setOffline(offline);
+  return toStepResult(page);
+}
+
+const API_REQUEST_BODY_PREVIEW_MAX_CHARS = 2000;
+
+/** Sends a real request straight through Playwright's `APIRequestContext`, using the current
+ * session's cookies — reaches the API layer directly instead of only what a rendered page happens
+ * to link to. GET/HEAD only: `page.request` is a separate HTTP client that bypasses
+ * `context.route()` entirely, so it structurally cannot be intercepted by the destructive-action
+ * safety guard the way a normal browser-driven request can — restricting this tool to read-only
+ * methods is what keeps it from being a way around that policy rather than needing to reimplement
+ * the guard's block/allow logic a second time for a client it can't actually see. */
+export async function apiRequest(
+  page: Page,
+  method: 'GET' | 'HEAD',
+  url: string,
+  headers?: Record<string, string>,
+): Promise<StepResult> {
+  // The tool schema's enum is a request to the model, not an enforcement mechanism — a malformed
+  // or non-conforming tool call still reaches this function directly, so the read-only restriction
+  // that keeps this tool from bypassing the destructive-action guard has to be checked here too,
+  // not just declared in JSON schema.
+  if (method !== 'GET' && method !== 'HEAD') {
+    throw new Error(`apiRequest: method must be GET or HEAD, got "${method}". This tool is read-only by design — it bypasses the safety guard, so it can't be used for mutating requests.`);
+  }
+  const response = await page.request.fetch(url, { method, headers });
+  const status = response.status();
+  const contentType = response.headers()['content-type'] ?? '(unknown content type)';
+  let bodyPreview: string;
+  try {
+    const text = await response.text();
+    bodyPreview = text.length > API_REQUEST_BODY_PREVIEW_MAX_CHARS
+      ? `${text.slice(0, API_REQUEST_BODY_PREVIEW_MAX_CHARS)}... [truncated, ${text.length} bytes total]`
+      : text;
+  } catch {
+    bodyPreview = '(could not read response body)';
+  }
+  const result = await toStepResult(page);
+  return {
+    ...result,
+    snapshot: `${result.snapshot}\n\nAPI ${method} ${url} -> ${status} (${contentType})\n${bodyPreview}`,
+  };
 }

@@ -1,9 +1,75 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { chromium, devices } from "playwright";
-import { attachPopupDetection, deviceContextOptions } from "../src/cli/orchestrate.js";
+import { attachCrashDetection, attachPopupDetection, attachWebSocketCapture, deviceContextOptions, startTracing, stopTracing } from "../src/cli/orchestrate.js";
 import type { Persona } from "../src/agent/personas.js";
+import { executeToolCall, type TabRegistryHandle } from "../src/agent/tools.js";
+import { EvidenceRecorder } from "../src/evidence/recorder.js";
 import { Logger } from "../src/logging/logger.js";
+
+const WEBSOCKET_ACCEPT_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+/** A minimal, dependency-free WebSocket echo server (text frames only) — no test/runtime
+ * dependency on the `ws` package, which this project doesn't actually depend on directly. Encodes
+ * the handshake per RFC 6455 and decodes just enough of the (always-masked, client-to-server)
+ * frame format to read one text message and echo it back unmasked. Also serves a plain page over
+ * the same origin/port — Chromium's Private Network Access checks block a WebSocket to 127.0.0.1
+ * from an untrusted origin like about:blank, so the test page needs to actually be served from here. */
+async function startEchoWebSocketServer(): Promise<{ port: number; close: () => Promise<void> }> {
+  const server: Server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end("<h1>ok</h1>");
+  });
+  // Once a socket is upgraded, the http.Server hands off ownership and no longer tracks it —
+  // server.closeAllConnections()/server.close() never touch it, which otherwise leaves the process
+  // with an open handle and the test runner hanging forever waiting for it to exit.
+  const upgradedSockets = new Set<import("node:stream").Duplex>();
+  server.on("upgrade", (req, socket) => {
+    upgradedSockets.add(socket);
+    socket.on("close", () => upgradedSockets.delete(socket));
+    const key = req.headers["sec-websocket-key"] as string;
+    const accept = createHash("sha1").update(key + WEBSOCKET_ACCEPT_GUID).digest("base64");
+    socket.write(
+      "HTTP/1.1 101 Switching Protocols\r\n" +
+      "Upgrade: websocket\r\n" +
+      "Connection: Upgrade\r\n" +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+    );
+    // The browser closing the socket after the round-trip is a normal close, not a real error —
+    // an unhandled 'error' event would otherwise crash the whole test process.
+    socket.on("error", () => undefined);
+    socket.on("data", (buffer: Buffer) => {
+      const opcode = buffer[0]! & 0x0f;
+      if (opcode !== 0x1) return; // ignore close (0x8)/ping/pong frames — only text frames carry the test message
+      const payloadLength = buffer[1]! & 0x7f;
+      const maskStart = 2; // only exercised with short (<126-byte) test payloads, so no extended-length handling needed
+      const mask = buffer.subarray(maskStart, maskStart + 4);
+      const encoded = buffer.subarray(maskStart + 4, maskStart + 4 + payloadLength);
+      const decoded = Buffer.alloc(payloadLength);
+      for (let i = 0; i < payloadLength; i++) decoded[i] = encoded[i]! ^ mask[i % 4]!;
+      const message = decoded.toString("utf-8");
+      const reply = Buffer.from(`echo:${message}`, "utf-8");
+      const header = reply.length < 126 ? Buffer.from([0x81, reply.length]) : null;
+      if (!header) throw new Error("test echo server only supports short payloads");
+      socket.write(Buffer.concat([header, reply]));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  return {
+    port,
+    close: () => new Promise<void>((resolve) => {
+      server.closeAllConnections();
+      for (const socket of upgradedSockets) socket.destroy();
+      server.close(() => resolve());
+    }),
+  };
+}
 
 function spyLogger(): { logger: Logger; verboseMessages: string[] } {
   const logger = new Logger("quiet");
@@ -59,6 +125,63 @@ test("attachPopupDetection is idempotent — attaching twice does not double-log
     ]);
 
     assert.equal(verboseMessages.length, 1);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("a popup the page opens itself is reachable via switchTab, not just logged", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext();
+    await context.route("https://app.test/**", async (route) => {
+      const url = route.request().url();
+      const body = url.includes("oauth-consent")
+        ? "<h1>consent screen</h1>"
+        : "<h1>ok</h1>";
+      await route.fulfill({ status: 200, contentType: "text/html", body });
+    });
+    const page = await context.newPage();
+    await page.goto("https://app.test/");
+    const { logger } = spyLogger();
+    const tabRegistryHandle: TabRegistryHandle = { tabs: new Map([["tab-0", page]]) };
+    attachPopupDetection(page, logger, tabRegistryHandle);
+
+    await Promise.all([
+      page.waitForEvent("popup"),
+      page.evaluate(() => { window.open("https://app.test/oauth-consent", "_blank"); }),
+    ]);
+
+    // Phase 1 (logging) already proved the event is observed; this proves it's actually usable —
+    // the tab registry the agent's next switchTab call reads now contains the popup.
+    assert.equal(tabRegistryHandle.tabs.size, 2);
+    assert.ok(tabRegistryHandle.tabs.has("tab-1"), "the popup should get the next sequential tab id, same scheme as openTab");
+
+    const result = await executeToolCall(page, { id: "1", name: "switchTab", input: { tabId: "tab-1" } }, tabRegistryHandle.tabs);
+    assert.match(result.snapshot, /consent screen/);
+    assert.equal(result.activePage?.url(), "https://app.test/oauth-consent");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("attachPopupDetection with a tab registry handle does not double-register one popup when attached twice", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await routedPage(browser);
+    const { logger } = spyLogger();
+    const tabRegistryHandle: TabRegistryHandle = { tabs: new Map([["tab-0", page]]) };
+
+    // Simulates switchTab revisiting a page already instrumented on an earlier activePage switch.
+    attachPopupDetection(page, logger, tabRegistryHandle);
+    attachPopupDetection(page, logger, tabRegistryHandle);
+
+    await Promise.all([
+      page.waitForEvent("popup"),
+      page.evaluate(() => { window.open("https://app.test/receipt", "_blank"); }),
+    ]);
+
+    assert.equal(tabRegistryHandle.tabs.size, 2);
   } finally {
     await browser.close();
   }
@@ -124,5 +247,152 @@ test("a context built from deviceContextOptions actually behaves like the named 
     assert.equal(browser.browserType().name(), "chromium");
   } finally {
     await browser.close();
+  }
+});
+
+test("attachCrashDetection records a real renderer crash as its own runtime-error kind", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const recorder = new EvidenceRecorder(context);
+    attachCrashDetection(page, recorder);
+
+    // chrome://crash is a real Chromium debug URL that deliberately crashes the renderer — the
+    // standard way to test crash handling without depending on the target application ever crashing.
+    await Promise.all([
+      page.waitForEvent("crash"),
+      page.goto("chrome://crash").catch(() => undefined),
+    ]);
+
+    assert.equal(recorder.runtimeErrors.length, 1);
+    assert.equal(recorder.runtimeErrors[0]?.kind, "page_crash");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("attachCrashDetection is idempotent — attaching twice does not double-record one crash", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const recorder = new EvidenceRecorder(context);
+    attachCrashDetection(page, recorder);
+    attachCrashDetection(page, recorder);
+
+    await Promise.all([
+      page.waitForEvent("crash"),
+      page.goto("chrome://crash").catch(() => undefined),
+    ]);
+
+    assert.equal(recorder.runtimeErrors.length, 1);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("attachWebSocketCapture records real sent and received frames, invisible to HTTP-only capture", async () => {
+  const { port, close } = await startEchoWebSocketServer();
+
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const recorder = new EvidenceRecorder(context);
+    attachWebSocketCapture(page, recorder);
+    // Same origin/port as the WebSocket target — Chromium's Private Network Access checks block a
+    // ws://127.0.0.1 connection from an untrusted origin like about:blank.
+    await page.goto(`http://127.0.0.1:${port}/`);
+
+    await page.evaluate((p) => new Promise<void>((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${p}/`);
+      socket.onopen = () => socket.send("hello");
+      socket.onmessage = () => { socket.close(); resolve(); };
+      socket.onerror = () => reject(new Error("WebSocket connection failed"));
+    }), port);
+    await page.waitForTimeout(50);
+
+    const sent = recorder.webSocketFrames.find((frame) => frame.direction === "sent");
+    const received = recorder.webSocketFrames.find((frame) => frame.direction === "received");
+    assert.ok(sent, "expected a sent frame to be recorded");
+    assert.equal(sent!.payload, "hello");
+    assert.ok(received, "expected a received frame to be recorded");
+    assert.equal(received!.payload, "echo:hello");
+    // Confirms this traffic really is invisible to the HTTP-only side of the same recorder — the
+    // only network entry is the one real HTTP page load, nothing WS-shaped alongside it.
+    assert.equal(recorder.network.length, 1);
+  } finally {
+    await browser.close();
+    await close();
+  }
+});
+
+test("attachWebSocketCapture is idempotent — attaching twice does not double-record one frame", async () => {
+  const { port, close } = await startEchoWebSocketServer();
+
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const recorder = new EvidenceRecorder(context);
+    attachWebSocketCapture(page, recorder);
+    attachWebSocketCapture(page, recorder);
+    await page.goto(`http://127.0.0.1:${port}/`);
+
+    await page.evaluate((p) => new Promise<void>((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${p}/`);
+      socket.onopen = () => socket.send("ping");
+      socket.onmessage = () => { socket.close(); resolve(); };
+      socket.onerror = () => reject(new Error("WebSocket connection failed"));
+    }), port);
+    await page.waitForTimeout(50);
+
+    assert.equal(recorder.webSocketFrames.filter((frame) => frame.direction === "sent").length, 1);
+  } finally {
+    await browser.close();
+    await close();
+  }
+});
+
+test("startTracing/stopTracing produce a real, viewable trace archive", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "appwalk-trace-"));
+  const logger = new Logger("quiet");
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await startTracing(context, logger);
+    await page.goto("data:text/html,<h1>trace me</h1>");
+    const tracePath = join(directory, "trace.zip");
+    await stopTracing(context, tracePath, logger);
+
+    const stats = statSync(tracePath);
+    assert.ok(stats.size > 0, "the trace file must not be empty");
+    // A Playwright trace is a real zip archive (openable with `npx playwright show-trace`) —
+    // confirm it starts with the zip local-file-header magic bytes, not just that a file exists.
+    const header = readFileSync(tracePath).subarray(0, 4);
+    assert.equal(header.toString("hex"), "504b0304");
+  } finally {
+    await browser.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("stopTracing tolerates a context that closed mid-run instead of crashing the run", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "appwalk-trace-"));
+  const logger = new Logger("quiet");
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext();
+    await startTracing(context, logger);
+    // Simulates reopenBrowser closing the whole browser (and with it, the context that was
+    // tracing) before the run gets a chance to call stopTracing on it.
+    await context.close();
+
+    await assert.doesNotReject(stopTracing(context, join(directory, "trace.zip"), logger));
+  } finally {
+    await browser.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });

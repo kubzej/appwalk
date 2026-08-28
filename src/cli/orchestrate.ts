@@ -1,9 +1,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, devices, firefox, webkit, type Browser, type BrowserType, type Page } from "playwright";
+import { chromium, devices, firefox, webkit, type Browser, type BrowserContext, type BrowserType, type Page } from "playwright";
 import type { BrowserEngine } from "../config.js";
 import { runAgentLoop, type LoopResult } from "../agent/loop.js";
 import { PERSONAS, type Persona, type PersonaIntent } from "../agent/personas.js";
+import type { TabRegistryHandle } from "../agent/tools.js";
 import { login } from "../browser/login.js";
 import { configurePageTimeouts } from "../browser/actions.js";
 import { formatTestTitle, type FlowEntries } from "../codegen/spec.js";
@@ -397,19 +398,86 @@ export function deviceContextOptions(persona?: Persona): Record<string, unknown>
 // popup from that page.
 const popupInstrumentedPages = new WeakSet<Page>();
 
-/** Visibility only (no automatic switchTab/registration yet): logs a new tab the target app opens
- * on its own — a target="_blank" link, window.open(), an OAuth popup — which the agent otherwise
- * has no way to notice, since it only ever sees a fresh snapshot of whichever page it already knew
- * about. `page.on('popup')` (unlike `context.on('page')`) fires only for pages the page itself
- * opens, so it doesn't also fire for tabs appwalk opens deliberately via context.newPage(). */
-export function attachPopupDetection(page: Page, logger: Logger): void {
+/** Logs a new tab the target app opens on its own — a target="_blank" link, window.open(), an OAuth
+ * popup — which the agent otherwise has no way to notice, since it only ever sees a fresh snapshot
+ * of whichever page it already knew about. `page.on('popup')` (unlike `context.on('page')`) fires
+ * only for pages the page itself opens, so it doesn't also fire for tabs appwalk opens deliberately
+ * via context.newPage(). When a `tabRegistryHandle` is given, the popup is also registered into
+ * whichever tab registry is current (same `tab-N` id scheme as `openTab`), so `switchTab` can reach
+ * it — the handle indirection is required because the registry itself is rebuilt per flow (loop.ts)
+ * or scoped to one replay (replay.ts), both well after this listener was attached. */
+export function attachPopupDetection(page: Page, logger: Logger, tabRegistryHandle?: TabRegistryHandle): void {
   if (popupInstrumentedPages.has(page)) return;
   popupInstrumentedPages.add(page);
   page.on("popup", (popup) => {
     configurePageTimeouts(popup);
     logger.verbose(`  The page opened a new tab on its own: ${popup.url()}`);
     logger.debug("browser.popup_opened", "The page opened a popup", { url: popup.url() });
+    if (tabRegistryHandle) {
+      const newId = `tab-${tabRegistryHandle.tabs.size}`;
+      tabRegistryHandle.tabs.set(newId, popup);
+      logger.verbose(`  Registered as ${newId}; switchTab can reach it.`);
+      logger.debug("browser.popup_registered", "Popup registered as an addressable tab", { tabId: newId, url: popup.url() });
+    }
   });
+}
+
+// Same reasoning as popupInstrumentedPages — attachCrashDetection is called on every activePage
+// switch, and must not double-report one crash from a page revisited via switchTab.
+const crashInstrumentedPages = new WeakSet<Page>();
+
+/** `page.on('crash')` has no context-level equivalent (unlike response/console/weberror), so this
+ * follows the same page-scoped, reinstall-on-switch pattern as attachPopupDetection rather than
+ * EvidenceRecorder's usual context-level attachment. */
+export function attachCrashDetection(page: Page, recorder: EvidenceRecorder): void {
+  if (crashInstrumentedPages.has(page)) return;
+  crashInstrumentedPages.add(page);
+  page.on("crash", () => recorder.recordCrash(page.url()));
+}
+
+// Same reasoning again — websocket, like crash and popup, has no context-level equivalent.
+const webSocketInstrumentedPages = new WeakSet<Page>();
+
+/** Captures WebSocket traffic frame-by-frame — a real-time target (live inventory, order status,
+ * chat, price tickers) pushes state over a channel HTTP-only capture (`EvidenceRecorder`'s
+ * context-level response listener) can't see at all. Binary frames are summarized, not serialized
+ * raw, to stay JSON-safe in evidence.jsonl. */
+export function attachWebSocketCapture(page: Page, recorder: EvidenceRecorder): void {
+  if (webSocketInstrumentedPages.has(page)) return;
+  webSocketInstrumentedPages.add(page);
+  page.on("websocket", (ws) => {
+    const url = ws.url();
+    ws.on("framesent", ({ payload }) => recorder.recordWebSocketFrame({ url, direction: "sent", payload: webSocketPayloadToText(payload) }));
+    ws.on("framereceived", ({ payload }) => recorder.recordWebSocketFrame({ url, direction: "received", payload: webSocketPayloadToText(payload) }));
+  });
+}
+
+function webSocketPayloadToText(payload: string | Buffer): string {
+  return typeof payload === "string" ? payload : `(binary, ${payload.length} bytes)`;
+}
+
+/** Starts a Playwright trace on a context — a full visual timeline (DOM snapshots, network, console,
+ * source) viewable with `npx playwright show-trace`. Started after login/setup (same reasoning as
+ * EvidenceRecorder: setup traffic shouldn't pollute the diagnostic artifact). Never fails the run —
+ * tracing is a diagnostic extra, not a correctness requirement. */
+export async function startTracing(context: BrowserContext, logger: Logger): Promise<void> {
+  try {
+    await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+  } catch (error) {
+    logger.debug("tracing.start_failed", "Failed to start Playwright tracing", { error: logError(error) });
+  }
+}
+
+/** Stops a trace started by startTracing and saves it to `path`. Tolerates a context that's already
+ * closed (reopenBrowser closes the whole browser mid-run, abandoning whatever context was tracing)
+ * rather than letting a diagnostic-artifact failure take down the run. */
+export async function stopTracing(context: BrowserContext, path: string, logger: Logger): Promise<void> {
+  try {
+    await context.tracing.stop({ path });
+    logger.debug("tracing.saved", "Playwright trace saved", { path });
+  } catch (error) {
+    logger.debug("tracing.stop_failed", "Failed to save Playwright trace", { error: logError(error) });
+  }
 }
 
 async function exploreAndVerify(args: CliArgs, evidenceLog: EvidenceLog, runId: string, runName: string): Promise<ExplorationRun> {
@@ -475,7 +543,11 @@ async function exploreAndVerifyInBrowser(
   });
   const page = await context.newPage();
   configurePageTimeouts(page);
-  attachPopupDetection(page, runLogger);
+  // Kept pointed at whichever flow's tab registry is current inside runAgentLoop (rebuilt per
+  // flow), so a popup discovered mid-exploration lands in the registry the agent's next switchTab
+  // call will actually read, not a stale one from a flow that already ended.
+  const tabRegistryHandle: TabRegistryHandle = { tabs: new Map() };
+  attachPopupDetection(page, runLogger, tabRegistryHandle);
   const runEntries: EvidenceEntry[] = [];
 
   runLogger.phase("  Navigating to application URL");
@@ -489,6 +561,9 @@ async function exploreAndVerifyInBrowser(
   // fixtures. Also context-scoped, for the same reason.
   const recorder = new EvidenceRecorder(context, runLogger);
   activeRecorder = recorder;
+  attachCrashDetection(page, recorder);
+  attachWebSocketCapture(page, recorder);
+  if (args.trace) await startTracing(context, runLogger);
 
   runLogger.phase("  Exploring application");
   const discovery = await runAgentLoop(page, createProvider(provider, model, apiKey, runLogger), {
@@ -500,6 +575,7 @@ async function exploreAndVerifyInBrowser(
     expectations: args.expectations,
     logger: runLogger,
     getSafetyBlockCount: () => safetyEvents.filter((event) => event.phase === "exploration").length,
+    tabRegistryHandle,
     // A new tab (openTab, openInNewTab, reopenBrowser) is a fresh Page — the destructive-action guard
     // is installed with `page.route`, which is page-scoped and does not follow a page switch on its own.
     // A same-context switch (openTab, switchTab) is already covered by the context-level guard
@@ -508,10 +584,12 @@ async function exploreAndVerifyInBrowser(
     // Popup detection is page-scoped either way and always needs (re-)attaching.
     onActivePageChange: async (newPage) => {
       await installDestructiveActionGuard(newPage.context(), guardOptions);
-      attachPopupDetection(newPage, runLogger);
+      attachPopupDetection(newPage, runLogger, tabRegistryHandle);
+      attachCrashDetection(newPage, recorder);
+      attachWebSocketCapture(newPage, recorder);
     },
     onStep: (step, index, flowIndex) => {
-      const { network, console: consoleEntries, runtimeErrors } = recorder.drain();
+      const { network, console: consoleEntries, runtimeErrors, webSocketFrames } = recorder.drain();
         const entry = {
           index,
           flowIndex,
@@ -521,6 +599,7 @@ async function exploreAndVerifyInBrowser(
           network,
           console: consoleEntries,
           runtimeErrors,
+          webSocketFrames,
         } satisfies EvidenceEntry;
         runEntries.push(entry);
         evidenceLog.append(entry);
@@ -528,6 +607,7 @@ async function exploreAndVerifyInBrowser(
   });
   runLogger.debug("exploration.finalization_started", "Finalizing exploration evidence and browser session");
   await recorder.waitForPendingBodies();
+  if (args.trace) await stopTracing(context, join(args.output, "trace-exploration.zip"), runLogger);
   await closeBrowserWithTimeout(discovery.finalPage.context().browser(), runLogger, "exploration");
   runLogger.debug("exploration.finalization_completed", "Exploration cleanup completed");
   const explorationBlockedRequests = safetyEvents.filter((event) => event.phase === "exploration").length;
@@ -551,6 +631,7 @@ async function exploreAndVerifyInBrowser(
 
   if (verifiedFlows.length > 0) {
     runLogger.phase(`  Verifying ${verifiedFlows.length} of ${discovery.flows.length} discovered flow(s) by replay in a clean session`);
+    if (args.trace) mkdirSync(join(args.output, "traces"), { recursive: true });
     let replayBrowser: Browser | undefined;
     try {
       replayBrowser = await resolveBrowserType(args.browserEngine).launch();
@@ -574,7 +655,10 @@ async function exploreAndVerifyInBrowser(
         });
         const replayPage = await replayContext.newPage();
         configurePageTimeouts(replayPage);
-        attachPopupDetection(replayPage, flowLogger);
+        // A recorded flow may include a switchTab to a tab that originally came from a popup, not
+        // openTab — replay needs that same registration so the id still resolves in this clean session.
+        const replayTabRegistryHandle: TabRegistryHandle = { tabs: new Map() };
+        attachPopupDetection(replayPage, flowLogger, replayTabRegistryHandle);
         await navigateOrLogin(
           replayPage,
           args,
@@ -585,6 +669,8 @@ async function exploreAndVerifyInBrowser(
         await installDestructiveActionGuard(replayContext, guardOptions);
         const replayRecorder = new EvidenceRecorder(replayContext, flowLogger);
         activeRecorder = replayRecorder;
+        attachCrashDetection(replayPage, replayRecorder);
+        if (args.trace) await startTracing(replayContext, flowLogger);
         const expectedExpectations = flowEntries
           .filter((entry) => entry.result?.expectation)
           .map((entry) => entry.result!.expectation!) as ExpectationObservation[];
@@ -600,8 +686,10 @@ async function exploreAndVerifyInBrowser(
           undefined,
           async (newPage) => {
             await installDestructiveActionGuard(newPage.context(), guardOptions);
-            attachPopupDetection(newPage, flowLogger);
+            attachPopupDetection(newPage, flowLogger, replayTabRegistryHandle);
+            attachCrashDetection(newPage, replayRecorder);
           },
+          replayTabRegistryHandle,
         );
         runtimeErrorEntries.push(...replayRecorder.runtimeErrors.map((error) => ({ error, phase: "replay" as const, flowIndex: index + 1 })));
         if (!replayResult.reproduced) {
@@ -624,6 +712,7 @@ async function exploreAndVerifyInBrowser(
         }
         const activeBrowser = replayResult.finalPage.context().browser();
         if (activeBrowser && activeBrowser !== replayBrowser) replayBrowser = activeBrowser;
+        if (args.trace) await stopTracing(replayContext, join(args.output, "traces", `flow-${index + 1}.zip`), flowLogger);
         await replayResult.finalPage.close();
 
         if (findingCandidate) {
@@ -753,7 +842,8 @@ async function exploreAndVerifyInBrowser(
             });
             const variantPage = await variantContext.newPage();
             configurePageTimeouts(variantPage);
-            attachPopupDetection(variantPage, flowLogger);
+            const variantTabRegistryHandle: TabRegistryHandle = { tabs: new Map() };
+            attachPopupDetection(variantPage, flowLogger, variantTabRegistryHandle);
             let variantSourceMatched = false;
             await installResponseFixtures(variantPage, variantFixtures, {
               onFixtureApplied: (fixture, requestUrl) => {
@@ -782,6 +872,7 @@ async function exploreAndVerifyInBrowser(
             await installDestructiveActionGuard(variantContext, guardOptions);
             const variantRecorder = new EvidenceRecorder(variantContext, flowLogger);
             activeRecorder = variantRecorder;
+            attachCrashDetection(variantPage, variantRecorder);
             const variantResult = await replay(
               variantPage,
               actions,
@@ -794,8 +885,10 @@ async function exploreAndVerifyInBrowser(
               { selector: { method: variant.sourceMethod, url: variant.sourceUrl, occurrence: variant.sourceOccurrence }, isMatched: () => variantSourceMatched },
               async (newPage) => {
                 await installDestructiveActionGuard(newPage.context(), guardOptions);
-                attachPopupDetection(newPage, flowLogger);
+                attachPopupDetection(newPage, flowLogger, variantTabRegistryHandle);
+                attachCrashDetection(newPage, variantRecorder);
               },
+              variantTabRegistryHandle,
             );
             runtimeErrorEntries.push(...variantRecorder.runtimeErrors.map((error) => ({ error, phase: "replay" as const, flowIndex: index + 1 })));
             const variantExpectationResult = variantResult.variantExpectationResult;
