@@ -28,6 +28,11 @@ export interface FlowEntries {
   /** Validated response patch that produced this derived flow. */
   responseVariant?: ResponseVariant;
   origin?: "discovered" | "derived";
+  /** Name of a Playwright `devices` entry the flow was discovered/replayed under (e.g. "iPhone 17").
+   * A device profile is only settable at context creation, so a flow that needs one gets its own
+   * explicit context in the generated test instead of the shared ambient `page` fixture — otherwise
+   * the regression test would silently run on a plain desktop context. */
+  devicePreset?: string;
 }
 
 export interface GeneratedSpecArtifact {
@@ -510,18 +515,34 @@ function flowToTest(
   // Explicit credentials are an intentional override for a captured flow state. This matters when
   // discovery started on a login screen or captured an unauthenticated state after a failed login.
   const hasFlowStorageState = Boolean(flow.startStorageState) && !(options.username && options.password);
-  const fixtureParams = hasFlowStorageState || needsBrowserFixture ? (hasFlowStorageState ? "{ browser }" : "{ page, browser }") : "{ page }";
-  if (hasFlowStorageState) {
-    const storageState = JSON.stringify(JSON.parse(flow.startStorageState!));
+  // A device profile is a newContext()-time-only option (viewport alone can change mid-session,
+  // but user agent/touch/scale factor cannot) — a flow discovered under one needs its own explicit
+  // context too, exactly like storageState, even when it has no storageState of its own.
+  const needsOwnContext = hasFlowStorageState || Boolean(flow.devicePreset);
+  const fixtureParams = needsOwnContext || needsBrowserFixture ? (needsOwnContext ? "{ browser }" : "{ page, browser }") : "{ page }";
+  if (needsOwnContext) {
+    const contextOptionEntries = [
+      ...(flow.devicePreset ? [`...devices['${escapeJsString(flow.devicePreset)}']`] : []),
+      ...(hasFlowStorageState ? [`storageState: ${JSON.stringify(JSON.parse(flow.startStorageState!))}`] : []),
+    ];
+    const contextOptions = contextOptionEntries.length ? `{ ${contextOptionEntries.join(", ")} }` : "";
     const indentedBody = body
       .split("\n")
       .map((line) => `  ${line}`)
       .join("\n");
+    const setupLines = [
+      ...(fixtureScenario ? [`await installFixtures(page.context(), loadScenario('${escapeJsString(fixtureScenario)}'));`] : []),
+      hasFlowStorageState
+        ? `await page.goto('${escapeJsString(flow.startUrl!)}');`
+        : `await page.goto('${escapeJsString(options.url)}');`,
+      ...(!hasFlowStorageState && options.username && options.password
+        ? [`await loginWithCredentials(page, '${escapeJsString(options.username)}', '${escapeJsString(options.password)}');`]
+        : []),
+    ].map((line) => `  ${line}`).join("\n");
   return `test('${escapeJsString(testTitle)}', async (${fixtureParams}) => {
-  const flowContext = await browser.newContext({ storageState: ${storageState} });
+  const flowContext = await browser.newContext(${contextOptions});
   let page = await flowContext.newPage();
-${fixtureScenario ? `  await installFixtures(page.context(), loadScenario('${escapeJsString(fixtureScenario)}'));\n` : ''}
-  await page.goto('${escapeJsString(flow.startUrl!)}');
+${setupLines}
   try {
 ${indentedBody}
   } finally {
@@ -614,8 +635,13 @@ export function generateSpecBundle(flows: FlowEntries[], options: CodegenOptions
   const hasStorageState = Boolean(options.storageStatePath);
   const hasLogin = !hasStorageState && Boolean(options.username && options.password);
   const hasFixtures = fixturePlan.artifacts.length > 0;
+  const hasDeviceProfile = flows.some((flow) => Boolean(flow.devicePreset));
 
-  const parts: string[] = ["import { test, expect } from '@playwright/test';"];
+  const parts: string[] = [
+    hasDeviceProfile
+      ? "import { test, expect, devices } from '@playwright/test';"
+      : "import { test, expect } from '@playwright/test';",
+  ];
   if (hasLogin) parts.push("import { loginWithCredentials } from './auth.js';");
   if (hasFixtures) parts.push("import { installFixtures, loadScenario } from './fixtures.js';");
 

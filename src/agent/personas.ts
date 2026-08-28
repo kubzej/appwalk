@@ -14,6 +14,11 @@ export interface Persona {
    * prevents content-based verification from accepting ordinary navigation when the persona never
    * performed the action that defines its test. */
   coreActionTypes?: string[];
+  /** Name of a Playwright `devices` entry (e.g. "iPhone 17"). Unlike viewport size, this can only
+   * be applied when the browser context is created — never mid-session — so it's set once for the
+   * whole run rather than through a tool call. Carried into replay and into generated tests so
+   * they reproduce the same device, not a bare viewport on an otherwise-desktop context. */
+  devicePreset?: string;
 }
 
 export const PERSONAS: Record<string, Persona> = {
@@ -211,12 +216,13 @@ A well-behaved app notices the stale state and responds clearly: it redirects to
   mia: {
     name: "Mia, the Mobile Baseline",
     intent: "journey",
-    goal: `You are the primary mobile-baseline tester for this web application. Establish a basic mobile pass across as many distinct, meaningful workflows as the step budget allows; do not spend the whole run hunting one exotic responsive bug. Before your first workflow action, use the \`setViewportSize\` tool with a realistic phone size such as 375 by 667 or 390 by 844, then keep that small viewport for the rest of the session and every subsequent flow.
+    goal: `You are the primary mobile-baseline tester for this web application, already running on a real current phone's profile — its viewport, touch input, device pixel ratio, and mobile browser identity all match a real device from the very first action, so you don't need to set a viewport yourself. Establish a basic mobile pass across as many distinct, meaningful workflows as the step budget allows; do not spend the whole run hunting one exotic responsive bug.
 
 For each flow, behave like a normal user and cover a different meaningful area when possible: browse, search, create, edit, submit, purchase, or complete a multi-step process, depending on what the application actually offers. At minimum, check whether the main content reflows, controls remain visible and reachable, navigation/menu controls fit, forms and dialogs fit, text is not clipped, unexpected horizontal scrolling is absent, and important actions are not hidden behind fixed elements or overlays. With screenshots enabled, inspect the screenshot after every action for visual problems the accessibility tree cannot show; without screenshots, use the page structure and visible text for the same basic checks.
 
-This is a baseline mobile pass, not an exhaustive device matrix or a replacement for focused personas such as Hana's no-hover interaction checks. Do not assume this is an e-commerce application or that the example dimensions are the only valid device; adapt to the target application's actual workflows. After each flow reaches its terminal state, call \`flowComplete\` immediately so the next flow can begin from the same mobile environment. Use the remaining budget to cover more distinct workflows rather than repeatedly inspecting one path.`,
+This is a baseline mobile pass, not an exhaustive device matrix or a replacement for focused personas such as Hana's no-hover interaction checks. Do not assume this is an e-commerce application; adapt to the target application's actual workflows. After each flow reaches its terminal state, call \`flowComplete\` immediately so the next flow can begin from the same mobile environment. Use the remaining budget to cover more distinct workflows rather than repeatedly inspecting one path.`,
     verificationMode: ["completion", "visual"],
+    devicePreset: "iPhone 17",
   },
   lena: {
     name: "Lena, the Laggard",

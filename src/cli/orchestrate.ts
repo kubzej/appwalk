@@ -1,9 +1,9 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, firefox, webkit, type Browser, type BrowserType, type Page } from "playwright";
+import { chromium, devices, firefox, webkit, type Browser, type BrowserType, type Page } from "playwright";
 import type { BrowserEngine } from "../config.js";
 import { runAgentLoop, type LoopResult } from "../agent/loop.js";
-import { PERSONAS, type PersonaIntent } from "../agent/personas.js";
+import { PERSONAS, type Persona, type PersonaIntent } from "../agent/personas.js";
 import { login } from "../browser/login.js";
 import { configurePageTimeouts } from "../browser/actions.js";
 import { formatTestTitle, type FlowEntries } from "../codegen/spec.js";
@@ -376,6 +376,21 @@ function resolveBrowserType(engine: BrowserEngine): BrowserType {
   }
 }
 
+/** A device profile (viewport, user agent, touch, device scale factor) is only ever settable when
+ * a BrowserContext is created — unlike viewport size alone, it can't be changed mid-session by a
+ * tool call — so it has to be folded into every newContext() call for a persona that wants one,
+ * not applied once via a tool. `defaultBrowserType` on the descriptor is Playwright's own hint for
+ * which engine a real device would use, not a valid newContext() option — dropped rather than
+ * spread through, so a persona's device choice never silently overrides the run's chosen engine
+ * (chromium by default), the same way Chrome DevTools device emulation doesn't switch engines. */
+export function deviceContextOptions(persona?: Persona): Record<string, unknown> {
+  if (!persona?.devicePreset) return {};
+  const device = devices[persona.devicePreset];
+  if (!device) throw new Error(`Unknown device preset "${persona.devicePreset}" for persona "${persona.name}".`);
+  const { defaultBrowserType: _defaultBrowserType, ...contextOptions } = device;
+  return contextOptions;
+}
+
 // A page the agent explicitly switches to (openTab, switchTab, openInNewTab, reopenBrowser) all
 // go through this, so calling it more than once on the same page (e.g. switchTab revisiting a
 // tab already instrumented) must not double up the listener — that would double-log every future
@@ -454,9 +469,10 @@ async function exploreAndVerifyInBrowser(
   // browser.newContext()"). Going through the context ourselves lets `openTab` (Talia) later add a
   // genuine second page to this same context — real, live-shared cookies/localStorage, like two tabs
   // of one real browser profile, not a point-in-time storageState clone.
-  const context = await browser.newContext(
-    args.storageStatePath ? { storageState: args.storageStatePath } : undefined,
-  );
+  const context = await browser.newContext({
+    ...deviceContextOptions(persona),
+    ...(args.storageStatePath ? { storageState: args.storageStatePath } : {}),
+  });
   const page = await context.newPage();
   configurePageTimeouts(page);
   attachPopupDetection(page, runLogger);
@@ -552,7 +568,10 @@ async function exploreAndVerifyInBrowser(
           ? JSON.parse(flow.startStorageState)
           : args.storageStatePath;
 
-        const replayContext = await replayBrowser.newContext(flowStorageState ? { storageState: flowStorageState } : undefined);
+        const replayContext = await replayBrowser.newContext({
+          ...deviceContextOptions(persona),
+          ...(flowStorageState ? { storageState: flowStorageState } : {}),
+        });
         const replayPage = await replayContext.newPage();
         configurePageTimeouts(replayPage);
         attachPopupDetection(replayPage, flowLogger);
@@ -657,6 +676,7 @@ async function exploreAndVerifyInBrowser(
           origin: "discovered",
           sourceFlowIndex: index,
           fixtureBaseId: `${runId}-flow-${index + 1}`,
+          devicePreset: persona?.devicePreset,
         };
         confirmedFlows.push(baseFlow);
 
@@ -727,9 +747,10 @@ async function exploreAndVerifyInBrowser(
             const variantStorageState = index > 0 && flow.startStorageState
               ? JSON.parse(flow.startStorageState)
               : args.storageStatePath;
-            const variantContext = await replayBrowser.newContext(
-              variantStorageState ? { storageState: variantStorageState } : undefined,
-            );
+            const variantContext = await replayBrowser.newContext({
+              ...deviceContextOptions(persona),
+              ...(variantStorageState ? { storageState: variantStorageState } : {}),
+            });
             const variantPage = await variantContext.newPage();
             configurePageTimeouts(variantPage);
             attachPopupDetection(variantPage, flowLogger);
@@ -835,6 +856,7 @@ async function exploreAndVerifyInBrowser(
               sourceFlowIndex: index,
               scenarioId,
               responseVariant: variant,
+              devicePreset: baseFlow.devicePreset,
             });
             responseVariantAudit.confirmed += 1;
             responseVariantAudit.confirmedScenarios.push(variant.name);

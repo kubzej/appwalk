@@ -100,3 +100,47 @@ test("generates iframe locators and expanded actions as Playwright APIs", () => 
   assert.match(spec, /page\.waitForEvent\('download'\)/);
   assert.match(spec, /page\.locator\('#tags'\)\.selectOption\(\['one', 'three'\]\);/);
 });
+
+test("a flow with a device preset gets its own context with the device spread in, and imports devices", () => {
+  const spec = generateSpec([
+    {
+      name: "Mobile checkout",
+      devicePreset: "iPhone 17",
+      entries: [
+        { index: 0, flowIndex: 0, timestamp: "2026-01-01T00:00:00.000Z", toolCall: { name: "click", input: { locator: "role=button[name=\"Checkout\"]" } }, network: [], console: [] },
+      ],
+    },
+  ], { url: "https://example.test" });
+
+  assert.match(spec, /import \{ test, expect, devices \} from '@playwright\/test';/);
+  assert.match(spec, /test\('Mobile checkout', async \(\{ browser \}\) => \{/);
+  assert.match(spec, /const flowContext = await browser\.newContext\(\{ \.\.\.devices\['iPhone 17'\] \}\);/);
+  assert.match(spec, /let page = await flowContext\.newPage\(\);/);
+  assert.match(spec, /await page\.goto\('https:\/\/example\.test'\);/);
+  assert.match(spec, /await flowContext\.close\(\);/);
+});
+
+test("a device preset combines with the flow's own storageState in one newContext() call", () => {
+  const storageState = JSON.stringify({ cookies: [], origins: [] });
+  const spec = generateSpec([
+    {
+      name: "Mobile returning user",
+      devicePreset: "iPhone 17",
+      startUrl: "https://example.test/account",
+      startStorageState: storageState,
+      entries: [],
+    },
+  ], { url: "https://example.test" });
+
+  assert.match(spec, /const flowContext = await browser\.newContext\(\{ \.\.\.devices\['iPhone 17'\], storageState: \{"cookies":\[\],"origins":\[\]\} \}\);/);
+  assert.match(spec, /await page\.goto\('https:\/\/example\.test\/account'\);/);
+});
+
+test("a flow without a device preset still uses the plain ambient page fixture", () => {
+  const spec = generateSpec([
+    { name: "Desktop checkout", entries: [] },
+  ], { url: "https://example.test" });
+
+  assert.doesNotMatch(spec, /devices/);
+  assert.match(spec, /test\('Desktop checkout', async \(\{ page \}\) => \{/);
+});
