@@ -104,6 +104,7 @@ You see the page as an accessibility tree snapshot after every action. Choose ex
 Locator syntax — this is a Playwright locator string, not a plain CSS selector:
 - To target by accessibility role and name, you MUST prefix with "role=", e.g. role=button[name="Submit"] or role=textbox[name="Email"]. A bare "textbox[name=...]" or "button[name=...]" without the "role=" prefix is invalid — "textbox" and "button" are not HTML tags, so it will never match anything and will just time out.
 - To target by visible text, use text="exact text" or text=/partial/i.
+- If a form field's role/name doesn't cleanly match it (no accessible name, or an ambiguous one), target it by its associated <label> text instead: label="Email" or label=/e-?mail/i. The same pattern works for placeholder="Search text", alt="Image description", and title="Tooltip text" when those are the only identifying attribute.
 - To target an element inside an iframe, prefix its inner locator with the frame CSS selector: frame=iframe[title="Payment"] >> role=button[name="Pay"].
 - Prefer the actual interactive element (the button or link) over a decorative child inside it (an icon or image) — clicking an <img> inside a <button> can fail because the button intercepts the click. If an element has a role in the snapshot (e.g. "button \"Menu\""), target it with role=button[name="Menu"], not the icon inside it.
 - If a locator resolves to more than one element (ambiguous), make it more specific — add text, narrow the role, or use >> nth=N — rather than repeating the same locator.
