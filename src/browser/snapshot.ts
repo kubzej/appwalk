@@ -35,6 +35,22 @@ export async function captureSnapshot(page: Page): Promise<string> {
   return formatPageObservation(observation);
 }
 
+/** A page whose accessibility tree has no natural bound (an unpaginated list with hundreds or
+ * thousands of rows) can otherwise dump hundreds of thousands of characters into a single LLM
+ * turn — enough on its own to blow a provider's per-minute token budget. This keeps every turn
+ * within a sane size regardless of what the target page does, while staying far above what any
+ * normal page's tree needs so it never engages there. */
+export const MAX_ACCESSIBILITY_TREE_CHARS = 40_000;
+
+export function truncateAccessibilityTree(tree: string): string {
+  if (tree.length <= MAX_ACCESSIBILITY_TREE_CHARS) return tree;
+  const omittedChars = tree.length - MAX_ACCESSIBILITY_TREE_CHARS;
+  const cut = tree.slice(0, MAX_ACCESSIBILITY_TREE_CHARS);
+  const lastNewline = cut.lastIndexOf("\n");
+  const head = lastNewline > 0 ? cut.slice(0, lastNewline) : cut;
+  return `${head}\n... [truncated: ${omittedChars} more characters omitted — this page contains an unusually large amount of content, likely an unpaginated list]`;
+}
+
 export async function toStepResult(page: Page): Promise<StepResult> {
   return { url: page.url(), snapshot: await captureSnapshot(page) };
 }
@@ -185,7 +201,7 @@ async function capturePageObservation(page: Page): Promise<PageObservation> {
       }
     }),
   ]);
-  return { accessibilityTree, ...domObservation };
+  return { accessibilityTree: truncateAccessibilityTree(accessibilityTree), ...domObservation };
 }
 
 function formatPageObservation(observation: PageObservation): string {

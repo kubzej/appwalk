@@ -58,8 +58,33 @@ function headerResetAt(headers: Headers, ...names: string[]): number | undefined
   return undefined;
 }
 
-function sleep(ms: number): Promise<void> {
+export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * How long to wait before retrying a request that just got a 429, based on the reset headers of
+ * that same response — not the coordinator's stored state, which a fresh persona's first request
+ * never populated. Falls back to a fixed delay when the provider didn't send reset headers.
+ *
+ * Waits past the reported reset instant by a fixed safety margin rather than landing on it to the
+ * millisecond — the provider's clock, our clock, and the network round-trip are never perfectly
+ * aligned, and retrying a few seconds early just buys back another 429 and another full wait.
+ */
+const RATE_LIMIT_RETRY_SAFETY_MARGIN_MS = 3_000;
+
+export function rateLimitRetryDelayMs(headers: Headers, fallbackMs = 5_000): number {
+  const tokenResetAt = headerResetAt(
+    headers,
+    "x-ratelimit-reset-project-tokens",
+    "x-ratelimit-reset-tokens",
+    "anthropic-ratelimit-tokens-reset",
+    "anthropic-ratelimit-input-tokens-reset",
+  );
+  const requestResetAt = headerResetAt(headers, "x-ratelimit-reset-requests", "anthropic-ratelimit-requests-reset");
+  const resets = [tokenResetAt, requestResetAt].filter((value): value is number => value !== undefined);
+  if (resets.length === 0) return fallbackMs;
+  return Math.max(Math.max(...resets) - Date.now() + RATE_LIMIT_RETRY_SAFETY_MARGIN_MS, RATE_LIMIT_RETRY_SAFETY_MARGIN_MS);
 }
 
 /**
@@ -132,6 +157,20 @@ export class RateLimitCoordinator {
       state.remainingRequests = undefined;
       state.requestsResetAt = undefined;
     }
+  }
+
+  /**
+   * Same idea as rateLimitRetryDelayMs, but from our own last-observed state instead of the
+   * failed response's headers — for a provider SDK (Gemini's) whose thrown error doesn't expose
+   * the response headers at all. Falls back to a fixed delay when we have no prior observation
+   * for this key either, e.g. the very first request of a run.
+   */
+  retryDelayMs(key: string, fallbackMs = 5_000): number {
+    const state = this.states.get(key);
+    if (!state) return fallbackMs;
+    const resets = [state.resetAt, state.requestsResetAt].filter((value): value is number => value !== undefined);
+    if (resets.length === 0) return fallbackMs;
+    return Math.max(Math.max(...resets) - Date.now() + RATE_LIMIT_RETRY_SAFETY_MARGIN_MS, RATE_LIMIT_RETRY_SAFETY_MARGIN_MS);
   }
 
   observe(key: string, headers: Headers, inputTokens?: number): void {

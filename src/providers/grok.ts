@@ -6,10 +6,14 @@ import type {
   ToolResult,
 } from "./provider.js";
 import { AGENT_MAX_OUTPUT_TOKENS } from "./provider.js";
-import { estimateRequestTokens, rateLimitHeadersSummary, sharedRateLimitCoordinator } from "./rate-limit.js";
+import { estimateRequestTokens, rateLimitHeadersSummary, rateLimitRetryDelayMs, sharedRateLimitCoordinator, sleep } from "./rate-limit.js";
 import { Logger } from "../logging/logger.js";
 
 const API_URL = "https://api.x.ai/v1/responses";
+/** Retries a 429 this many times before giving up — each attempt waits for the window the
+ * response itself reported, so this only helps a request that got caught behind another
+ * request's usage, not one whose own size will never fit in a single window (see rate-limit.ts). */
+const MAX_RATE_LIMIT_RETRIES = 3;
 
 interface GrokOutputItem {
   type: string;
@@ -110,27 +114,38 @@ export class GrokProvider implements LlmProvider {
     };
     if (this.lastResponseId) body.previous_response_id = this.lastResponseId;
 
-    await sharedRateLimitCoordinator.beforeRequest(
-      `grok:${this.model}`,
-      estimateRequestTokens(body, maxOutputTokens),
-      this.logger,
-    );
-    const response = await fetch(API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-        "x-grok-conv-id": this.convId,
-      },
-      body: JSON.stringify(body),
-    });
+    const requestBody = JSON.stringify(body);
 
-    if (!response.ok) {
+    let response: Response;
+    for (let attempt = 0; ; attempt++) {
+      await sharedRateLimitCoordinator.beforeRequest(
+        `grok:${this.model}`,
+        estimateRequestTokens(body, maxOutputTokens),
+        this.logger,
+      );
+      response = await fetch(API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+          "x-grok-conv-id": this.convId,
+        },
+        body: requestBody,
+      });
+      if (response.ok) break;
+
       const errorBody = await response.text();
       if (response.status === 429) {
         const limitHint = rateLimitHeadersSummary(response.headers);
-        this.logger.debug("provider.rate_limited", "Grok request was rate limited", { provider: "grok", model: this.model, requestIndex, status: response.status, hint: limitHint, body: errorBody });
-        throw new Error(`Grok rate limit reached; request was not retried.${limitHint}`);
+        if (attempt < MAX_RATE_LIMIT_RETRIES) {
+          const waitMs = rateLimitRetryDelayMs(response.headers);
+          this.logger.warn(`Grok rate limit hit; retrying in ${Math.ceil(waitMs / 1000)}s (attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES}).${limitHint}`);
+          this.logger.debug("provider.rate_limited", "Grok request was rate limited; retrying", { provider: "grok", model: this.model, requestIndex, status: response.status, attempt, waitMs, hint: limitHint, body: errorBody });
+          await sleep(waitMs);
+          continue;
+        }
+        this.logger.debug("provider.rate_limited", "Grok request was rate limited; retries exhausted", { provider: "grok", model: this.model, requestIndex, status: response.status, hint: limitHint, body: errorBody });
+        throw new Error(`Grok rate limit reached; retried ${MAX_RATE_LIMIT_RETRIES} times without success.${limitHint}`);
       }
       this.logger.debug("provider.request_failed", "Grok request failed", { provider: "grok", model: this.model, requestIndex, status: response.status, body: errorBody });
       throw new Error(`Grok request failed: ${response.status}`);

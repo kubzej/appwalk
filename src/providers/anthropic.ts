@@ -6,8 +6,13 @@ import type {
   ToolResult,
 } from "./provider.js";
 import { AGENT_MAX_OUTPUT_TOKENS } from "./provider.js";
-import { estimateRequestTokens, rateLimitHeadersSummary, sharedRateLimitCoordinator } from "./rate-limit.js";
+import { estimateRequestTokens, rateLimitHeadersSummary, rateLimitRetryDelayMs, sharedRateLimitCoordinator, sleep } from "./rate-limit.js";
 import { Logger } from "../logging/logger.js";
+
+/** Retries a 429 this many times before giving up — each attempt waits for the window the
+ * response itself reported, so this only helps a request that got caught behind another
+ * request's usage, not one whose own size will never fit in a single window (see rate-limit.ts). */
+const MAX_RATE_LIMIT_RETRIES = 3;
 
 // TS can't verify a cache_control-bearing spread against a discriminated union (ContentBlockParam)
 // without collapsing it — cast through `object` and back to `T` rather than fighting the inference.
@@ -25,8 +30,9 @@ export class AnthropicProvider implements LlmProvider {
   private readonly logger: Logger;
 
   constructor(apiKey: string, model: string, logger = new Logger("quiet")) {
-    // The SDK retries 429s by default. A repeated request cannot fit a token window, so
-    // the agent must surface the limit instead of silently replaying the same payload.
+    // The SDK retries 429s by default with its own backoff, blind to the reset time in the
+    // response headers. We disable that and retry ourselves (see send()) so the wait actually
+    // matches the window the provider reported instead of a generic exponential guess.
     this.client = new Anthropic({ apiKey, maxRetries: 0 });
     this.model = model;
     this.logger = logger;
@@ -121,22 +127,33 @@ export class AnthropicProvider implements LlmProvider {
     );
 
     let response: Anthropic.Message;
-    try {
-      const result = await this.client.messages.create(request).withResponse();
-      response = result.data;
-      sharedRateLimitCoordinator.observe(
-        `anthropic:${this.model}`,
-        result.response.headers,
-        response.usage.input_tokens + (response.usage.cache_creation_input_tokens ?? 0),
-      );
-      this.logger.debug("provider.rate_limits_observed", "Anthropic rate limits observed", { provider: "anthropic", model: this.model, requestIndex, rateLimit: rateLimitHeadersSummary(result.response.headers).trim() || undefined });
-    } catch (error) {
-      const status = (error as { status?: number }).status;
-      if (status === 429) {
-        this.logger.debug("provider.rate_limited", "Anthropic request was rate limited", { provider: "anthropic", model: this.model, requestIndex, error: (error as Error).message });
-        throw new Error("Anthropic rate limit reached; request was not retried.");
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const result = await this.client.messages.create(request).withResponse();
+        response = result.data;
+        sharedRateLimitCoordinator.observe(
+          `anthropic:${this.model}`,
+          result.response.headers,
+          response.usage.input_tokens + (response.usage.cache_creation_input_tokens ?? 0),
+        );
+        this.logger.debug("provider.rate_limits_observed", "Anthropic rate limits observed", { provider: "anthropic", model: this.model, requestIndex, rateLimit: rateLimitHeadersSummary(result.response.headers).trim() || undefined });
+        break;
+      } catch (error) {
+        const status = (error as { status?: number }).status;
+        if (status !== 429) throw error;
+
+        const headers = (error as { headers?: Headers }).headers;
+        const limitHint = headers ? rateLimitHeadersSummary(headers) : "";
+        if (attempt < MAX_RATE_LIMIT_RETRIES) {
+          const waitMs = headers ? rateLimitRetryDelayMs(headers) : 5_000;
+          this.logger.warn(`Anthropic rate limit hit; retrying in ${Math.ceil(waitMs / 1000)}s (attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES}).${limitHint}`);
+          this.logger.debug("provider.rate_limited", "Anthropic request was rate limited; retrying", { provider: "anthropic", model: this.model, requestIndex, attempt, waitMs, hint: limitHint });
+          await sleep(waitMs);
+          continue;
+        }
+        this.logger.debug("provider.rate_limited", "Anthropic request was rate limited; retries exhausted", { provider: "anthropic", model: this.model, requestIndex, hint: limitHint });
+        throw new Error(`Anthropic rate limit reached; retried ${MAX_RATE_LIMIT_RETRIES} times without success.${limitHint}`);
       }
-      throw error;
     }
 
     const { input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens } =

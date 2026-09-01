@@ -7,8 +7,13 @@ import type {
   ToolResult,
 } from "./provider.js";
 import { AGENT_MAX_OUTPUT_TOKENS } from "./provider.js";
-import { estimateRequestTokens, sharedRateLimitCoordinator } from "./rate-limit.js";
+import { estimateRequestTokens, sharedRateLimitCoordinator, sleep } from "./rate-limit.js";
 import { Logger } from "../logging/logger.js";
+
+/** Retries a 429 this many times before giving up — each attempt waits for the window the
+ * coordinator last observed, so this only helps a request that got caught behind another
+ * request's usage, not one whose own size will never fit in a single window (see rate-limit.ts). */
+const MAX_RATE_LIMIT_RETRIES = 3;
 
 function toGeminiTools(tools: ToolDefinition[]) {
   return [
@@ -95,15 +100,26 @@ export class GeminiProvider implements LlmProvider {
       this.logger,
     );
     let response: Awaited<ReturnType<typeof this.client.models.generateContent>>;
-    try {
-      response = await this.client.models.generateContent(request);
-    } catch (error) {
-      const status = (error as { status?: number }).status;
-      if (status === 429) {
-        this.logger.debug("provider.rate_limited", "Gemini request was rate limited", { provider: "gemini", model: this.model, requestIndex, error: (error as Error).message });
-        throw new Error("Gemini rate limit reached; request was not retried.");
+    for (let attempt = 0; ; attempt++) {
+      try {
+        response = await this.client.models.generateContent(request);
+        break;
+      } catch (error) {
+        const status = (error as { status?: number }).status;
+        if (status !== 429) throw error;
+
+        // Gemini's ApiError doesn't expose the response headers, so we fall back to the
+        // coordinator's own last-observed reset time for this model rather than a bare guess.
+        if (attempt < MAX_RATE_LIMIT_RETRIES) {
+          const waitMs = sharedRateLimitCoordinator.retryDelayMs(`gemini:${this.model}`);
+          this.logger.warn(`Gemini rate limit hit; retrying in ${Math.ceil(waitMs / 1000)}s (attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES}).`);
+          this.logger.debug("provider.rate_limited", "Gemini request was rate limited; retrying", { provider: "gemini", model: this.model, requestIndex, attempt, waitMs, error: (error as Error).message });
+          await sleep(waitMs);
+          continue;
+        }
+        this.logger.debug("provider.rate_limited", "Gemini request was rate limited; retries exhausted", { provider: "gemini", model: this.model, requestIndex, error: (error as Error).message });
+        throw new Error(`Gemini rate limit reached; retried ${MAX_RATE_LIMIT_RETRIES} times without success.`);
       }
-      throw error;
     }
 
     const responseHeaders = response.sdkHttpResponse?.responseInternal.headers;
