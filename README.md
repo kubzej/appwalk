@@ -27,14 +27,14 @@ flowchart LR
 
 The core terms are deliberately simple:
 
-| Term | Meaning |
-| --- | --- |
-| Persona | The behavior and risk lens used by the agent during exploration. |
-| Scope | A natural-language area or objective that guides exploration. |
-| Expectation | A user-visible condition that should hold within the scope. Multiple expectations can be attached to one scope. |
-| Flow | One meaningful sequence of browser actions with a terminal outcome. |
-| Replay confirmation | Deterministic re-execution of a discovered flow in a clean session. |
-| Response scenario | A derived flow made by patching an observed JSON response and checking the resulting UI behavior. |
+| Term                | Meaning                                                                                                         |
+| ------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Persona             | The behavior and risk lens used by the agent during exploration.                                                |
+| Scope               | A natural-language area or objective that guides exploration.                                                   |
+| Expectation         | A user-visible condition that should hold within the scope. Multiple expectations can be attached to one scope. |
+| Flow                | One meaningful sequence of browser actions with a terminal outcome.                                             |
+| Replay confirmation | Deterministic re-execution of a discovered flow in a clean session.                                             |
+| Response scenario   | A derived flow made by patching an observed JSON response and checking the resulting UI behavior.               |
 
 ## Quick start
 
@@ -44,7 +44,7 @@ Requirements: Node.js 24 or newer, a Playwright browser installation, and an API
 git clone <repository-url>
 cd appwalk
 npm install
-npx playwright install chromium
+npx playwright install chromium  # add firefox/webkit here too if you plan to pass --browser
 
 PROVIDER="your-provider"  # openai, anthropic, gemini, grok, or ollama
 MODEL="your-model"
@@ -69,11 +69,11 @@ Appwalk does not auto-discover a config file. `--config` is always required when
 
 ## Commands
 
-| Command | Use it when | Produces |
-| --- | --- | --- |
-| `run <url>` | You want the complete pipeline. | HTML/JSON report, evidence, discovery bundle, and tests for confirmed flows. |
-| `explore <url>` | You want discovery and reporting without generating a test suite. | HTML/JSON report, evidence, and discovery bundle. |
-| `generate <discovery-dir>` | You already have a discovery bundle and want to generate tests from it. | A Playwright spec for replay-confirmed flows. |
+| Command                    | Use it when                                                             | Produces                                                                     |
+| -------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `run <url>`                | You want the complete pipeline.                                         | HTML/JSON report, evidence, discovery bundle, and tests for confirmed flows. |
+| `explore <url>`            | You want discovery and reporting without generating a test suite.       | HTML/JSON report, evidence, and discovery bundle.                            |
+| `generate <discovery-dir>` | You already have a discovery bundle and want to generate tests from it. | A Playwright spec for replay-confirmed flows.                                |
 
 Examples:
 
@@ -99,7 +99,7 @@ The old `test` command is not the full pipeline. Use `run` for exploration plus 
 - [Commands and options](docs/commands.md) - complete CLI reference.
 - [Configuration](docs/configuration.md) - explicit YAML configuration and multi-person coverage.
 - [Personas and exploration](docs/personas.md) - persona intent, scope, expectations, and response scenarios.
-- [Reports and artifacts](docs/reports.md) - output layout, statuses, evidence, and CI behavior.
+- [Reports and artifacts](docs/reports.md) - output layout, flow results, evidence, and CI behavior.
 - [Troubleshooting](docs/troubleshooting.md) - common failures and how to interpret them.
 - [Architecture](docs/architecture.md) - implementation boundaries for contributors.
 
@@ -111,13 +111,13 @@ Use `--allow-destructive` only against a disposable environment when the side ef
 
 ## Supported providers
 
-| Provider | Credential | Notes |
-| --- | --- | --- |
-| OpenAI | `OPENAI_API_KEY` | Hosted provider. |
-| Anthropic | `ANTHROPIC_API_KEY` | Hosted provider. |
-| Gemini | `GEMINI_API_KEY` | Hosted provider. |
-| Grok | `XAI_API_KEY` | Hosted provider. |
-| Ollama | None | Uses a local server at `http://localhost:11434`. |
+| Provider  | Credential          | Notes                                            |
+| --------- | ------------------- | ------------------------------------------------ |
+| OpenAI    | `OPENAI_API_KEY`    | Hosted provider.                                 |
+| Anthropic | `ANTHROPIC_API_KEY` | Hosted provider.                                 |
+| Gemini    | `GEMINI_API_KEY`    | Hosted provider.                                 |
+| Grok      | `XAI_API_KEY`       | Hosted provider.                                 |
+| Ollama    | None                | Uses a local server at `http://localhost:11434`. |
 
 The provider and model are mandatory. Appwalk intentionally does not choose a hidden model default.
 
