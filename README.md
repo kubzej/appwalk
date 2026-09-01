@@ -91,7 +91,7 @@ npx tsx src/cli/index.ts generate ./appwalk-output/<execution-id>
 npx tsx src/cli/index.ts generate ./appwalk-output/<execution-id> --flows 1,3
 ```
 
-The old `test` command is not the full pipeline. Use `run` for exploration plus generation, and run the generated spec with Playwright when you want to execute the resulting regression tests.
+Use `run` for exploration plus generation, and run the generated spec with Playwright when you want to execute the resulting regression tests.
 
 ## What to read next
 

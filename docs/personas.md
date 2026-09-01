@@ -72,7 +72,7 @@ An expectation is not a standalone login or journey command. It is a condition A
 
 ## Response scenarios
 
-Response scenarios are optional derived flows. They are useful when a verified flow observes a meaningful JSON response with business-state fields such as order status, inventory, totals, or a collection.
+Response scenarios are optional derived flows. They are useful when a verified flow observes a meaningful JSON response with business-state fields such as order status, inventory, totals, or a collection. The CLI flag and config field call this a "variant" (`--response-variant-max`, `responses.maxVariants`); "scenario" and "variant" refer to the same thing throughout this documentation.
 
 ```bash
 --response-variant-max 5

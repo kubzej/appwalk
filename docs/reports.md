@@ -32,7 +32,7 @@ The execution ID combines an ISO timestamp and a short random suffix. This keeps
 ## Exit codes
 
 | Exit code | Meaning |
-| --- | --- | ---: |
+| --- | --- |
 | `0` | Confirmed flow coverage exists without findings or incomplete evidence. |
 | `1` | At least one flow contains a confirmed potential bug. |
 | `2` | An execution-level error prevented the run from completing. |
