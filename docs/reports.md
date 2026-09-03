@@ -11,6 +11,7 @@ appwalk-output/
     evidence.jsonl
     discovered.spec.ts       # only when run generated confirmed flows
     auth.ts                   # shared credential login helper, when credentials are used
+    .appwalk.secrets.json     # local credentials sidecar, when credential login is used
     fixtures.ts               # shared response fixture loader, when response mocking is used
     fixtures/                 # baseline JSON and compact variant patch descriptors
 ```
@@ -27,6 +28,7 @@ The execution ID combines an ISO timestamp and a short random suffix. This keeps
 | `evidence.jsonl` | Debugging and forensic review | Append-only per-step browser evidence, tool calls, results, network entries, console entries, and errors. |
 | `discovered.spec.ts` | Playwright users | Generated tests for confirmed base and derived flows. |
 | `auth.ts` | Playwright users | Shared credential login helper used by generated tests when email/password login is configured. |
+| `.appwalk.secrets.json` | Local generated suite | Credentials used by `auth.ts`; ignored by Git and should never be committed. |
 | `fixtures.ts` and `fixtures/` | Playwright users | Shared response replay helper, captured baseline JSON, and response-variant patch descriptors. |
 
 ## Data handling

@@ -152,5 +152,6 @@ export function generateFromManifest(args: CliArgs): void {
   });
   logCodegenCompleted(appLogger, "generate", flows);
   appLogger.result("done:\n  execution:                           " + execution.path + "\n  test suite (" + flows.length + " test(s)): " + generatedSuite.specPath +
-    (generatedSuite.fixtureHelperPath ? "\n  fixtures:                             " + generatedSuite.fixtureHelperPath : ""));
+    (generatedSuite.fixtureHelperPath ? "\n  fixtures:                             " + generatedSuite.fixtureHelperPath : "") +
+    (generatedSuite.credentialsPath ? "\n  local credentials:                    " + generatedSuite.credentialsPath : ""));
 }

@@ -87,7 +87,39 @@ export function formatTestTitle(name: string): string {
 // Mirrors src/browser/login.ts exactly — keep the two in sync. English label text only works
 // on English-language UIs; HTML input types (type="password", type="email", type="submit") are
 // language-independent, so structural signals are tried first, English text as a fallback.
+export const GENERATED_CREDENTIALS_FILE = ".appwalk.secrets.json";
+
 const GENERATED_AUTH_HELPER = `import type { Locator, Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+type Credentials = { username: string; password: string };
+
+function readLocalCredentials(): Credentials | null {
+  const credentialsPath = join(dirname(fileURLToPath(import.meta.url)), '${GENERATED_CREDENTIALS_FILE}');
+  try {
+    const parsed = JSON.parse(readFileSync(credentialsPath, 'utf8')) as Partial<Credentials>;
+    if (typeof parsed.username !== 'string' || typeof parsed.password !== 'string') {
+      throw new Error('must contain string username and password fields');
+    }
+    return { username: parsed.username, password: parsed.password };
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null;
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error('Unable to read ${GENERATED_CREDENTIALS_FILE}: ' + detail);
+  }
+}
+
+function readCredentials(): Credentials {
+  const localCredentials = readLocalCredentials();
+  if (localCredentials) return localCredentials;
+
+  const username = process.env.APPWALK_USERNAME;
+  const password = process.env.APPWALK_PASSWORD;
+  if (username && password) return { username, password };
+  throw new Error('Credentials not found. Keep ${GENERATED_CREDENTIALS_FILE} next to auth.ts or set APPWALK_USERNAME and APPWALK_PASSWORD.');
+}
 
 async function findLoginField(page: Page, ...patterns: RegExp[]): Promise<Locator | null> {
   for (const pattern of patterns) {
@@ -144,6 +176,11 @@ export async function loginWithCredentials(page: Page, username: string, passwor
     page.waitForURL((nextUrl: URL) => nextUrl.toString() !== loginUrl, { timeout: 10000 }),
     passwordField.waitFor({ state: 'hidden', timeout: 10000 }),
   ]).catch(() => undefined);
+}
+
+export async function loginWithConfiguredCredentials(page: Page): Promise<void> {
+  const { username, password } = readCredentials();
+  await loginWithCredentials(page, username, password);
 }`;
 
 const GENERATED_FIXTURES_HELPER = `import { readFileSync } from 'node:fs';
@@ -547,7 +584,7 @@ function flowToTest(
         ? `await page.goto('${escapeJsString(flow.startUrl!)}');`
         : `await page.goto('${escapeJsString(options.url)}');`,
       ...(!hasFlowStorageState && options.username && options.password
-        ? [`await loginWithCredentials(page, '${escapeJsString(options.username)}', '${escapeJsString(options.password)}');`]
+        ? ["await loginWithConfiguredCredentials(page);"]
         : []),
     ].map((line) => `  ${line}`).join("\n");
   return `test('${escapeJsString(testTitle)}', async (${fixtureParams}) => {
@@ -569,7 +606,7 @@ ${indentedBody}
     ] : []),
     `await page.goto('${escapeJsString(options.url)}');`,
     ...(options.username && options.password
-      ? [`await loginWithCredentials(page, '${escapeJsString(options.username)}', '${escapeJsString(options.password)}');`]
+      ? ["await loginWithConfiguredCredentials(page);"]
       : []),
   ].map((line) => `  ${line}`).join("\n");
   return `test('${escapeJsString(testTitle)}', async (${fixtureParams}) => {\n${setup}\n${body}\n});`;
@@ -653,7 +690,7 @@ export function generateSpecBundle(flows: FlowEntries[], options: CodegenOptions
       ? "import { test, expect, devices } from '@playwright/test';"
       : "import { test, expect } from '@playwright/test';",
   ];
-  if (hasLogin) parts.push("import { loginWithCredentials } from './auth.js';");
+  if (hasLogin) parts.push("import { loginWithConfiguredCredentials } from './auth.js';");
   if (hasFixtures) parts.push("import { installFixtures, loadScenario } from './fixtures.js';");
 
   if (hasStorageState) {
@@ -684,7 +721,10 @@ export function generateSpecBundle(flows: FlowEntries[], options: CodegenOptions
   return {
     spec: parts.join("\n\n") + "\n",
     artifacts: [
-      ...(hasLogin ? [{ relativePath: "auth.ts", content: GENERATED_AUTH_HELPER }] : []),
+      ...(hasLogin ? [
+        { relativePath: "auth.ts", content: GENERATED_AUTH_HELPER },
+        { relativePath: GENERATED_CREDENTIALS_FILE, content: JSON.stringify({ username: options.username, password: options.password }, null, 2) + "\n" },
+      ] : []),
       ...(hasFixtures ? [{ relativePath: "fixtures.ts", content: GENERATED_FIXTURES_HELPER }, ...fixturePlan.artifacts] : []),
     ],
   };

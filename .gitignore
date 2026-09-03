@@ -1,9 +1,19 @@
+# Dependencies and build output
 node_modules/
 dist/
+
+# Generated runtime and test output
 appwalk-output/
+appwalk-live/
 test-results/
+
+# Local development artifacts and logs
 dev-check-*.ts
 *.log
+
+# Local secrets
 .env
+.appwalk.secrets.json
+
+# Operating-system files
 .DS_Store
-appwalk-live/

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import test from "node:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { generateSpec, generateSpecBundle } from "../src/codegen/spec.js";
+import { writeGeneratedSuite } from "../src/cli/generated-suite.js";
 
 test("generated login helpers are typed and duplicate flow titles are unique", () => {
   const spec = generateSpec([
@@ -12,7 +16,9 @@ test("generated login helpers are typed and duplicate flow titles are unique", (
     password: "secret",
   });
 
-  assert.match(spec, /import \{ loginWithCredentials \} from '\.\/auth\.js';/);
+  assert.match(spec, /import \{ loginWithConfiguredCredentials \} from '\.\/auth\.js';/);
+  assert.match(spec, /await loginWithConfiguredCredentials\(page\);/);
+  assert.doesNotMatch(spec, /tester|secret/);
   assert.doesNotMatch(spec, /findLoginField|loginWithCredentials\(page: Page/);
   const auth = generateSpecBundle([
     { title: "Login", name: "Login", entries: [] },
@@ -24,6 +30,18 @@ test("generated login helpers are typed and duplicate flow titles are unique", (
   assert.ok(auth);
   assert.match(auth.content, /findLoginField\(page: Page, \.\.\.patterns: RegExp\[\]\): Promise<Locator \| null>/);
   assert.match(auth.content, /loginWithCredentials\(page: Page, username: string, password: string\): Promise<void>/);
+  assert.match(auth.content, /APPWALK_USERNAME/);
+  assert.match(auth.content, /APPWALK_PASSWORD/);
+  const credentials = generateSpecBundle([
+    { title: "Login", name: "Login", entries: [] },
+  ], {
+    url: "https://example.test",
+    username: "tester",
+    password: "secret",
+  }).artifacts.find((artifact) => artifact.relativePath === ".appwalk.secrets.json");
+  assert.ok(credentials);
+  assert.match(credentials.content, /"username": "tester"/);
+  assert.match(credentials.content, /"password": "secret"/);
   assert.match(spec, /test\('Checkout Order Confirmation - Checkout Order Confirmation for Bluetooth Speaker',/);
   assert.match(spec, /test\('Checkout Order Confirmation - Checkout Order Confirmation for Webcam',/);
 });
@@ -79,6 +97,35 @@ test("generated response fixtures live in shared artifacts and variants use patc
   assert.ok(variantArtifact);
   assert.match(variantArtifact.content, /"base": "flow-001\.base\.json"/);
   assert.match(variantArtifact.content, /"path": "\$\.status"/);
+});
+
+test("generated credential sidecar is immediately usable and owner-readable only", () => {
+  const directory = mkdtempSync(join(tmpdir(), "appwalk-generated-suite-"));
+  try {
+    const output = writeGeneratedSuite(directory, [{ name: "Login", entries: [] }], {
+      url: "https://example.test",
+      username: "tester",
+      password: "secret",
+    });
+
+    assert.ok(output.credentialsPath);
+    assert.equal(readFileSync(output.credentialsPath, "utf8"), '{\n  "username": "tester",\n  "password": "secret"\n}\n');
+    assert.equal(statSync(output.credentialsPath).mode & 0o777, 0o600);
+    assert.match(readFileSync(join(directory, "discovered.spec.ts"), "utf8"), /loginWithConfiguredCredentials/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("storage-state generated suites do not create a credential sidecar", () => {
+  const bundle = generateSpecBundle([{ name: "Returning user", entries: [] }], {
+    url: "https://example.test",
+    storageStatePath: "./auth/storage-state.json",
+    username: "ignored",
+    password: "ignored",
+  });
+
+  assert.equal(bundle.artifacts.some((artifact) => artifact.relativePath === ".appwalk.secrets.json"), false);
 });
 
 test("generates iframe locators and expanded actions as Playwright APIs", () => {

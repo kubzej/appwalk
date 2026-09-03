@@ -152,6 +152,9 @@ async function main() {
   if (generatedSuite.fixtureHelperPath) {
     appLogger.result("fixtures: " + generatedSuite.fixtureHelperPath);
   }
+  if (generatedSuite.credentialsPath) {
+    appLogger.result("local credentials: " + generatedSuite.credentialsPath);
+  }
   const report = writeExecutionReport(batch, executionCommand, execution, batch.confirmedFlows.length, {
     fixtures: generatedSuite.fixtureHelperPath ? "fixtures.ts" : undefined,
   });

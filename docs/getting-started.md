@@ -80,7 +80,7 @@ Generated tests use `@playwright/test` and are independent tests, one per confir
 npx playwright test ./appwalk-output/<execution-id>/discovered.spec.ts
 ```
 
-The generated suite may include a sibling `auth.ts` helper when credential login is configured, and captured response fixtures. In that case `discovered.spec.ts` loads the helper and fixtures through `fixtures.ts` and the `fixtures/` directory; keep all generated siblings together. Appwalk does not persist captured auth tokens in discovery artifacts; provide credentials or a storage state explicitly when generating. Treat the generated files as source code: review them, place them in the appropriate test project, and decide how their credentials and environment should be supplied in CI.
+The generated suite may include a sibling `auth.ts` helper and a local `.appwalk.secrets.json` file when credential login is configured, as well as captured response fixtures. In that case `discovered.spec.ts` loads the helper and fixtures through `fixtures.ts` and the `fixtures/` directory; keep all generated siblings together. The local credentials file makes the suite runnable immediately, is ignored by Git, and must not be committed. In CI, omit that file and provide `APPWALK_USERNAME` and `APPWALK_PASSWORD` instead. Appwalk does not persist captured auth tokens in discovery artifacts. Treat the generated files as source code: review them and place them in the appropriate test project.
 
 ## 6. Use a focused exploration
 

@@ -26,7 +26,7 @@ appwalk generate <discovery-dir> [--flows 1,3] [-o output] [auth options]
 
 Reads `discovery.json` and `evidence.jsonl` from a previous execution. Without `--flows`, it selects only flows whose replay was confirmed. Explicitly selecting an unconfirmed flow is rejected.
 
-If the discovery used login, generation needs `--storage-state` or fresh `--email` and `--password` credentials. Appwalk does not persist captured auth tokens in the discovery bundle. Generation itself does not call an LLM.
+If the discovery used login, generation needs `--storage-state` or fresh `--email` and `--password` credentials. With credential login, the generated suite contains a local `.appwalk.secrets.json` sidecar next to `auth.ts`, so it can be run immediately. The sidecar is ignored by Git and must not be committed; when it is unavailable, the helper falls back to `APPWALK_USERNAME` and `APPWALK_PASSWORD`. Appwalk does not persist captured auth tokens in the discovery bundle. Generation itself does not call an LLM.
 
 ## Exploration intent
 
