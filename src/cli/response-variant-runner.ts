@@ -209,7 +209,7 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
         continue;
       }
       if (variantExpectationResult?.expectation?.status !== "met") {
-        responseVariantAudit.skipped.push({ name: variant.name, reason: "The derived expectation was not observed after the source response was applied." });
+      responseVariantAudit.skipped.push({ name: variant.name, reason: "The derived expectation was not observed after the source response was applied." });
         flowLogger.verbose(`      Response scenario "${variant.name}": expectation not observed`);
         continue;
       }

@@ -417,6 +417,7 @@ export async function runAgentLoop(
           finalUrl: url,
           finalSnapshot: snapshot,
           network,
+          expectations: actionHistory.flatMap((step) => step.result?.expectation ? [step.result.expectation] : []),
         });
 
       flows.push({

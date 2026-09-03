@@ -1,5 +1,6 @@
 import type { NetworkEntry } from "../evidence/recorder.js";
-import { looksLikeSuccess, looksLikeSuccessByNetwork, looksLikeSuccessBySnapshot } from "./success.js";
+import { looksLikeSuccessByNetwork, looksLikeSuccessBySnapshot, looksLikeSuccessByUrl } from "./success.js";
+import type { ExpectationObservation } from "../types.js";
 
 export type VerificationMode =
   | "completion"
@@ -17,6 +18,8 @@ export interface VerificationContext {
   finalUrl: string;
   finalSnapshot: string;
   network: NetworkEntry[];
+  /** Concrete signals checked by verifyExpectation during this flow. */
+  expectations?: ExpectationObservation[];
 }
 
 const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -33,6 +36,14 @@ function hasSuccessfulStateChange(network: NetworkEntry[]): boolean {
       entry.status >= 200 &&
       entry.status < 300,
   );
+}
+
+function hasExplicitMetExpectation(ctx: VerificationContext): boolean {
+  return ctx.expectations?.some((expectation) => expectation.status === "met") ?? false;
+}
+
+function hasObservableChange(ctx: VerificationContext): boolean {
+  return ctx.finalUrl !== ctx.flowStartUrl || ctx.finalSnapshot !== ctx.flowStartSnapshot;
 }
 
 function hasFailedRequest(network: NetworkEntry[]): boolean {
@@ -54,26 +65,19 @@ function hasSuspiciousDuplicateRequest(network: NetworkEntry[]): boolean {
   return [...successCounts.values()].some((count) => count > 1);
 }
 
-// A persona whose entire behavior is deliberately ending/removing/cancelling something doesn't need
-// completion's stricter filtering — for that persona, any observable state change since the flow
-// started is itself the expected outcome of a successful attempt (there's nothing else it could be
-// confusable with, unlike Noah/Wade's intermediate wandering, which completion must filter out).
+// A generic verifier cannot know which object was removed. Removal therefore needs an explicit
+// observable expectation such as a hidden target, zero count, or confirmed completion URL.
 function looksLikeRemoval(ctx: VerificationContext): boolean {
-  return ctx.finalUrl !== ctx.flowStartUrl || ctx.finalSnapshot !== ctx.flowStartSnapshot;
+  return hasExplicitMetExpectation(ctx);
 }
 
-function newLinesSince(before: string, after: string): boolean {
-  const beforeLines = new Set(
-    before
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean),
-  );
+function hasNewMatchingLine(before: string, after: string, pattern: RegExp): boolean {
+  const beforeLines = new Set(before.split("\n").map((line) => line.trim()).filter(Boolean));
   return after
     .split("\n")
-    .map((l) => l.trim())
+    .map((line) => line.trim())
     .filter(Boolean)
-    .some((line) => !beforeLines.has(line));
+    .some((line) => pattern.test(line) && !beforeLines.has(line));
 }
 
 // role="alert"/aria-invalid don't catch every error UI, so new content since flow start is a fallback —
@@ -82,15 +86,18 @@ function newLinesSince(before: string, after: string): boolean {
 // contain a success-looking word, so only network/snapshot signals count as corroborating evidence.
 // Imperfect: an acceptance with unrecognized wording can still slip through.
 function looksLikeRejection(ctx: VerificationContext): boolean {
-  if (ALERT_PATTERN.test(ctx.finalSnapshot) || INVALID_FIELD_PATTERN.test(ctx.finalSnapshot)) return true;
-  if (!newLinesSince(ctx.flowStartSnapshot, ctx.finalSnapshot)) return false;
-  const looksAcceptedOrSuccessful =
-    looksLikeSuccessByNetwork(ctx.network, ctx.finalUrl) || looksLikeSuccessBySnapshot(ctx.finalSnapshot);
-  return !looksAcceptedOrSuccessful;
+  if (hasExplicitMetExpectation(ctx)) return true;
+  const newAlertOrInvalidMarker =
+    hasNewMatchingLine(ctx.flowStartSnapshot, ctx.finalSnapshot, ALERT_PATTERN) ||
+    hasNewMatchingLine(ctx.flowStartSnapshot, ctx.finalSnapshot, INVALID_FIELD_PATTERN);
+  if (newAlertOrInvalidMarker) return true;
+  return hasObservableChange(ctx) && hasFailedRequest(ctx.network) &&
+    !looksLikeSuccessByNetwork(ctx.network, ctx.finalUrl) &&
+    !looksLikeSuccessBySnapshot(ctx.finalSnapshot);
 }
 
 function looksLikePreservation(ctx: VerificationContext): boolean {
-  return ctx.finalUrl === ctx.flowStartUrl && !hasSuccessfulStateChange(ctx.network);
+  return hasExplicitMetExpectation(ctx) || (ctx.finalUrl === ctx.flowStartUrl && !hasSuccessfulStateChange(ctx.network));
 }
 
 function looksLikeStability(ctx: VerificationContext): boolean {
@@ -98,13 +105,19 @@ function looksLikeStability(ctx: VerificationContext): boolean {
 }
 
 function looksLikeRecovery(ctx: VerificationContext): boolean {
-  return hasFailedRequest(ctx.network) && looksLikeSuccess(ctx.finalUrl, ctx.network, ctx.finalSnapshot);
+  return hasFailedRequest(ctx.network) && looksLikeCompletion(ctx);
 }
 
-/** `consistency` and `visual` don't have a generic implementation yet — `consistency` needs to know
- * *which* business values should match, which isn't something a generic check can infer; `visual`
- * needs real screenshot comparison, not just the accessibility tree. Falling back to `completion`
- * is an honest placeholder, not a real check — don't rely on either mode until they're built out. */
+function looksLikeCompletion(ctx: VerificationContext): boolean {
+  if (hasExplicitMetExpectation(ctx)) return true;
+  if (!hasObservableChange(ctx)) return false;
+  const newSuccessUrl = ctx.finalUrl !== ctx.flowStartUrl && looksLikeSuccessByUrl(ctx.finalUrl);
+  const newSuccessSnapshot = !looksLikeSuccessBySnapshot(ctx.flowStartSnapshot) && looksLikeSuccessBySnapshot(ctx.finalSnapshot);
+  return newSuccessUrl || newSuccessSnapshot;
+}
+
+/** `consistency` and `visual` don't have a generic implementation yet. They need an explicit
+ * expectation until domain-aware value comparison and screenshot comparison are implemented. */
 function verifySingle(mode: VerificationMode, ctx: VerificationContext): boolean {
   switch (mode) {
     case "rejection":
@@ -118,11 +131,12 @@ function verifySingle(mode: VerificationMode, ctx: VerificationContext): boolean
     case "removal":
       return looksLikeRemoval(ctx);
     case "completion":
-      return looksLikeSuccess(ctx.finalUrl, ctx.network, ctx.finalSnapshot);
+      return looksLikeCompletion(ctx);
     case "consistency":
     case "visual":
+      return hasExplicitMetExpectation(ctx);
     default:
-      return looksLikeSuccess(ctx.finalUrl, ctx.network, ctx.finalSnapshot);
+      return false;
   }
 }
 

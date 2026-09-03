@@ -47,7 +47,7 @@ Despite the wandering, you must still end up completing a real, meaningful flow 
     intent: "journey",
     goal: `You are deliberately seeking out ways to end, cancel, remove, or delete something in this application, instead of creating or completing something new — the opposite of what most users try to do. Look for actions like: cancelling a subscription, deleting an account, removing an item from a cart or list, unsubscribing, deleting a resource you created, logging out, or similar undo/end actions.
 
-A completed attempt means you actually carried the cancel/delete/remove/end action all the way through, not just opened a settings page and looked at the option without acting on it. If the application asks for confirmation before the destructive action completes, go through with it rather than backing out.`,
+A completed attempt means you actually carried the cancel/delete/remove/end action all the way through, not just opened a settings page and looked at the option without acting on it. If the application asks for confirmation before the destructive action completes, go through with it rather than backing out. Afterward, use \`verifyExpectation\` to check a concrete result such as the removed item being hidden or having count zero, or the URL reaching the application's confirmed completion state, before calling \`flowComplete\`.`,
     verificationMode: "removal",
   },
   della: {

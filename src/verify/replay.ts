@@ -158,6 +158,10 @@ export async function replay(
     finalUrl,
     finalSnapshot,
     network: recorder?.network.slice(replayNetworkStart) ?? [],
+    expectations: [
+      ...replayedExpectations,
+      ...(variantExpectationResult?.expectation ? [variantExpectationResult.expectation] : []),
+    ],
   });
   const safetyBlocked = Math.max(0, (getSafetyBlockCount?.() ?? safetyCountBefore) - safetyCountBefore);
   const variantSourceMatched = variantSource ? sourceMatched() : undefined;
