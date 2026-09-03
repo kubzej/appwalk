@@ -11,6 +11,7 @@ import type { ToolCall } from "../providers/provider.js";
 import type { ResponseExpectation, ResponseFixtureSelector } from "../response/variants.js";
 import type { ExpectationObservation, StepResult } from "../types.js";
 import type { Logger } from "../logging/logger.js";
+import type { SafetyRequestOptions } from "../safety/guard.js";
 
 export interface ReplayResult {
   reproduced: boolean;
@@ -68,6 +69,8 @@ export async function replay(
    * from a popup during exploration, not from openTab. A caller with no popup-registration story
    * (e.g. a variant replay that doesn't need it) can omit this and get a private, unshared registry. */
   tabRegistryHandle: TabRegistryHandle = { tabs: new Map() },
+  /** The same request safety policy used during exploration, including direct apiRequest calls. */
+  safety?: SafetyRequestOptions,
 ): Promise<ReplayResult> {
   const flowStartUrl = page.url();
   const flowStartSnapshot = await captureSnapshot(page);
@@ -91,7 +94,7 @@ export async function replay(
         locator: variantExpectation.locator,
         value: variantExpectation.value,
       },
-    }, tabRegistryHandle.tabs);
+    }, tabRegistryHandle.tabs, safety);
     if (expectationResult.expectation?.status === "met") {
       variantExpectationResult = expectationResult;
       variantExpectationStep = step;
@@ -105,7 +108,7 @@ export async function replay(
   for (const [index, action] of actions.entries()) {
     logger?.debug("replay.step_started", "Replay action started", { stepIndex: index, action: action.name, input: action.input });
     try {
-      const result = await executeToolCall(page, action, tabRegistryHandle.tabs);
+      const result = await executeToolCall(page, action, tabRegistryHandle.tabs, safety);
       steps.push(result);
       finalUrl = result.url;
       if (result.activePage) {

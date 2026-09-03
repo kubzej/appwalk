@@ -5,6 +5,7 @@ import { toStepResult } from "../browser/snapshot.js";
 import { resolveLocator } from "../browser/locator.js";
 import type { ToolCall, ToolDefinition } from "../providers/provider.js";
 import type { ExpectationAssertion, ExpectationObservation, StepResult } from "../types.js";
+import type { SafetyRequestOptions } from "../safety/guard.js";
 
 const clickOptions = {
   button: { type: "string", enum: ["left", "right", "middle"] },
@@ -480,9 +481,14 @@ export interface TabRegistryHandle {
  * this function to also know how to phrase it. `openTab` is excluded since it already announces its
  * own result explicitly; duplicating that here would just repeat the same tab id twice.
  */
-export async function executeToolCall(page: Page, call: ToolCall, tabs?: TabRegistry): Promise<ToolCallResult> {
+export async function executeToolCall(
+  page: Page,
+  call: ToolCall,
+  tabs?: TabRegistry,
+  safety?: SafetyRequestOptions,
+): Promise<ToolCallResult> {
   const tabsBefore = tabs ? new Set(tabs.keys()) : undefined;
-  const result = await dispatchToolCall(page, call, tabs);
+  const result = await dispatchToolCall(page, call, tabs, safety);
   if (tabs && tabsBefore && call.name !== "openTab") {
     const newTabIds = [...tabs.keys()].filter((id) => !tabsBefore.has(id));
     if (newTabIds.length > 0) {
@@ -493,7 +499,7 @@ export async function executeToolCall(page: Page, call: ToolCall, tabs?: TabRegi
   return result;
 }
 
-async function dispatchToolCall(page: Page, call: ToolCall, tabs?: TabRegistry): Promise<ToolCallResult> {
+async function dispatchToolCall(page: Page, call: ToolCall, tabs?: TabRegistry, safety?: SafetyRequestOptions): Promise<ToolCallResult> {
   const input = call.input;
   switch (call.name) {
     case "navigate":
@@ -578,6 +584,7 @@ async function dispatchToolCall(page: Page, call: ToolCall, tabs?: TabRegistry):
         input.method as "GET" | "HEAD",
         input.url as string,
         input.headers as Record<string, string> | undefined,
+        safety,
       );
     case "verifyExpectation":
       return verifyExpectation(

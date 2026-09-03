@@ -121,6 +121,45 @@ test("apiRequest rejects a non-GET/HEAD method at runtime, not just via the tool
   }
 });
 
+test("apiRequest applies URL safety rules while keeping GET allowed elsewhere", async () => {
+  const { createServer } = await import("node:http");
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end("ok");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  const url = `http://127.0.0.1:${port}/api/read-only`;
+  const blocked: Array<{ method: string; url: string }> = [];
+  const safety = {
+    allowDestructive: false,
+    config: { block: [url], allow: [] },
+    onBlocked: (request: { method: string; url: string }) => blocked.push(request),
+  };
+
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await assert.rejects(
+      executeToolCall(page, { id: "1", name: "apiRequest", input: { method: "GET", url } }, undefined, safety),
+      /apiRequest: blocked by safety policy: GET/,
+    );
+    assert.deepEqual(blocked, [{ method: "GET", url: `http://127.0.0.1:${port}/api/read-only` }]);
+
+    const allowedUrl = `${url}/allowed`;
+    const allowed = await executeToolCall(
+      page,
+      { id: "2", name: "apiRequest", input: { method: "GET", url: allowedUrl } },
+      undefined,
+      { allowDestructive: false, config: { block: [`http://127.0.0.1:${port}/**`], allow: [allowedUrl] } },
+    );
+    assert.match(allowed.snapshot, /API GET .*\/allowed -> 200/);
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
 test("documents why apiRequest is read-only-only: page.request bypasses the context-level safety guard entirely", async () => {
   const { createServer } = await import("node:http");
   const server = createServer((_req, res) => { res.writeHead(200, { "content-type": "text/plain" }); res.end("ok"); });

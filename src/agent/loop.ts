@@ -11,6 +11,7 @@ import type { TabRegistryHandle } from "./tools.js";
 import type { VerificationMode } from "./verification.js";
 import { verifyFlow } from "./verification.js";
 import { defaultRedactor, type Redactor } from "../security/redaction.js";
+import type { SafetyRequestOptions } from "../safety/guard.js";
 
 const DEFAULT_CONTEXT_CHECKPOINT_ACTIONS = 8;
 const MODEL_SNAPSHOT_MAX_CHARS = 18_000;
@@ -284,6 +285,8 @@ export async function runAgentLoop(
     tabRegistryHandle?: TabRegistryHandle;
     /** Shared policy for browser state retained in agent history or sent to a provider. */
     redactor?: Redactor;
+    /** The same request safety policy used by the browser guard, including direct apiRequest calls. */
+    safety?: SafetyRequestOptions;
     logger?: Logger;
   },
 ): Promise<LoopResult> {
@@ -488,7 +491,7 @@ export async function runAgentLoop(
     });
 
     try {
-      const toolResult = await executeToolCall(page, toolCall, tabRegistryHandle.tabs);
+      const toolResult = await executeToolCall(page, toolCall, tabRegistryHandle.tabs, options.safety);
       result = {
         ...toolResult,
         url: redactor.url(toolResult.url),

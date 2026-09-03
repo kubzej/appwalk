@@ -600,6 +600,7 @@ async function exploreAndVerifyInBrowser(
     getSafetyBlockCount: () => safetyEvents.filter((event) => event.phase === "exploration").length,
     tabRegistryHandle,
     redactor,
+    safety: guardOptions,
     // A new tab (openTab, openInNewTab, reopenBrowser) is a fresh Page — the destructive-action guard
     // is installed with `page.route`, which is page-scoped and does not follow a page switch on its own.
     // A same-context switch (openTab, switchTab) is already covered by the context-level guard
@@ -715,6 +716,7 @@ async function exploreAndVerifyInBrowser(
             attachCrashDetection(newPage, replayRecorder);
           },
           replayTabRegistryHandle,
+          guardOptions,
         );
         runtimeErrorEntries.push(...replayRecorder.runtimeErrors.map((error) => ({ error, phase: "replay" as const, flowIndex: index + 1 })));
         if (!replayResult.reproduced) {

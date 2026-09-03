@@ -4,6 +4,7 @@ import { toStepResult } from './snapshot.js';
 import { resolveLocator } from './locator.js';
 import type { StepResult } from '../types.js';
 import { defaultUploadInputPolicy, type UploadInputPolicy } from '../security/upload-inputs.js';
+import { evaluateSafetyRequest, safePath, type SafetyRequestOptions } from '../safety/guard.js';
 
 const CLICK_SETTLE_MS = 500;
 export const ACTION_TIMEOUT_MS = 5000;
@@ -503,15 +504,15 @@ const API_REQUEST_BODY_PREVIEW_MAX_CHARS = 2000;
 /** Sends a real request straight through Playwright's `APIRequestContext`, using the current
  * session's cookies — reaches the API layer directly instead of only what a rendered page happens
  * to link to. GET/HEAD only: `page.request` is a separate HTTP client that bypasses
- * `context.route()` entirely, so it structurally cannot be intercepted by the destructive-action
- * safety guard the way a normal browser-driven request can — restricting this tool to read-only
- * methods is what keeps it from being a way around that policy rather than needing to reimplement
- * the guard's block/allow logic a second time for a client it can't actually see. */
+ * `context.route()` entirely, so it evaluates the shared safety policy explicitly before sending
+ * the request. Restricting this tool to read-only methods preserves its read-only contract while
+ * URL block/allow rules still apply consistently with normal browser-driven requests. */
 export async function apiRequest(
   page: Page,
   method: 'GET' | 'HEAD',
   url: string,
   headers?: Record<string, string>,
+  safety?: SafetyRequestOptions,
 ): Promise<StepResult> {
   // The tool schema's enum is a request to the model, not an enforcement mechanism — a malformed
   // or non-conforming tool call still reaches this function directly, so the read-only restriction
@@ -519,6 +520,13 @@ export async function apiRequest(
   // not just declared in JSON schema.
   if (method !== 'GET' && method !== 'HEAD') {
     throw new Error(`apiRequest: method must be GET or HEAD, got "${method}". This tool is read-only by design — it bypasses the safety guard, so it can't be used for mutating requests.`);
+  }
+  if (safety) {
+    const decision = evaluateSafetyRequest(method, url, safety);
+    if (decision.blocked) {
+      safety.onBlocked?.({ method, url: safePath(url) });
+      throw new Error(`apiRequest: blocked by safety policy: ${method} ${safePath(url)}`);
+    }
   }
   const response = await page.request.fetch(url, { method, headers });
   const status = response.status();
