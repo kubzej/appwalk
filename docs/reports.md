@@ -54,7 +54,7 @@ according to the environment's retention policy.
 | --- | --- |
 | `0` | Confirmed flow coverage exists without findings or incomplete evidence. |
 | `1` | At least one flow contains a confirmed potential bug. |
-| `2` | An execution-level error prevented the run from completing. |
+| `2` | An execution-level error prevented the run from completing, including invalid CLI/configuration or provider setup. A report may not exist when the failure happens before execution initialization. |
 | `3` | Coverage or evidence is incomplete, or no confirmed regression flow survived. |
 
 Exit code is a process/CI signal only. The report does not assign a status to the execution or to a persona. Review status on individual flows, alongside the summary counts and coverage warnings. A generated test suite can exist while the exit code is `1` or `3`; generation and application health are separate signals.

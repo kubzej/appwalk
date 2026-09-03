@@ -1,6 +1,7 @@
 import { loadAppwalkConfig, validateResolvedOptions, type BrowserEngine, type CoverageRunConfig, type ProviderName } from "../config.js";
 import type { LogLevel } from "../logging/logger.js";
 import { DEFAULT_BLOCK_METHODS, normalizeBlockMethods } from "../safety/methods.js";
+import { EXIT_CODES } from "../exit-codes.js";
 
 const DEFAULT_OUTPUT_DIR = "./appwalk-output";
 const DEFAULT_MAX_STEPS = 25;
@@ -70,7 +71,7 @@ function printUsage(error?: string): never {
     "Generate reads discovery.json and evidence.jsonl from the discovery directory.",
     "The old 'test' command is no longer the full pipeline; use 'run'.",
   ].join("\n"));
-  process.exit(1);
+  process.exit(EXIT_CODES.executionError);
 }
 
 function parseFlowSelection(value: string): number[] {

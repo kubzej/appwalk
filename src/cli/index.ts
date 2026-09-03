@@ -11,6 +11,7 @@ import { Logger, logError } from "../logging/logger.js";
 import { writeGeneratedSuite } from "./generated-suite.js";
 import { join } from "node:path";
 import type { CliArgs } from "./args.js";
+import { EXIT_CODES } from "../exit-codes.js";
 
 interface ResolvedRunLog {
   name: string;
@@ -186,5 +187,5 @@ async function main() {
 main().catch((err) => {
   appLogger.error(logError(err));
   appLogger.debug("execution.failed", "Execution failed unexpectedly", { error: logError(err), stack: err instanceof Error ? err.stack : undefined });
-  process.exit(1);
+  process.exit(EXIT_CODES.executionError);
 });

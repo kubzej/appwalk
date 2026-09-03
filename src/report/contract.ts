@@ -1,10 +1,12 @@
+import { EXIT_CODES } from "../exit-codes.js";
+
 type ExecutionOutcome = 'passed' | 'findings' | 'inconclusive' | 'failed';
 
 export const REPORT_EXIT_CODES = {
-  passed: 0,
-  findings: 1,
-  failed: 2,
-  inconclusive: 3,
+  passed: EXIT_CODES.success,
+  findings: EXIT_CODES.findings,
+  failed: EXIT_CODES.executionError,
+  inconclusive: EXIT_CODES.inconclusive,
 } as const satisfies Record<ExecutionOutcome, number>;
 
 export interface ReportFinding {

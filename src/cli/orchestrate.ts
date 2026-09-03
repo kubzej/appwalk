@@ -25,6 +25,7 @@ import type {
 } from "../report/contract.js";
 import { extractActions, type ReplayResult } from "../verify/replay.js";
 import type { CliArgs } from "./args.js";
+import { EXIT_CODES } from "../exit-codes.js";
 import type { DiscoveryManifest, DiscoveryManifestFlow, DiscoveryManifestRun } from "./manifest.js";
 import { appLogger } from "./logger-state.js";
 import { createProvider } from "./provider-factory.js";
@@ -181,7 +182,7 @@ function validatePersona(args: CliArgs) {
   const persona = args.personaName ? PERSONAS[args.personaName] : undefined;
   if (args.personaName && !persona) {
     appLogger.error("Unknown persona \"" + args.personaName + "\". Available: " + Object.keys(PERSONAS).join(", "));
-    process.exit(1);
+    process.exit(EXIT_CODES.executionError);
   }
   return persona;
 }

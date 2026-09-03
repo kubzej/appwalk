@@ -5,6 +5,7 @@ import { applyConfig, parseArgs } from "../src/cli/args.js";
 import { loadAppwalkConfig, validateResolvedOptions } from "../src/config.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EXIT_CODES } from "../src/exit-codes.js";
 
 const validOptions = {
   url: "https://example.test",
@@ -18,11 +19,16 @@ function assertCliUsageError(argv: string[], expected: RegExp): void {
   const originalExit = process.exit;
   const originalError = console.error;
   let output = "";
-  process.exit = (() => { throw new Error("CLI usage exit"); }) as typeof process.exit;
+  let exitCode: number | undefined;
+  process.exit = ((code?: number) => {
+    exitCode = code;
+    throw new Error("CLI usage exit");
+  }) as typeof process.exit;
   console.error = (...messages: unknown[]) => { output += messages.join(" ") + "\n"; };
   try {
     assert.throws(() => parseArgs(argv), /CLI usage exit/);
     assert.match(output, expected);
+    assert.equal(exitCode, EXIT_CODES.executionError);
   } finally {
     process.exit = originalExit;
     console.error = originalError;
