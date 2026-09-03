@@ -34,7 +34,7 @@ If the discovery used login, generation needs either fresh `--email` and `--pass
 
 ## Browser actions
 
-The model can combine these actions into one flow. `click`, `doubleClick`, `dragAndDrop`, `fill`, `select`, `pressKey`, `check`, `uncheck`, `hover`, `scroll`, `waitFor`, `uploadFile`, and `download` cover direct interaction. `navigate`, `goBack`, `goForward`, `reload`, `hardReload`, `setViewportSize`, `openInNewTab`, `reopenBrowser`, and `clearCookie` cover navigation and browser state. `handleDialog`, `simulateFailure`, `simulateLatency`, and `burst` cover controlled browser or network conditions. `verifyExpectation` records an explicit assertion and `flowComplete` closes a discovered journey.
+The model can combine these actions into one flow. `click`, `doubleClick`, `dragAndDrop`, `fill`, `select`, `pressKey`, `check`, `uncheck`, `hover`, `scroll`, `waitFor`, `uploadFile`, and `download` cover direct interaction. `navigate`, `goBack`, `goForward`, `reload`, `setViewportSize`, `openInNewTab`, `reopenBrowser`, and `clearCookie` cover navigation and browser state. `handleDialog`, `simulateFailure`, `simulateLatency`, and `burst` cover controlled browser or network conditions. `verifyExpectation` records an explicit assertion and `flowComplete` closes a discovered journey.
 
 Locators use Appwalk syntax such as `role=button[name="Submit"]`, `text="Continue"`, or a raw CSS selector. For iframe content, use `frame=<iframe CSS selector> >> <inner locator>`.
 

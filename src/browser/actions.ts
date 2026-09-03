@@ -213,18 +213,6 @@ export async function clearCookie(page: Page, name?: string): Promise<StepResult
   return stepResultWithStorage(page);
 }
 
-/** A plain `page.reload()` can still serve a page from Chromium's HTTP cache — this forces a real
- * network re-fetch (Chrome's "hard reload"), which Playwright's public Page API has no direct option
- * for, so it goes through a CDP session instead. Chromium-only, matching this project's browser choice. */
-export async function hardReload(page: Page): Promise<StepResult> {
-  const client = await page.context().newCDPSession(page);
-  await client.send('Page.enable');
-  await client.send('Page.reload', { ignoreCache: true });
-  await page.waitForLoadState();
-  await client.detach();
-  return stepResultWithStorage(page);
-}
-
 /** Opens the current page's URL in a fresh context seeded from the same storageState — the closest
  * simulation of "restart the browser" / "open a bookmark fresh" this codebase can produce for a tab
  * that's meant to be abandoned. Used only by `openInNewTab`, which intentionally wants an independent

@@ -27,7 +27,6 @@ function reportActionLabel(name: string): string {
     goBack: "Go back",
     goForward: "Go forward",
     reload: "Reload",
-    hardReload: "Hard reload",
     openInNewTab: "Open new tab",
     reopenBrowser: "Reopen browser",
     scroll: "Scroll",

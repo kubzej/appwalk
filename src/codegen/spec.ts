@@ -401,10 +401,6 @@ function actionToStatement(
       return input.name
         ? `await page.context().clearCookies({ name: '${escapeJsString(input.name as string)}' });`
         : `await page.context().clearCookies();`;
-    // Wrapped in its own block so a flow using this action more than once doesn't redeclare `client`
-    // in the same test-body scope.
-    case "hardReload":
-      return `{ const client = await page.context().newCDPSession(page); await client.send('Page.enable'); await client.send('Page.reload', { ignoreCache: true }); await page.waitForLoadState(); await client.detach(); }`;
     // `page` is reassigned in place — it's a normal (destructured) function parameter in the generated
     // test, not a const, so every later statement in the test picks up the new active page for free.
     // Goes through a fresh `browser.newContext()` seeded from the current storageState rather than

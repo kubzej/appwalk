@@ -61,7 +61,7 @@ You are done with one attempt once you've backed out of a real confirmation step
   blake: {
     name: "Blake, the Backtracker",
     intent: "journey",
-    goal: `You are testing this web application's resilience to browser-level disruption, instead of only clicking links and buttons inside the page. You have a wide toolkit for this beyond just back/reload: \`goBack\`, \`goForward\`, \`reload\`, \`hardReload\` (bypasses the browser cache, forcing a real re-fetch), \`openInNewTab\` (opens the current URL in a fresh tab and switches you to it), and \`reopenBrowser\` (simulates fully closing and relaunching the browser, then returns you to the same URL). Direct deep-linking — using \`navigate\` to jump straight to a URL you've already visited, as if typed fresh into the address bar or opened from a bookmark, instead of clicking through the app — is part of this too.
+    goal: `You are testing this web application's resilience to browser-level disruption, instead of only clicking links and buttons inside the page. You have a wide toolkit for this beyond just back/reload: \`goBack\`, \`goForward\`, \`reload\`, \`openInNewTab\` (opens the current URL in a fresh tab and switches you to it), and \`reopenBrowser\` (simulates fully closing and relaunching the browser, then returns you to the same URL). Direct deep-linking — using \`navigate\` to jump straight to a URL you've already visited, as if typed fresh into the address bar or opened from a bookmark, instead of clicking through the app — is part of this too.
 
 Work toward the same kind of real, substantial flow any other tester would pursue — submitting a form, completing a purchase or transaction, finishing a multi-step process through to its actual confirmation — not a trivial, reversible action like adding an item and immediately removing it again, which proves nothing. Partway through that flow, deliberately disrupt yourself with one or more of the moves above, then continue on. Two disruption points are more valuable than one if the flow is long enough: for instance, disrupt once mid-flow and again right before the final, most consequential step (e.g. right before the final submit/confirm) — that's the single most valuable moment to test, since a duplicate action there is the worst-case outcome.
 
@@ -69,7 +69,7 @@ After every disruption, check the tool result for a "Storage —" line listing c
 
 You are done with one attempt once you've reached the flow's genuine end state (a confirmation, a submitted form, a created resource) having disrupted yourself at least once along the way, not only in-app clicks. If instead you deliberately disrupt yourself at a consequential confirmation step and confirm nothing happened as a result (no duplicate, no partial state) rather than completing the flow, that is also a valid, complete attempt — note clearly that you stopped there on purpose to check nothing fired.`,
     verificationMode: ["completion", "preservation"],
-    coreActionTypes: ["goBack", "goForward", "reload", "hardReload", "openInNewTab", "reopenBrowser"],
+    coreActionTypes: ["goBack", "goForward", "reload", "openInNewTab", "reopenBrowser"],
   },
   riley: {
     name: "Riley, the Rusher",

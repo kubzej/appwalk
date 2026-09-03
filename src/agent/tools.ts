@@ -129,11 +129,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     inputSchema: { type: "object", properties: {} },
   },
   {
-    name: "hardReload",
-    description: "Reload the current page bypassing the browser cache, forcing a real network re-fetch of everything.",
-    inputSchema: { type: "object", properties: {} },
-  },
-  {
     name: "openInNewTab",
     description: "Open the current page's URL in a new browser tab and switch to it. The old tab stays open in the background.",
     inputSchema: { type: "object", properties: {} },
@@ -539,8 +534,6 @@ async function dispatchToolCall(page: Page, call: ToolCall, tabs?: TabRegistry, 
       return actions.clearCookie(page, input.name as string | undefined);
     case "goForward":
       return actions.goForward(page);
-    case "hardReload":
-      return actions.hardReload(page);
     case "openInNewTab":
       return actions.openInNewTab(page);
     case "openTab": {
