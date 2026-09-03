@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { chromium, devices, type Browser } from "playwright";
 import { attachCrashDetection, attachPopupDetection, attachWebSocketCapture, createTraceSession, deviceContextOptions, startTracing, stopTracing, writeDiscoveryArtifacts, type ExplorationBatch } from "../src/cli/orchestrate.js";
+import { createBrowserLifecycle } from "../src/cli/browser-lifecycle.js";
 import type { Persona } from "../src/agent/personas.js";
 import { executeToolCall, type TabRegistryHandle } from "../src/agent/tools.js";
 import { EvidenceRecorder } from "../src/evidence/recorder.js";
@@ -472,12 +473,17 @@ test("trace session follows reopenBrowser into a second trace segment", async ()
     const page = await context.newPage();
     await page.goto("data:text/html,<h1>before restart</h1>");
     const traceSession = await createTraceSession(context, join(directory, "flow.zip"), logger);
+    const browserLifecycle = createBrowserLifecycle({
+      browserEngine: "chromium",
+      preparePage: async (preparedPage) => traceSession.switchTo(preparedPage),
+    });
     const result = await executeToolCall(
       page,
       { id: "reopen", name: "reopenBrowser", input: {} },
       undefined,
       undefined,
       traceSession,
+      browserLifecycle,
     );
     reopenedBrowser = result.activePage?.context().browser() ?? undefined;
     await traceSession.finish();

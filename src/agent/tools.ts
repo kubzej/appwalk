@@ -489,12 +489,46 @@ export async function executeToolCall(
   tabs?: TabRegistry,
   safety?: SafetyRequestOptions,
   browserRestartHooks?: actions.BrowserRestartHooks,
+  browserLifecycle?: actions.BrowserLifecycle,
 ): Promise<ToolCallResult> {
   const definition = TOOL_DEFINITIONS.find((tool) => tool.name === call.name);
   if (!definition) throw new Error(`Unknown tool: ${call.name}`);
-  const validatedInput = validateToolInput(definition, call.input);
+  const armsHandlers = new Set(["handleDialog", "simulateFailure", "simulateLatency"]);
+  const cleanupTransientHandlers = async (): Promise<string[]> => {
+    if (armsHandlers.has(call.name)) return [];
+    const cleanup = await actions.clearUnusedTransientHandlers(page);
+    const notes: string[] = [];
+    if (cleanup.dialog) notes.push("The dialog handler was armed but no dialog appeared during this action; it was discarded.");
+    if (cleanup.routes > 0) notes.push(`${cleanup.routes} unused network simulation handler(s) were discarded after this action.`);
+    return notes;
+  };
+  let validatedInput: Record<string, unknown>;
+  try {
+    validatedInput = validateToolInput(definition, call.input);
+  } catch (error) {
+    const notes = await cleanupTransientHandlers();
+    if (notes.length > 0) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${message} ${notes.join(" ")}`);
+    }
+    throw error;
+  }
   const tabsBefore = tabs ? new Set(tabs.keys()) : undefined;
-  const result = await dispatchToolCall(page, { ...call, input: validatedInput }, tabs, safety, browserRestartHooks);
+  let result: ToolCallResult;
+  try {
+    result = await dispatchToolCall(page, { ...call, input: validatedInput }, tabs, safety, browserRestartHooks, browserLifecycle);
+  } catch (error) {
+    const notes = await cleanupTransientHandlers();
+    if (notes.length > 0) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${message} ${notes.join(" ")}`);
+    }
+    throw error;
+  }
+  const cleanupNotes = await cleanupTransientHandlers();
+  if (cleanupNotes.length > 0) {
+    result = { ...result, snapshot: `${result.snapshot}\n\n${cleanupNotes.join(" ")}` };
+  }
   if (tabs && tabsBefore && call.name !== "openTab") {
     const newTabIds = [...tabs.keys()].filter((id) => !tabsBefore.has(id));
     if (newTabIds.length > 0) {
@@ -511,6 +545,7 @@ async function dispatchToolCall(
   tabs?: TabRegistry,
   safety?: SafetyRequestOptions,
   browserRestartHooks?: actions.BrowserRestartHooks,
+  browserLifecycle?: actions.BrowserLifecycle,
 ): Promise<ToolCallResult> {
   const input = call.input;
   switch (call.name) {
@@ -543,10 +578,12 @@ async function dispatchToolCall(
     case "goForward":
       return actions.goForward(page);
     case "openInNewTab":
-      return actions.openInNewTab(page);
+      if (!browserLifecycle) throw new Error("openInNewTab: no browser lifecycle is configured for this run.");
+      return actions.openInNewTab(page, browserLifecycle);
     case "openTab": {
       if (!tabs) throw new Error("openTab: no tab registry available in this context.");
-      const result = await actions.openTab(page);
+      if (!browserLifecycle) throw new Error("openTab: no browser lifecycle is configured for this run.");
+      const result = await actions.openTab(page, browserLifecycle);
       const newId = `tab-${tabs.size}`;
       tabs.set(newId, result.activePage);
       const openIds = [...tabs.keys()].join(", ");
@@ -564,7 +601,8 @@ async function dispatchToolCall(
       return { ...result, snapshot: `${result.snapshot}\n\nSwitched to tab: ${tabId}. Open tabs: ${openIds} (active: ${tabId}).` };
     }
     case "reopenBrowser":
-      return actions.reopenBrowser(page, browserRestartHooks);
+      if (!browserLifecycle) throw new Error("reopenBrowser: no browser lifecycle is configured for this run.");
+      return actions.reopenBrowser(page, browserLifecycle, browserRestartHooks);
     case "scroll":
       return actions.scroll(page, input.locator as string | undefined);
     case "setViewportSize":

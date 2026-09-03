@@ -3,7 +3,7 @@ import type { ToolCall } from "../providers/provider.js";
 import type { FlowResult } from "../agent/loop.js";
 import type { Persona } from "../agent/personas.js";
 import type { TabRegistryHandle } from "../agent/tools.js";
-import { configurePageTimeouts } from "../browser/actions.js";
+import type { BrowserLifecycle } from "../browser/actions.js";
 import type { CliArgs } from "./args.js";
 import type { EvidenceEntry, EvidenceLog } from "../evidence/log.js";
 import { EvidenceRecorder } from "../evidence/recorder.js";
@@ -19,8 +19,8 @@ import { hasObservableReplayDifference, replay, type ReplayResult } from "../ver
 import type { ReportResponseVariantAudit } from "../report/contract.js";
 import type { Redactor } from "../security/redaction.js";
 import type { Logger } from "../logging/logger.js";
-import { attachCrashDetection, attachPopupDetection } from "./browser-observability.js";
-import { closeTrackedContexts, deviceContextOptions } from "./browser-lifecycle.js";
+import { attachCrashDetection, attachPopupDetection, attachWebSocketCapture } from "./browser-observability.js";
+import { closeTrackedContexts, createBrowserLifecycle } from "./browser-lifecycle.js";
 import { derivedEvidenceEntries, proposeResponseVariants } from "./response-variant-support.js";
 import type { ConfirmedFlow, RuntimeErrorPhaseEntry } from "./run-types.js";
 import { formatTestTitle } from "../codegen/spec.js";
@@ -130,33 +130,51 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
       const variantStorageState = flowIndex > 0 && flow.startStorageState
         ? JSON.parse(flow.startStorageState)
         : args.storageStatePath;
-      const variantContext = await replayBrowser.newContext({
-        ...deviceContextOptions(persona),
-        ...(variantStorageState ? { storageState: variantStorageState } : {}),
-      });
-      trackedContexts.add(variantContext);
-      const variantPage = await variantContext.newPage();
-      configurePageTimeouts(variantPage);
       const variantTabRegistryHandle: TabRegistryHandle = { tabs: new Map() };
-      attachPopupDetection(variantPage, flowLogger, variantTabRegistryHandle);
+      let variantRecorder: EvidenceRecorder | undefined;
+      let runtimeServicesReady = false;
       let variantSourceMatched = false;
-      await installResponseFixtures(variantPage, variantFixtures, {
-        onFixtureApplied: (fixture, requestUrl) => {
-          if (responseFixtureMatchesSelector(fixture, {
-            method: variant.sourceMethod,
-            url: variant.sourceUrl,
-            occurrence: variant.sourceOccurrence,
-          })) {
-            variantSourceMatched = true;
-            flowLogger.debug("response_variant.source_applied", "Variant source response was applied", {
-              method: fixture.method,
-              sourceUrl: fixture.url,
-              occurrence: fixture.occurrence,
-              requestUrl,
+      const fixturePages = new WeakSet<Page>();
+      const browserLifecycle: BrowserLifecycle = createBrowserLifecycle({
+        browserEngine: args.browserEngine,
+        storageStatePath: args.storageStatePath,
+        persona,
+        prepareContext: async (context) => {
+          if (!runtimeServicesReady) return;
+          await installDestructiveActionGuard(context, guardOptions);
+        },
+        preparePage: async (page) => {
+          if (!fixturePages.has(page)) {
+            fixturePages.add(page);
+            await installResponseFixtures(page, variantFixtures, {
+              onFixtureApplied: (fixture, requestUrl) => {
+                if (responseFixtureMatchesSelector(fixture, {
+                  method: variant.sourceMethod,
+                  url: variant.sourceUrl,
+                  occurrence: variant.sourceOccurrence,
+                })) {
+                  variantSourceMatched = true;
+                  flowLogger.debug("response_variant.source_applied", "Variant source response was applied", {
+                    method: fixture.method,
+                    sourceUrl: fixture.url,
+                    occurrence: fixture.occurrence,
+                    requestUrl,
+                  });
+                }
+              },
             });
           }
+          if (!runtimeServicesReady || !variantRecorder) return;
+          variantRecorder.reattach(page);
+          attachPopupDetection(page, flowLogger, variantTabRegistryHandle);
+          attachCrashDetection(page, variantRecorder);
+          attachWebSocketCapture(page, variantRecorder);
         },
       });
+      const variantContext = await browserLifecycle.createContext(replayBrowser, variantStorageState);
+      trackedContexts.add(variantContext);
+      const variantPage = await browserLifecycle.createPage(variantContext);
+      await browserLifecycle.preparePage(variantPage);
       await navigateOrLogin(
         variantPage,
         args,
@@ -164,10 +182,11 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
         flowIndex > 0 && flow.startUrl ? flow.startUrl : args.url,
         flowLogger,
       );
-      await installDestructiveActionGuard(variantContext, guardOptions);
-      const variantRecorder = new EvidenceRecorder(variantContext, flowLogger, { redactor });
+      variantRecorder = new EvidenceRecorder(variantContext, flowLogger, { redactor });
       setActiveRecorder(variantRecorder);
-      attachCrashDetection(variantPage, variantRecorder);
+      runtimeServicesReady = true;
+      await browserLifecycle.prepareContext(variantContext);
+      await browserLifecycle.preparePage(variantPage);
       const variantResult = await replay(
         variantPage,
         actions,
@@ -180,11 +199,13 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
         { selector: { method: variant.sourceMethod, url: variant.sourceUrl, occurrence: variant.sourceOccurrence }, isMatched: () => variantSourceMatched },
         async (newPage) => {
           trackedContexts.add(newPage.context());
-          await installDestructiveActionGuard(newPage.context(), guardOptions);
-          attachPopupDetection(newPage, flowLogger, variantTabRegistryHandle);
-          attachCrashDetection(newPage, variantRecorder);
+          await browserLifecycle.prepareContext(newPage.context());
+          await browserLifecycle.preparePage(newPage);
         },
         variantTabRegistryHandle,
+        guardOptions,
+        undefined,
+        browserLifecycle,
       );
       runtimeErrorEntries.push(...variantRecorder.runtimeErrors.map((error) => ({ error, phase: "replay" as const, flowIndex: flowIndex + 1 })));
       const variantExpectationResult = variantResult.variantExpectationResult;

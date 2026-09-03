@@ -1,6 +1,7 @@
-import { chromium, devices, firefox, webkit, type Browser, type BrowserContext, type BrowserType } from "playwright";
+import { chromium, devices, firefox, webkit, type Browser, type BrowserContext, type BrowserType, type Page } from "playwright";
 import type { BrowserEngine } from "../config.js";
 import type { Persona } from "../agent/personas.js";
+import { configurePageTimeouts, type BrowserLifecycle } from "../browser/actions.js";
 import { logError, type Logger } from "../logging/logger.js";
 
 const BROWSER_CLOSE_TIMEOUT_MS = 5_000;
@@ -82,4 +83,36 @@ export function deviceContextOptions(persona?: Persona): Record<string, unknown>
   if (!device) throw new Error(`Unknown device preset "${persona.devicePreset}" for persona "${persona.name}".`);
   const { defaultBrowserType: _defaultBrowserType, ...contextOptions } = device;
   return contextOptions;
+}
+
+export interface BrowserLifecycleOptions {
+  browserEngine: BrowserEngine;
+  storageStatePath?: string;
+  persona?: Persona;
+  prepareContext?: (context: BrowserContext) => Promise<void>;
+  preparePage?: (page: Page) => Promise<void>;
+}
+
+/**
+ * Creates the one lifecycle adapter used by the run's initial, same-context, cloned-context, and
+ * restarted-browser paths. The storage snapshot is the only intentionally changing input; all
+ * configured context settings and runtime preparation stay centralized here.
+ */
+export function createBrowserLifecycle(options: BrowserLifecycleOptions): BrowserLifecycle {
+  const browserType = resolveBrowserType(options.browserEngine);
+  const contextOptions = deviceContextOptions(options.persona);
+  return {
+    launchBrowser: () => browserType.launch(),
+    createContext: (browser, storageState) => browser.newContext({
+      ...contextOptions,
+      ...(storageState ? { storageState } : options.storageStatePath ? { storageState: options.storageStatePath } : {}),
+    }),
+    createPage: async (context) => {
+      const page = await context.newPage();
+      configurePageTimeouts(page);
+      return page;
+    },
+    prepareContext: options.prepareContext ?? (async () => undefined),
+    preparePage: options.preparePage ?? (async () => undefined),
+  };
 }

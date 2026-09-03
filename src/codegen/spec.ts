@@ -353,6 +353,7 @@ function actionToStatement(
   input: Record<string, unknown>,
   fixtureScenario?: string,
   trackPopups = false,
+  devicePreset?: string,
 ): string | null {
   const locatorExpr = () => toLocatorExpression(input.locator as string);
   const sourceLocatorExpr = () => toLocatorExpression(input.source as string);
@@ -411,7 +412,7 @@ function actionToStatement(
     // `page.context().newPage()` — Playwright rejects a second page on the implicit context every page
     // in this codebase is created with ("Please use browser.newContext()").
     case "openInNewTab":
-      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); const newContext = await browser.newContext({ storageState }); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url);${trackPopups ? " registerPopupPage(page);" : ""} }`;
+      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); const newContext = await browser.newContext(${generatedContextOptions(devicePreset)}); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url);${trackPopups ? " registerPopupPage(page);" : ""} }`;
     // A genuine second page of the *same* context — real, live-shared cookies/localStorage, like two
     // real browser tabs — rather than a storageState clone into a fresh context. `tabs` maps every tab
     // id ever opened to its page, mirroring the runtime tab registry: the id formula
@@ -424,7 +425,7 @@ function actionToStatement(
     // Closes just the context, not the shared `browser` fixture the test runner owns — closing that
     // would break the runner, not just this one test's simulated "browser restart".
     case "reopenBrowser":
-      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); await page.context().close(); const newContext = await browser.newContext({ storageState }); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url);${trackPopups ? " registerPopupPage(page);" : ""} }`;
+      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); await page.context().close(); const newContext = await browser.newContext(${generatedContextOptions(devicePreset)}); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url);${trackPopups ? " registerPopupPage(page);" : ""} }`;
     case "scroll":
       return input.locator ? `await ${locatorExpr()}.scrollIntoViewIfNeeded();` : `await page.mouse.wheel(0, 10000);`;
     case "setViewportSize":
@@ -580,6 +581,12 @@ function validateCodegenExpectation(value: unknown): ExpectationObservation | nu
   return observation as unknown as ExpectationObservation;
 }
 
+function generatedContextOptions(devicePreset?: string): string {
+  return devicePreset
+    ? `{ ...devices['${escapeJsString(devicePreset)}'], storageState }`
+    : `{ storageState }`;
+}
+
 function codegenViewportDimension(value: unknown, name: string): number {
   const dimension = typeof value === "number" ? value : Number(value);
   if (!Number.isSafeInteger(dimension) || dimension <= 0) {
@@ -635,7 +642,7 @@ function flowToTest(
   // item is present in the cart) and must run before later actions navigate away from that state.
   const bodyLines = toolCalls
     .flatMap((entry) => [
-      actionToStatement(entry.toolCall!.name, validateCodegenToolInput(entry.toolCall!.name, entry.toolCall!.input), fixtureScenario, needsTabRegistry),
+      actionToStatement(entry.toolCall!.name, validateCodegenToolInput(entry.toolCall!.name, entry.toolCall!.input), fixtureScenario, needsTabRegistry, flow.devicePreset),
       expectationToStatement(entry),
     ])
     .filter((line): line is string => line !== null);

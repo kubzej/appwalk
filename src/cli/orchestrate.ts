@@ -5,7 +5,6 @@ import { runAgentLoop, type LoopResult } from "../agent/loop.js";
 import { PERSONAS, type PersonaIntent } from "../agent/personas.js";
 import type { TabRegistryHandle } from "../agent/tools.js";
 import { login } from "../browser/login.js";
-import { configurePageTimeouts } from "../browser/actions.js";
 import { EvidenceLog, readEvidenceLog, type EvidenceEntry, type EvidenceReadIssue } from "../evidence/log.js";
 import { EvidenceRecorder, type RuntimeErrorEntry } from "../evidence/recorder.js";
 import {
@@ -35,8 +34,7 @@ import type { ConfirmedFlow, FlowFinding, SafetyEvent } from "./run-types.js";
 import {
   closeBrowserWithTimeout,
   closeTrackedContexts,
-  deviceContextOptions,
-  resolveBrowserType,
+  createBrowserLifecycle,
 } from "./browser-lifecycle.js";
 import {
   attachCrashDetection,
@@ -188,13 +186,7 @@ function validatePersona(args: CliArgs) {
 }
 
 async function exploreAndVerify(args: CliArgs, evidenceLog: EvidenceLog, runId: string, runName: string, signal?: AbortSignal): Promise<ExplorationRun> {
-  appLogger.phase("  Launching browser");
-  const browser = await resolveBrowserType(args.browserEngine).launch();
-  try {
-    return await exploreAndVerifyInBrowser(args, evidenceLog, runId, runName, browser, signal);
-  } finally {
-    await closeBrowserWithTimeout(browser, appLogger.child({ runId }), "exploration owner");
-  }
+  return exploreAndVerifyInBrowser(args, evidenceLog, runId, runName, signal);
 }
 
 async function exploreAndVerifyInBrowser(
@@ -202,7 +194,6 @@ async function exploreAndVerifyInBrowser(
   evidenceLog: EvidenceLog,
   runId: string,
   runName: string,
-  browser: Browser,
   signal?: AbortSignal,
 ): Promise<ExplorationRun> {
   const persona = validatePersona(args);
@@ -230,6 +221,12 @@ async function exploreAndVerifyInBrowser(
   const safetyEvents: SafetyEvent[] = [];
   let safetyPhase: SafetyEvent["phase"] = "exploration";
   let activeRecorder: EvidenceRecorder | undefined;
+  let runtimeServicesReady = false;
+  let traceSession: import("./browser-observability.js").TraceSession | undefined;
+  // Kept pointed at whichever flow's tab registry is current inside runAgentLoop (rebuilt per
+  // flow), so a popup discovered mid-exploration lands in the registry the agent's next switchTab
+  // call will actually read, not a stale one from a flow that already ended.
+  const tabRegistryHandle: TabRegistryHandle = { tabs: new Map() };
   const guardOptions = {
     allowDestructive: args.allowDestructive,
     blockMethods: args.blockMethods,
@@ -241,40 +238,47 @@ async function exploreAndVerifyInBrowser(
     },
   };
 
-  // Explicit newContext() + newPage(), not the browser.newPage() shorthand — that shorthand reserves
-  // its context for a single page and rejects a second context.newPage() ("Please use
-  // browser.newContext()"). Going through the context ourselves lets `openTab` (Talia) later add a
-  // genuine second page to this same context — real, live-shared cookies/localStorage, like two tabs
-  // of one real browser profile, not a point-in-time storageState clone.
-  const context = await browser.newContext({
-    ...deviceContextOptions(persona),
-    ...(args.storageStatePath ? { storageState: args.storageStatePath } : {}),
+  const browserLifecycle = createBrowserLifecycle({
+    browserEngine: args.browserEngine,
+    storageStatePath: args.storageStatePath,
+    persona,
+    prepareContext: async (context) => {
+      if (!runtimeServicesReady) return;
+      await installDestructiveActionGuard(context, guardOptions);
+    },
+    preparePage: async (page) => {
+      if (!runtimeServicesReady) return;
+      activeRecorder?.reattach(page);
+      attachPopupDetection(page, runLogger, tabRegistryHandle);
+      attachCrashDetection(page, activeRecorder!);
+      attachWebSocketCapture(page, activeRecorder!);
+      await traceSession?.switchTo(page);
+    },
   });
-  const page = await context.newPage();
-  configurePageTimeouts(page);
-  // Kept pointed at whichever flow's tab registry is current inside runAgentLoop (rebuilt per
-  // flow), so a popup discovered mid-exploration lands in the registry the agent's next switchTab
-  // call will actually read, not a stale one from a flow that already ended.
-  const tabRegistryHandle: TabRegistryHandle = { tabs: new Map() };
+  appLogger.phase("  Launching browser");
+  const browser = await browserLifecycle.launchBrowser();
+  try {
+
+  // All contexts/pages in exploration are created through the lifecycle adapter. That keeps the
+  // persona's context settings and page timeout contract identical across the initial page, tabs,
+  // cloned contexts, and a browser restart.
+  const context = await browserLifecycle.createContext(browser);
+  const page = await browserLifecycle.createPage(context);
   attachPopupDetection(page, runLogger, tabRegistryHandle);
   const runEntries: EvidenceEntry[] = [];
 
   runLogger.phase("  Navigating to application URL");
   await navigateOrLogin(page, args, false, args.url, runLogger);
-  // Authentication is setup, not discovered application behavior. Enable the destructive
-  // request guard after login so a required login POST is not blocked by the default policy.
-  // Context-scoped: covers every page in this context automatically, including ones opened later
-  // via openTab or by the app itself, with no reinstallation needed for either.
-  await installDestructiveActionGuard(context, guardOptions);
   // Start recording after setup so login and token-refresh traffic never become application
   // fixtures. Also context-scoped, for the same reason.
   const recorder = new EvidenceRecorder(context, runLogger, { redactor });
   activeRecorder = recorder;
-  attachCrashDetection(page, recorder);
-  attachWebSocketCapture(page, recorder);
-  const traceSession = args.trace
+  traceSession = args.trace
     ? await createTraceSession(context, join(args.output, `trace-exploration-${runId}.zip`), runLogger)
     : undefined;
+  runtimeServicesReady = true;
+  await browserLifecycle.prepareContext(context);
+  await browserLifecycle.preparePage(page);
 
   runLogger.phase("  Exploring application");
   const discovery = await runAgentLoop(page, createProvider(provider, model, apiKey, redactor, runLogger), {
@@ -291,18 +295,12 @@ async function exploreAndVerifyInBrowser(
     safety: guardOptions,
     signal,
     browserRestartHooks: traceSession,
-    // A new tab (openTab, openInNewTab, reopenBrowser) is a fresh Page — the destructive-action guard
-    // is installed with `page.route`, which is page-scoped and does not follow a page switch on its own.
-    // A same-context switch (openTab, switchTab) is already covered by the context-level guard
-    // and recorder installed above; a genuinely new context (openInNewTab, reopenBrowser) is not,
-    // so both re-run here unconditionally — cheap no-ops for the former, essential for the latter.
-    // Popup detection is page-scoped either way and always needs (re-)attaching.
+    browserLifecycle,
+    // The lifecycle adapter prepares every new context/page before its first navigation. This
+    // callback remains the single active-page handoff for the loop, including same-context tabs.
     onActivePageChange: async (newPage) => {
-      await traceSession?.switchTo(newPage);
-      await installDestructiveActionGuard(newPage.context(), guardOptions);
-      attachPopupDetection(newPage, runLogger, tabRegistryHandle);
-      attachCrashDetection(newPage, recorder);
-      attachWebSocketCapture(newPage, recorder);
+      await browserLifecycle.prepareContext(newPage.context());
+      await browserLifecycle.preparePage(newPage);
     },
     onStep: (step, index, flowIndex) => {
       const { network, console: consoleEntries, runtimeErrors, webSocketFrames } = recorder.drain();
@@ -352,7 +350,7 @@ async function exploreAndVerifyInBrowser(
     let replayBrowser: Browser | undefined;
     const replayContexts = new Set<BrowserContext>();
     try {
-      replayBrowser = await resolveBrowserType(args.browserEngine).launch();
+      replayBrowser = await browserLifecycle.launchBrowser();
       try {
         for (const { flow, index } of verifiedFlows) {
         safetyPhase = "replay";
@@ -556,6 +554,9 @@ async function exploreAndVerifyInBrowser(
     replayFailures,
     error: runError,
   };
+  } finally {
+    await closeBrowserWithTimeout(browser, runLogger, "exploration owner");
+  }
 }
 
 function createCoverageRuns(args: CliArgs): Array<{ id: string; name: string; args: CliArgs }> {

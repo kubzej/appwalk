@@ -2,8 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { chromium } from "playwright";
 import { executeToolCall } from "../src/agent/tools.js";
-import { burst } from "../src/browser/actions.js";
+import {
+  burst,
+  clearUnusedDialogHandler,
+  clearUnusedRouteHandlers,
+  handleDialog,
+  simulateFailure,
+  simulateLatency,
+  type BrowserLifecycle,
+} from "../src/browser/actions.js";
 import type { TabRegistry } from "../src/agent/tools.js";
+import { createBrowserLifecycle } from "../src/cli/browser-lifecycle.js";
 
 test("burst enforces its count limit even when called outside tool dispatch", async () => {
   const page = {} as import("playwright").Page;
@@ -13,6 +22,74 @@ test("burst enforces its count limit even when called outside tool dispatch", as
       /burst: count must be a safe integer between 1 and 20\./,
     );
   }
+});
+
+test("dialog handlers are discarded when the following action does not consume them", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<main id="ready">Ready</main>');
+
+    await executeToolCall(page, { id: "1", name: "handleDialog", input: { behavior: "accept" } });
+    const result = await executeToolCall(page, { id: "2", name: "waitFor", input: { locator: "#ready" } });
+
+    assert.match(result.snapshot, /dialog handler was armed but no dialog appeared during this action; it was discarded/);
+    assert.equal(clearUnusedDialogHandler(page), false);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("network simulation handlers unroute even when settling the route fails", async () => {
+  type RouteHandler = (route: import("playwright").Route) => Promise<void>;
+  let failureHandler: RouteHandler | undefined;
+  let latencyHandler: RouteHandler | undefined;
+  let failureUnroutes = 0;
+  let latencyUnroutes = 0;
+  const failurePage = {
+    route: async (_pattern: string, handler: RouteHandler) => { failureHandler = handler; },
+    unroute: async () => { failureUnroutes++; },
+  } as unknown as import("playwright").Page;
+  const latencyPage = {
+    route: async (_pattern: string, handler: RouteHandler) => { latencyHandler = handler; },
+    unroute: async () => { latencyUnroutes++; },
+  } as unknown as import("playwright").Page;
+
+  await simulateFailure(failurePage, "**/api/failure", "500");
+  await assert.rejects(
+    failureHandler!({ fulfill: async () => { throw new Error("fulfill failed"); } } as unknown as import("playwright").Route),
+    /fulfill failed/,
+  );
+  await simulateLatency(latencyPage, "**/api/slow", 0);
+  await assert.rejects(
+    latencyHandler!({ continue: async () => { throw new Error("continue failed"); } } as unknown as import("playwright").Route),
+    /continue failed/,
+  );
+
+  assert.equal(failureUnroutes, 1);
+  assert.equal(latencyUnroutes, 1);
+
+  await simulateFailure(failurePage, "**/api/never-requested", "404");
+  await simulateLatency(latencyPage, "**/api/never-requested", 0);
+  assert.equal(await clearUnusedRouteHandlers(failurePage), 1);
+  assert.equal(await clearUnusedRouteHandlers(latencyPage), 1);
+  assert.equal(failureUnroutes, 2);
+  assert.equal(latencyUnroutes, 2);
+});
+
+test("clearUnusedDialogHandler removes the exact armed listener", () => {
+  let armedListener: unknown;
+  let removedListener: unknown;
+  const page = {
+    once: (_event: string, listener: unknown) => { armedListener = listener; },
+    off: (_event: string, listener: unknown) => { removedListener = listener; },
+  } as unknown as import("playwright").Page;
+
+  handleDialog(page, "dismiss");
+
+  assert.equal(clearUnusedDialogHandler(page), true);
+  assert.equal(removedListener, armedListener);
+  assert.equal(clearUnusedDialogHandler(page), false);
 });
 
 test("navigate rejects non-web URLs before calling Playwright", async () => {
@@ -347,8 +424,9 @@ test("openTab and switchTab track multiple pages by id and share live storage li
     await originalPage.goto("https://app.test/cart");
     await originalPage.evaluate(() => localStorage.setItem("counter", "1"));
     const tabs: TabRegistry = new Map([["tab-0", originalPage]]);
+    const browserLifecycle = createBrowserLifecycle({ browserEngine: "chromium" });
 
-    const openResult = await executeToolCall(originalPage, { id: "1", name: "openTab", input: {} }, tabs);
+    const openResult = await executeToolCall(originalPage, { id: "1", name: "openTab", input: {} }, tabs, undefined, undefined, browserLifecycle);
     assert.match(openResult.snapshot, /Opened tab: tab-1\. Open tabs: tab-0, tab-1 \(active: tab-1\)\./);
     assert.ok(openResult.activePage);
     assert.equal(tabs.size, 2);
@@ -377,6 +455,101 @@ test("openTab and switchTab track multiple pages by id and share live storage li
       /no tab registry available/,
     );
   } finally {
+    await browser.close();
+  }
+});
+
+test("openInNewTab uses the shared lifecycle before navigating the replacement context", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext();
+    await context.route("https://app.test/**", async (route) => {
+      await route.fulfill({ status: 200, contentType: "text/html", body: "<h1>Original</h1>" });
+    });
+    const page = await context.newPage();
+    await page.goto("https://app.test/start");
+    await page.evaluate(() => localStorage.setItem("session-marker", "kept"));
+
+    let preparedContexts = 0;
+    let preparedPages = 0;
+    const lifecycle: BrowserLifecycle = {
+      launchBrowser: async () => chromium.launch({ headless: true }),
+      createContext: async (targetBrowser, storageState) => targetBrowser.newContext({ storageState }),
+      createPage: async (targetContext) => targetContext.newPage(),
+      prepareContext: async (targetContext) => {
+        preparedContexts += 1;
+        await targetContext.route("https://app.test/**", async (route) => {
+          await route.fulfill({ status: 200, contentType: "text/html", body: "<h1>Prepared</h1>" });
+        });
+      },
+      preparePage: async () => {
+        preparedPages += 1;
+      },
+    };
+
+    const result = await executeToolCall(
+      page,
+      { id: "1", name: "openInNewTab", input: {} },
+      undefined,
+      undefined,
+      undefined,
+      lifecycle,
+    );
+
+    assert.equal(preparedContexts, 1);
+    assert.equal(preparedPages, 1);
+    assert.equal(await result.activePage?.evaluate(() => localStorage.getItem("session-marker")), "kept");
+    assert.match(result.activePage ? (await result.activePage.textContent("h1") ?? "") : "", /Prepared/);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("reopenBrowser launches the configured browser and prepares its context before navigation", async () => {
+  const browser = await chromium.launch({ headless: true });
+  let reopenedBrowser: import("playwright").Browser | undefined;
+  try {
+    const context = await browser.newContext();
+    await context.route("https://app.test/**", async (route) => {
+      await route.fulfill({ status: 200, contentType: "text/html", body: "<h1>Original</h1>" });
+    });
+    const page = await context.newPage();
+    await page.goto("https://app.test/start");
+    await page.evaluate(() => localStorage.setItem("session-marker", "kept"));
+
+    let preparedContexts = 0;
+    let preparedPages = 0;
+    const lifecycle: BrowserLifecycle = {
+      launchBrowser: async () => chromium.launch({ headless: true }),
+      createContext: async (targetBrowser, storageState) => targetBrowser.newContext({ storageState }),
+      createPage: async (targetContext) => targetContext.newPage(),
+      prepareContext: async (targetContext) => {
+        preparedContexts += 1;
+        await targetContext.route("https://app.test/**", async (route) => {
+          await route.fulfill({ status: 200, contentType: "text/html", body: "<h1>Reopened</h1>" });
+        });
+      },
+      preparePage: async () => {
+        preparedPages += 1;
+      },
+    };
+
+    const result = await executeToolCall(
+      page,
+      { id: "1", name: "reopenBrowser", input: {} },
+      undefined,
+      undefined,
+      undefined,
+      lifecycle,
+    );
+    reopenedBrowser = result.activePage?.context().browser() ?? undefined;
+
+    assert.equal(preparedContexts, 1);
+    assert.equal(preparedPages, 1);
+    assert.equal(await result.activePage?.evaluate(() => localStorage.getItem("session-marker")), "kept");
+    assert.match(result.activePage ? (await result.activePage.textContent("h1") ?? "") : "", /Reopened/);
+  } finally {
+    await reopenedBrowser?.close();
     await browser.close();
   }
 });

@@ -1,5 +1,5 @@
 import type { Page } from "playwright";
-import { configurePageTimeouts, type BrowserRestartHooks } from "../browser/actions.js";
+import { type BrowserLifecycle, type BrowserRestartHooks } from "../browser/actions.js";
 import { captureScreenshot, toStepResult } from "../browser/snapshot.js";
 import type { EvidenceRecorder } from "../evidence/recorder.js";
 import type { LlmProvider } from "../providers/provider.js";
@@ -289,6 +289,8 @@ export async function runAgentLoop(
     onActivePageChange?: (page: Page) => Promise<void>;
     /** Called immediately before and after `reopenBrowser` replaces the browser context. */
     browserRestartHooks?: BrowserRestartHooks;
+    /** Owns creation and preparation of every replacement context/page in this run. */
+    browserLifecycle?: BrowserLifecycle;
     /** Kept pointed at whichever tab registry is current for the flow in progress, so a popup
      * listener attached outside this function (see attachPopupDetection) can register a tab the
      * target app opens on its own, making it reachable via switchTab like an agent-opened tab. */
@@ -530,7 +532,7 @@ export async function runAgentLoop(
       // Reserve the full requested count. A burst may stop part-way through after an individual
       // repetition fails, so charging the requested count is the conservative budget contract.
       consumedCost = plannedCost;
-      const toolResult = await executeToolCall(page, toolCall, tabRegistryHandle.tabs, options.safety, options.browserRestartHooks);
+      const toolResult = await executeToolCall(page, toolCall, tabRegistryHandle.tabs, options.safety, options.browserRestartHooks, options.browserLifecycle);
       result = {
         ...toolResult,
         url: redactor.url(toolResult.url),
@@ -543,8 +545,6 @@ export async function runAgentLoop(
       }
       if (toolResult.activePage) {
         page = toolResult.activePage;
-        configurePageTimeouts(page);
-        options.recorder?.reattach(page);
         await options.onActivePageChange?.(page);
       }
       options.logger?.debug("agent.tool_call_completed", "Browser action completed", {

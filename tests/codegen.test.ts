@@ -368,6 +368,7 @@ test("a flow with a device preset gets its own context with the device spread in
       devicePreset: "iPhone 17",
       entries: [
         { index: 0, flowIndex: 0, timestamp: "2026-01-01T00:00:00.000Z", toolCall: { name: "click", input: { locator: "role=button[name=\"Checkout\"]" } }, network: [], console: [] },
+        { index: 1, flowIndex: 0, timestamp: "2026-01-01T00:00:00.000Z", toolCall: { name: "openInNewTab", input: {} }, network: [], console: [] },
       ],
     },
   ], { url: "https://example.test" });
@@ -375,6 +376,7 @@ test("a flow with a device preset gets its own context with the device spread in
   assert.match(spec, /import \{ test, expect, devices \} from '@playwright\/test';/);
   assert.match(spec, /test\('Mobile checkout', async \(\{ browser \}\) => \{/);
   assert.match(spec, /const flowContext = await browser\.newContext\(\{ \.\.\.devices\['iPhone 17'\] \}\);/);
+  assert.match(spec, /browser\.newContext\(\{ \.\.\.devices\['iPhone 17'\], storageState \}\)/);
   assert.match(spec, /let page = await flowContext\.newPage\(\);/);
   assert.match(spec, /await page\.goto\('https:\/\/example\.test'\);/);
   assert.match(spec, /await flowContext\.close\(\);/);

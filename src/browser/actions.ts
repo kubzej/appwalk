@@ -1,5 +1,5 @@
 import { stat } from 'node:fs/promises';
-import type { Page, Route } from 'playwright';
+import type { Browser, BrowserContext, BrowserContextOptions, Dialog, Page, Route } from 'playwright';
 import { toStepResult } from './snapshot.js';
 import { resolveLocator } from './locator.js';
 import type { StepResult } from '../types.js';
@@ -12,6 +12,23 @@ const CLICK_SETTLE_MS = 500;
 export const ACTION_TIMEOUT_MS = 5000;
 export const NAVIGATION_TIMEOUT_MS = 20000;
 
+type PendingDialogArm = {
+  handler: (dialog: Dialog) => void;
+};
+
+type TransientRouteArm = {
+  urlPattern: string;
+  handler: (route: Route) => Promise<void>;
+  consumed: boolean;
+  settled: boolean;
+};
+
+// A dialog arm belongs to the page and is consumed by one dialog or discarded
+// after the next tool action. Keeping this state here gives all callers one
+// cleanup path instead of leaving page listeners to live for the rest of a run.
+const pendingDialogArms = new WeakMap<Page, PendingDialogArm>();
+const pendingRouteArms = new WeakMap<Page, Set<TransientRouteArm>>();
+
 export type ClickButton = 'left' | 'right' | 'middle';
 export type ClickModifier = 'Alt' | 'Control' | 'Meta' | 'Shift';
 type ClickOptions = { button?: ClickButton; modifiers?: ClickModifier[] };
@@ -20,6 +37,19 @@ type ClickOptions = { button?: ClickButton; modifiers?: ClickModifier[] };
 export interface BrowserRestartHooks {
   beforeRestart?: (page: Page) => Promise<void>;
   afterRestart?: (page: Page) => Promise<void>;
+}
+
+/**
+ * The single lifecycle boundary for browser replacement and page creation. Context/page setup is
+ * deliberately injected by the run owner: actions must not guess which guards, recorders, traces,
+ * fixtures, or persona settings a particular run needs.
+ */
+export interface BrowserLifecycle {
+  launchBrowser(): Promise<Browser>;
+  createContext(browser: Browser, storageState?: BrowserContextOptions["storageState"]): Promise<BrowserContext>;
+  createPage(context: BrowserContext): Promise<Page>;
+  prepareContext(context: BrowserContext): Promise<void>;
+  preparePage(page: Page): Promise<void>;
 }
 
 /** Applies Appwalk's timeout contract to every page, including pages from a new context. */
@@ -226,16 +256,17 @@ export async function clearCookie(page: Page, name?: string): Promise<StepResult
  * simulation of "restart the browser" / "open a bookmark fresh" this codebase can produce for a tab
  * that's meant to be abandoned. Used only by `openInNewTab`, which intentionally wants an independent
  * context (a real page reload from a cold context, not a live-shared one). */
-async function cloneIntoNewTab(page: Page): Promise<Page> {
+async function cloneIntoNewTab(page: Page, lifecycle: BrowserLifecycle): Promise<Page> {
   const url = page.url();
   // `indexedDB: true` is required or the snapshot omits it, unlike a real new tab.
   const storageState = await page.context().storageState({ indexedDB: true });
   const browser = page.context().browser();
   if (!browser) throw new Error('cloneIntoNewTab: page has no browser (persistent context?)');
-  const newContext = await browser.newContext({ storageState });
+  const newContext = await lifecycle.createContext(browser, storageState);
   try {
-    const newPage = await newContext.newPage();
-    configurePageTimeouts(newPage);
+    await lifecycle.prepareContext(newContext);
+    const newPage = await lifecycle.createPage(newContext);
+    await lifecycle.preparePage(newPage);
     await newPage.goto(url);
     return newPage;
   } catch (error) {
@@ -246,8 +277,8 @@ async function cloneIntoNewTab(page: Page): Promise<Page> {
 
 /** Opens the current URL in a new tab and switches the active page to it. The old tab is left open —
  * matches a real user, and the caller closes the whole browser at the end of a run regardless. */
-export async function openInNewTab(page: Page): Promise<StepResult & { activePage: Page }> {
-  const newPage = await cloneIntoNewTab(page);
+export async function openInNewTab(page: Page, lifecycle: BrowserLifecycle): Promise<StepResult & { activePage: Page }> {
+  const newPage = await cloneIntoNewTab(page, lifecycle);
   const result = await stepResultWithStorage(newPage);
   return { ...result, activePage: newPage };
 }
@@ -257,10 +288,10 @@ export async function openInNewTab(page: Page): Promise<StepResult & { activePag
  * caller's page to already live in an explicit context (`browser.newContext()`, not the `browser.newPage()`
  * shorthand, which Playwright reserves a single page for). The tools layer registers the result under a
  * stable id so `switchTab` can return to it later. */
-export async function openTab(page: Page): Promise<StepResult & { activePage: Page }> {
+export async function openTab(page: Page, lifecycle: BrowserLifecycle): Promise<StepResult & { activePage: Page }> {
   const url = page.url();
-  const newPage = await page.context().newPage();
-  configurePageTimeouts(newPage);
+  const newPage = await lifecycle.createPage(page.context());
+  await lifecycle.preparePage(newPage);
   await newPage.goto(url);
   const result = await stepResultWithStorage(newPage);
   return { ...result, activePage: newPage };
@@ -276,7 +307,7 @@ export async function switchTab(target: Page): Promise<StepResult & { activePage
  * captures cookies + localStorage, but NOT sessionStorage — Playwright's storageState API doesn't
  * carry it, which matches how a real browser restart also drops sessionStorage), closes the browser,
  * launches a fresh one from that saved state, and navigates back to the same URL. */
-export async function reopenBrowser(page: Page, hooks?: BrowserRestartHooks): Promise<StepResult & { activePage: Page }> {
+export async function reopenBrowser(page: Page, lifecycle: BrowserLifecycle, hooks?: BrowserRestartHooks): Promise<StepResult & { activePage: Page }> {
   const url = page.url();
   // Without `indexedDB: true`, Playwright's storageState snapshot omits IndexedDB entirely — that
   // would make this simulation lose IndexedDB data a real browser restart/new-tab actually keeps.
@@ -285,15 +316,16 @@ export async function reopenBrowser(page: Page, hooks?: BrowserRestartHooks): Pr
   if (!browser) throw new Error('reopenBrowser: page has no browser (persistent context?)');
   // Relaunches whichever engine was actually running (chromium/firefox/webkit), not hardcoded —
   // a run configured for firefox must reopen as firefox, not silently switch engines mid-flow.
-  const browserType = browser.browserType();
   await hooks?.beforeRestart?.(page);
   await browser.close();
-  const newBrowser = await browserType.launch();
+  const newBrowser = await lifecycle.launchBrowser();
   try {
-    const newPage = await newBrowser.newPage({ storageState });
-    configurePageTimeouts(newPage);
-    await newPage.goto(url);
+    const newContext = await lifecycle.createContext(newBrowser, storageState);
+    await lifecycle.prepareContext(newContext);
+    const newPage = await lifecycle.createPage(newContext);
     await hooks?.afterRestart?.(newPage);
+    await lifecycle.preparePage(newPage);
+    await newPage.goto(url);
     const result = await stepResultWithStorage(newPage);
     return { ...result, activePage: newPage };
   } catch (error) {
@@ -367,13 +399,95 @@ export async function download(page: Page, locator: string): Promise<StepResult>
 
 /** Arms the page's *next* native dialog (alert/confirm/prompt) to auto-accept or auto-dismiss. Call before the action expected to trigger it. */
 export function handleDialog(page: Page, behavior: 'accept' | 'dismiss'): void {
-  page.once('dialog', (dialog) => {
+  clearUnusedDialogHandler(page);
+  const handler = (dialog: Dialog) => {
+    pendingDialogArms.delete(page);
     if (behavior === 'accept') {
       void dialog.accept();
     } else {
       void dialog.dismiss();
     }
-  });
+  };
+  pendingDialogArms.set(page, { handler });
+  try {
+    page.once('dialog', handler);
+  } catch (error) {
+    pendingDialogArms.delete(page);
+    throw error;
+  }
+}
+
+/** Removes a dialog arm that was not consumed by the immediately following action. */
+export function clearUnusedDialogHandler(page: Page): boolean {
+  const pending = pendingDialogArms.get(page);
+  if (!pending) return false;
+  pendingDialogArms.delete(page);
+  try {
+    page.off('dialog', pending.handler);
+  } catch {
+    // A closed page may reject listener cleanup; the weak map entry is already gone.
+  }
+  return true;
+}
+
+function rememberRouteArm(page: Page, arm: TransientRouteArm): void {
+  let arms = pendingRouteArms.get(page);
+  if (!arms) {
+    arms = new Set();
+    pendingRouteArms.set(page, arms);
+  }
+  arms.add(arm);
+}
+
+function forgetRouteArm(page: Page, arm: TransientRouteArm): void {
+  const arms = pendingRouteArms.get(page);
+  if (!arms) return;
+  arms.delete(arm);
+  if (arms.size === 0) pendingRouteArms.delete(page);
+}
+
+async function unrouteArm(page: Page, arm: TransientRouteArm): Promise<boolean> {
+  try {
+    await page.unroute(arm.urlPattern, arm.handler);
+    forgetRouteArm(page, arm);
+    return true;
+  } catch {
+    // Keep the arm registered so a later cleanup attempt can retry. A closing page
+    // is harmless; its weak-map entry disappears with the page.
+    return false;
+  }
+}
+
+async function registerRouteArm(page: Page, arm: TransientRouteArm): Promise<void> {
+  rememberRouteArm(page, arm);
+  try {
+    await page.route(arm.urlPattern, arm.handler);
+  } catch (error) {
+    forgetRouteArm(page, arm);
+    throw error;
+  }
+}
+
+/** Removes network arms that were not consumed by the immediately following action. */
+export async function clearUnusedRouteHandlers(page: Page): Promise<number> {
+  const arms = pendingRouteArms.get(page);
+  if (!arms) return 0;
+  let cleaned = 0;
+  for (const arm of [...arms]) {
+    // Do not unroute a handler while its request is still being settled. Its
+    // finally block owns cleanup in that case.
+    if (arm.consumed && !arm.settled) continue;
+    if (await unrouteArm(page, arm)) cleaned++;
+  }
+  return cleaned;
+}
+
+/** Cleans every one-shot handler left by an earlier tool action. */
+export async function clearUnusedTransientHandlers(page: Page): Promise<{ dialog: boolean; routes: number }> {
+  return {
+    dialog: clearUnusedDialogHandler(page),
+    routes: await clearUnusedRouteHandlers(page),
+  };
 }
 
 export async function waitFor(
@@ -461,30 +575,41 @@ export async function simulateFailure(page: Page, urlPattern: string, mode: Fail
   // Unroute happens *after* the route settles, not before — unrouting mid-flight (before fulfill/abort
   // resolves) makes Playwright treat the route as already handled and throw on the fulfill/abort call
   // that was actually meant to settle it.
+  let arm: TransientRouteArm;
   const handler = async (route: Route) => {
-    switch (mode) {
-      case '500':
-      case '503':
-      case '404':
-        await route.fulfill({ status: Number(mode), contentType: 'application/json', body: '{"error":"simulated failure"}' });
-        break;
-      case 'malformed':
-        await route.fulfill({ status: 200, contentType: 'application/json', body: '{not valid json' });
-        break;
-      case 'offline':
-        await route.abort('internetdisconnected');
-        break;
-      case 'connectionReset':
-        await route.abort('connectionreset');
-        break;
-      case 'timeout':
-        await route.fetch();
-        await route.abort('timedout');
-        break;
+    if (arm.consumed) {
+      await route.continue();
+      return;
     }
-    await page.unroute(urlPattern, handler);
+    arm.consumed = true;
+    try {
+      switch (mode) {
+        case '500':
+        case '503':
+        case '404':
+          await route.fulfill({ status: Number(mode), contentType: 'application/json', body: '{"error":"simulated failure"}' });
+          break;
+        case 'malformed':
+          await route.fulfill({ status: 200, contentType: 'application/json', body: '{not valid json' });
+          break;
+        case 'offline':
+          await route.abort('internetdisconnected');
+          break;
+        case 'connectionReset':
+          await route.abort('connectionreset');
+          break;
+        case 'timeout':
+          await route.fetch();
+          await route.abort('timedout');
+          break;
+      }
+    } finally {
+      arm.settled = true;
+      await unrouteArm(page, arm);
+    }
   };
-  await page.route(urlPattern, handler);
+  arm = { urlPattern, handler, consumed: false, settled: false };
+  await registerRouteArm(page, arm);
 }
 
 /** Arms the next request matching a URL pattern to wait before continuing. This is intentionally
@@ -493,12 +618,23 @@ export async function simulateLatency(page: Page, urlPattern: string, delayMs: n
   if (!Number.isFinite(delayMs) || delayMs < 0 || delayMs > 60_000) {
     throw new Error('simulateLatency: delayMs must be a finite number between 0 and 60000.');
   }
+  let arm: TransientRouteArm;
   const handler = async (route: Route) => {
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
-    await route.continue();
-    await page.unroute(urlPattern, handler);
+    if (arm.consumed) {
+      await route.continue();
+      return;
+    }
+    arm.consumed = true;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await route.continue();
+    } finally {
+      arm.settled = true;
+      await unrouteArm(page, arm);
+    }
   };
-  await page.route(urlPattern, handler);
+  arm = { urlPattern, handler, consumed: false, settled: false };
+  await registerRouteArm(page, arm);
 }
 
 /** Toggles genuine context-wide offline: unlike `simulateFailure`'s `offline` mode, which fails

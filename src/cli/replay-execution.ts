@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { Browser, BrowserContext, Page } from "playwright";
 import type { Persona } from "../agent/personas.js";
 import type { TabRegistryHandle } from "../agent/tools.js";
-import { configurePageTimeouts } from "../browser/actions.js";
+import type { BrowserLifecycle } from "../browser/actions.js";
 import type { FlowResult } from "../agent/loop.js";
 import type { CliArgs } from "./args.js";
 import { EvidenceRecorder } from "../evidence/recorder.js";
@@ -16,10 +16,11 @@ import { Redactor } from "../security/redaction.js";
 import {
   attachCrashDetection,
   attachPopupDetection,
+  attachWebSocketCapture,
   createTraceSession,
   type TraceSession,
 } from "./browser-observability.js";
-import { closeTrackedContexts, deviceContextOptions } from "./browser-lifecycle.js";
+import { closeTrackedContexts, createBrowserLifecycle } from "./browser-lifecycle.js";
 
 export interface ReplayExecutionInput {
   replayBrowser: Browser;
@@ -67,19 +68,33 @@ export async function executeReplay(input: ReplayExecutionInput): Promise<Replay
   const flowStorageState = flowIndex > 0 && flow.startStorageState
     ? JSON.parse(flow.startStorageState)
     : args.storageStatePath;
-  const replayContext = await initialBrowser.newContext({
-    ...deviceContextOptions(persona),
-    ...(flowStorageState ? { storageState: flowStorageState } : {}),
-  });
-  trackedContexts.add(replayContext);
-  const replayPage = await replayContext.newPage();
-  configurePageTimeouts(replayPage);
+  let replayRecorder: EvidenceRecorder | undefined;
+  let runtimeServicesReady = false;
+  let traceSession: TraceSession | undefined;
   const replayTabRegistryHandle: TabRegistryHandle = { tabs: new Map() };
-  attachPopupDetection(replayPage, flowLogger, replayTabRegistryHandle);
+  const browserLifecycle: BrowserLifecycle = createBrowserLifecycle({
+    browserEngine: args.browserEngine,
+    storageStatePath: args.storageStatePath,
+    persona,
+    prepareContext: async (context) => {
+      if (!runtimeServicesReady) return;
+      await installDestructiveActionGuard(context, guardOptions);
+    },
+    preparePage: async (page) => {
+      if (!runtimeServicesReady || !replayRecorder) return;
+      replayRecorder.reattach(page);
+      attachPopupDetection(page, flowLogger, replayTabRegistryHandle);
+      attachCrashDetection(page, replayRecorder);
+      attachWebSocketCapture(page, replayRecorder);
+      await traceSession?.switchTo(page);
+    },
+  });
+  const replayContext = await browserLifecycle.createContext(initialBrowser, flowStorageState);
+  trackedContexts.add(replayContext);
+  const replayPage = await browserLifecycle.createPage(replayContext);
 
   let replayResult: ReplayResult | undefined;
   let replayBrowser = initialBrowser;
-  let traceSession: TraceSession | undefined;
   try {
     await navigateOrLogin(
       replayPage,
@@ -88,13 +103,14 @@ export async function executeReplay(input: ReplayExecutionInput): Promise<Replay
       flowIndex > 0 && flow.startUrl ? flow.startUrl : args.url,
       flowLogger,
     );
-    await installDestructiveActionGuard(replayContext, guardOptions);
-    const replayRecorder = new EvidenceRecorder(replayContext, flowLogger, { redactor });
+    replayRecorder = new EvidenceRecorder(replayContext, flowLogger, { redactor });
     setActiveRecorder(replayRecorder);
-    attachCrashDetection(replayPage, replayRecorder);
     if (args.trace) {
       traceSession = await createTraceSession(replayContext, joinTracePath(args, runId, flowIndex), flowLogger);
     }
+    runtimeServicesReady = true;
+    await browserLifecycle.prepareContext(replayContext);
+    await browserLifecycle.preparePage(replayPage);
     replayResult = await replay(
       replayPage,
       actions,
@@ -106,15 +122,14 @@ export async function executeReplay(input: ReplayExecutionInput): Promise<Replay
       getSafetyBlockCount,
       undefined,
       async (newPage) => {
-        await traceSession?.switchTo(newPage);
         trackedContexts.add(newPage.context());
-        await installDestructiveActionGuard(newPage.context(), guardOptions);
-        attachPopupDetection(newPage, flowLogger, replayTabRegistryHandle);
-        attachCrashDetection(newPage, replayRecorder);
+        await browserLifecycle.prepareContext(newPage.context());
+        await browserLifecycle.preparePage(newPage);
       },
       replayTabRegistryHandle,
       guardOptions,
       traceSession,
+      browserLifecycle,
     );
     const activeBrowser = replayResult.finalPage.context().browser();
     if (activeBrowser && activeBrowser !== replayBrowser) replayBrowser = activeBrowser;
