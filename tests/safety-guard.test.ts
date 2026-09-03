@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { chromium } from "playwright";
-import { installDestructiveActionGuard } from "../src/safety/guard.js";
+import { evaluateSafetyRequest, installDestructiveActionGuard } from "../src/safety/guard.js";
 
 // Playwright dispatches the most-recently-registered route handler first for an overlapping
 // pattern, and a handler that calls route.continue()/fulfill()/abort() does not chain to an
@@ -73,4 +73,27 @@ test("a context-level guard allows non-destructive requests, and installing it t
   } finally {
     await browser.close();
   }
+});
+
+test("allowDestructive disables default method blocking but preserves explicit URL blocks", () => {
+  const options = {
+    allowDestructive: true,
+    config: {
+      block: ["https://app.test/api/admin/**"],
+      allow: ["https://app.test/api/admin/health"],
+    },
+  };
+
+  assert.equal(
+    evaluateSafetyRequest("POST", "https://app.test/api/admin/users", options).blocked,
+    true,
+  );
+  assert.equal(
+    evaluateSafetyRequest("GET", "https://app.test/api/admin/health", options).blocked,
+    false,
+  );
+  assert.equal(
+    evaluateSafetyRequest("POST", "https://app.test/api/orders", options).blocked,
+    false,
+  );
 });
