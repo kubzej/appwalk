@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import test from "node:test";
 import { chromium } from "playwright";
 import { installResponseFixtures, type ResponseFixture, type ResponseVariant } from "../src/response/variants.js";
@@ -62,6 +63,54 @@ async function runVariantReplay(fetchOnClick: boolean) {
   await browser.close();
   return result;
 }
+
+test("does not reuse a fixture for an unknown URL in the same dynamic pattern", async () => {
+  const server = createServer((request, response) => {
+    if (request.url === "/start") {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end("<!doctype html><h1>Ready</h1>");
+      return;
+    }
+    if (request.url === "/api/orders/99") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ status: "live" }));
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Test server did not expose a port.");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    let fixtureApplied = false;
+    await installResponseFixtures(page, [{
+      method: "GET",
+      url: `${origin}/api/orders/42`,
+      urlPattern: `${origin}/api/orders/*`,
+      occurrence: 1,
+      status: 200,
+      body: { status: "captured" },
+    }], { onFixtureApplied: () => { fixtureApplied = true; } });
+
+    await page.goto(`${origin}/start`);
+    const body = await page.evaluate(async () => {
+      const response = await fetch("/api/orders/99");
+      return response.json();
+    });
+    assert.deepEqual(body, { status: "live" });
+    assert.equal(fixtureApplied, false);
+  } finally {
+    await browser.close();
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
 
 test("does not confirm a response variant when the source response was never applied", async () => {
   const result = await runVariantReplay(false);

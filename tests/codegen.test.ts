@@ -88,6 +88,10 @@ test("generated response fixtures live in shared artifacts and variants use patc
   assert.match(bundle.spec, /loadScenario\('flow-001\.base'\)/);
   assert.match(bundle.spec, /loadScenario\('flow-001-variant-001'\)/);
   assert.doesNotMatch(bundle.spec, /const fixtures = \[/);
+  const fixturesHelper = bundle.artifacts.find((artifact) => artifact.relativePath === "fixtures.ts");
+  assert.ok(fixturesHelper);
+  assert.match(fixturesHelper.content, /exactQueues\.get\(method \+ ' ' \+ route\.request\(\)\.url\(\)\)/);
+  assert.doesNotMatch(fixturesHelper.content, /methodQueues/);
 
   const artifactPaths = bundle.artifacts.map((artifact) => artifact.relativePath);
   assert.deepEqual(artifactPaths, [

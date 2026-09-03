@@ -453,28 +453,22 @@ export async function installResponseFixtures(
 
   for (const [pattern, group] of patternGroups) {
     const exactQueues = new Map<string, FixtureQueue>();
-    const methodQueues = new Map<string, FixtureQueue>();
     for (const fixture of group) {
       const exactKey = `${fixture.method} ${fixture.url}`;
       const exactQueue = exactQueues.get(exactKey) ?? { items: [], next: 0 };
       exactQueue.items.push(fixture);
       exactQueues.set(exactKey, exactQueue);
-      const methodKey = `${fixture.method} *`;
-      const methodQueue = methodQueues.get(methodKey) ?? { items: [], next: 0 };
-      methodQueue.items.push(fixture);
-      methodQueues.set(methodKey, methodQueue);
     }
 
     await page.route(pattern, async (route) => {
       const method = route.request().method();
       const exactQueue = exactQueues.get(`${method} ${route.request().url()}`);
-      const queue = exactQueue ?? methodQueues.get(`${method} *`);
-      if (!queue || queue.items.length === 0) {
+      if (!exactQueue || exactQueue.items.length === 0) {
         await route.continue();
         return;
       }
-      const fixture = queue.items[Math.min(queue.next, queue.items.length - 1)]!;
-      queue.next += 1;
+      const fixture = exactQueue.items[Math.min(exactQueue.next, exactQueue.items.length - 1)]!;
+      exactQueue.next += 1;
       await route.fulfill({
         status: fixture.status,
         contentType: "application/json",

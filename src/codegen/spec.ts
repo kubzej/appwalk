@@ -320,20 +320,15 @@ export async function installFixtures(context: BrowserContext, fixtures: Respons
   }
   for (const [pattern, group] of patternGroups) {
     const exactQueues = new Map<string, FixtureQueue>();
-    const methodQueues = new Map<string, FixtureQueue>();
     for (const fixture of group) {
       const exactKey = fixture.method + ' ' + fixture.url;
       const exactQueue = exactQueues.get(exactKey) ?? { items: [], next: 0 };
       exactQueue.items.push(fixture);
       exactQueues.set(exactKey, exactQueue);
-      const methodKey = fixture.method + ' *';
-      const methodQueue = methodQueues.get(methodKey) ?? { items: [], next: 0 };
-      methodQueue.items.push(fixture);
-      methodQueues.set(methodKey, methodQueue);
     }
     await context.route(pattern, async (route) => {
       const method = route.request().method();
-      const queue = exactQueues.get(method + ' ' + route.request().url()) ?? methodQueues.get(method + ' *');
+      const queue = exactQueues.get(method + ' ' + route.request().url());
       if (!queue || queue.items.length === 0) {
         await route.continue();
         return;
