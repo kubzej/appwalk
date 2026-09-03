@@ -105,8 +105,7 @@ function logResolvedConfiguration(args: CliArgs): void {
     }
   });
 
-  appLogger.info(`\n${chip("Configuration", colorEnabled)}`);
-  appLogger.info(lines.join("\n"));
+  process.stderr.write(`\n${chip("Configuration", colorEnabled)}\n${lines.join("\n")}\n`);
 }
 
 function resolvedConfigurationDetails(args: CliArgs): Record<string, unknown> {
