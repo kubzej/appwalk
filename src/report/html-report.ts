@@ -67,7 +67,6 @@ function flowStatus(flow: ReportFlow): { label: string; tone: string } {
 }
 
 function panelId(
-  kind: 'persona' | 'flow',
   runIndex: number,
   flowIndex?: number,
 ): string {
@@ -105,7 +104,7 @@ function renderIndex(report: ExecutionReport): string {
         const similar = !variant && flow.similarTo
           ? `<span class="r-flow-secondary">${escapeHtml(similarFlowLabel(flow.similarTo))}</span>`
           : '';
-        return `<a class="r-link r-link-flow${variant ? ' r-link-variant' : ''}" href="#${panelId('flow', runIndex, flowIndex)}" data-target="${panelId('flow', runIndex, flowIndex)}"><span class="r-link-title">${variant ? '<span class="r-variant-label">Variant</span>' : ''}<span>${escapeHtml(flow.title)}</span>${similar}</span>${badge(status.label, status.tone)}</a>`;
+        return `<a class="r-link r-link-flow${variant ? ' r-link-variant' : ''}" href="#${panelId(runIndex, flowIndex)}" data-target="${panelId(runIndex, flowIndex)}"><span class="r-link-title">${variant ? '<span class="r-variant-label">Variant</span>' : ''}<span>${escapeHtml(flow.title)}</span>${similar}</span>${badge(status.label, status.tone)}</a>`;
       };
       const variantsByParent = new Map<string, Array<{ flow: ReportFlow; index: number }>>();
       run.flows.forEach((flow, flowIndex) => {
@@ -134,7 +133,7 @@ function renderIndex(report: ExecutionReport): string {
         ? `<span class="r-persona-secondary">${escapeHtml(run.name)}</span>`
         : '';
       return `<div class="r-index-group">
-      <a class="r-link r-link-persona" href="#${panelId('persona', runIndex)}" data-target="${panelId('persona', runIndex)}"><span class="r-link-title"><span class="r-persona-primary">${primary}</span>${secondary}</span></a>
+      <a class="r-link r-link-persona" href="#${panelId(runIndex)}" data-target="${panelId(runIndex)}"><span class="r-link-title"><span class="r-persona-primary">${primary}</span>${secondary}</span></a>
       <div class="r-index-flows">${flows}</div>
     </div>`;
     })
@@ -363,7 +362,7 @@ function renderPersonaPanel(run: ReportRun, runIndex: number): string {
   const head = name
     ? `<p class="r-label">${escapeHtml(intentLabel)}</p><h1 class="r-h1">${escapeHtml(name)}</h1><p class="r-muted">${escapeHtml(run.name)}</p>`
     : `<p class="r-label">Run</p><h1 class="r-h1">${escapeHtml(run.name)}</h1>`;
-  return `<section id="${panelId('persona', runIndex)}" class="r-panel" hidden>
+  return `<section id="${panelId(runIndex)}" class="r-panel" hidden>
     <div class="r-panel-head">${head}</div>
     ${renderPersonaContext(run)}
     <div class="r-card">
@@ -396,9 +395,9 @@ function renderFlowPanel(
       ? '<p class="r-muted r-flow-note">A similar baseline flow was also discovered in this persona.</p>'
       : '';
   const crumb = name
-    ? `<a class="r-crumb-link" href="#${panelId('persona', runIndex)}" data-target="${panelId('persona', runIndex)}">${escapeHtml(name)}</a><span class="r-crumb-sep">/</span><span>${escapeHtml(run.name)}</span><span class="r-crumb-sep">/</span><span>${flow.origin === 'derived' ? 'response variant' : 'discovered flow'}</span>`
-    : `<a class="r-crumb-link" href="#${panelId('persona', runIndex)}" data-target="${panelId('persona', runIndex)}">${escapeHtml(run.name)}</a><span class="r-crumb-sep">/</span><span>${flow.origin === 'derived' ? 'response variant' : 'discovered flow'}</span>`;
-  return `<section id="${panelId('flow', runIndex, flowIndex)}" class="r-panel" hidden>
+    ? `<a class="r-crumb-link" href="#${panelId(runIndex)}" data-target="${panelId(runIndex)}">${escapeHtml(name)}</a><span class="r-crumb-sep">/</span><span>${escapeHtml(run.name)}</span><span class="r-crumb-sep">/</span><span>${flow.origin === 'derived' ? 'response variant' : 'discovered flow'}</span>`
+    : `<a class="r-crumb-link" href="#${panelId(runIndex)}" data-target="${panelId(runIndex)}">${escapeHtml(run.name)}</a><span class="r-crumb-sep">/</span><span>${flow.origin === 'derived' ? 'response variant' : 'discovered flow'}</span>`;
+  return `<section id="${panelId(runIndex, flowIndex)}" class="r-panel" hidden>
     <div class="r-panel-head"><p class="r-crumb">${crumb}</p>${relationship}<h1 class="r-h1">${escapeHtml(flow.title)}</h1></div>
     <div class="r-card">
       <p class="r-flow-status r-tone-${status.tone}">${escapeHtml(status.label)}</p>

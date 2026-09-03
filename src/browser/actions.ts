@@ -224,10 +224,15 @@ async function cloneIntoNewTab(page: Page): Promise<Page> {
   const browser = page.context().browser();
   if (!browser) throw new Error('cloneIntoNewTab: page has no browser (persistent context?)');
   const newContext = await browser.newContext({ storageState });
-  const newPage = await newContext.newPage();
-  configurePageTimeouts(newPage);
-  await newPage.goto(url);
-  return newPage;
+  try {
+    const newPage = await newContext.newPage();
+    configurePageTimeouts(newPage);
+    await newPage.goto(url);
+    return newPage;
+  } catch (error) {
+    await newContext.close().catch(() => undefined);
+    throw error;
+  }
 }
 
 /** Opens the current URL in a new tab and switches the active page to it. The old tab is left open —
@@ -274,11 +279,16 @@ export async function reopenBrowser(page: Page): Promise<StepResult & { activePa
   const browserType = browser.browserType();
   await browser.close();
   const newBrowser = await browserType.launch();
-  const newPage = await newBrowser.newPage({ storageState });
-  configurePageTimeouts(newPage);
-  await newPage.goto(url);
-  const result = await stepResultWithStorage(newPage);
-  return { ...result, activePage: newPage };
+  try {
+    const newPage = await newBrowser.newPage({ storageState });
+    configurePageTimeouts(newPage);
+    await newPage.goto(url);
+    const result = await stepResultWithStorage(newPage);
+    return { ...result, activePage: newPage };
+  } catch (error) {
+    await newBrowser.close().catch(() => undefined);
+    throw error;
+  }
 }
 
 /** Scrolls a specific element into view, or to the bottom of the page when no locator is given (infinite-scroll pages). */

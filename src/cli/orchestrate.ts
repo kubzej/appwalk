@@ -1,39 +1,20 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, devices, firefox, webkit, type Browser, type BrowserContext, type BrowserType, type Page } from "playwright";
-import type { BrowserEngine } from "../config.js";
+import { type Browser, type BrowserContext, type Page } from "playwright";
 import { runAgentLoop, type LoopResult } from "../agent/loop.js";
-import { PERSONAS, type Persona, type PersonaIntent } from "../agent/personas.js";
+import { PERSONAS, type PersonaIntent } from "../agent/personas.js";
 import type { TabRegistryHandle } from "../agent/tools.js";
 import { login } from "../browser/login.js";
 import { configurePageTimeouts } from "../browser/actions.js";
-import { formatTestTitle, type FlowEntries } from "../codegen/spec.js";
-import type { ProviderName } from "../config.js";
 import { EvidenceLog, readEvidenceLog, type EvidenceEntry, type EvidenceReadIssue } from "../evidence/log.js";
 import { EvidenceRecorder, type RuntimeErrorEntry } from "../evidence/recorder.js";
 import {
-  applyResponseVariant,
   extractResponseFixtures,
-  installResponseFixtures,
-  parseResponseVariantsDetailed,
-  RESPONSE_VARIANT_MAX_OUTPUT_TOKENS,
-  responseVariantPrompt,
-  responseFixtureMatchesSelector,
-  type ResponseFixture,
-  type ResponseVariantParseResult,
-  type ResponseVariant,
 } from "../response/variants.js";
 import type { ExpectationObservation } from "../types.js";
-import { AnthropicProvider } from "../providers/anthropic.js";
-import { GeminiProvider } from "../providers/gemini.js";
-import { GrokProvider } from "../providers/grok.js";
-import { OllamaProvider } from "../providers/ollama.js";
-import { OpenAIProvider } from "../providers/openai.js";
-import { RedactingProvider } from "../providers/redacting.js";
-import type { LlmProvider } from "../providers/provider.js";
 import type { SafetyConfig } from "../safety/guard.js";
 import { installDestructiveActionGuard } from "../safety/guard.js";
-import { logError, type Logger } from "../logging/logger.js";
+import { logError } from "../logging/logger.js";
 import { Redactor } from "../security/redaction.js";
 import type {
   ReportFlow,
@@ -42,10 +23,30 @@ import type {
   ReportSafety,
   ReportStopReason,
 } from "../report/contract.js";
-import { extractActions, hasObservableReplayDifference, replay, type ReplayResult } from "../verify/replay.js";
+import { extractActions, type ReplayResult } from "../verify/replay.js";
 import type { CliArgs } from "./args.js";
 import type { DiscoveryManifest, DiscoveryManifestFlow, DiscoveryManifestRun } from "./manifest.js";
 import { appLogger } from "./logger-state.js";
+import { createProvider } from "./provider-factory.js";
+import { executeReplay } from "./replay-execution.js";
+import { runResponseVariants } from "./response-variant-runner.js";
+import type { ConfirmedFlow, FlowFinding, SafetyEvent } from "./run-types.js";
+import {
+  closeBrowserWithTimeout,
+  closeTrackedContexts,
+  deviceContextOptions,
+  resolveBrowserType,
+} from "./browser-lifecycle.js";
+import {
+  attachCrashDetection,
+  attachPopupDetection,
+  attachWebSocketCapture,
+  startTracing,
+  stopTracing,
+} from "./browser-observability.js";
+
+export { deviceContextOptions } from "./browser-lifecycle.js";
+export { attachCrashDetection, attachPopupDetection, attachWebSocketCapture, startTracing, stopTracing } from "./browser-observability.js";
 
 export interface ExplorationRun {
   runId: string;
@@ -64,13 +65,6 @@ export interface ExplorationRun {
   error?: string;
 }
 
-interface FlowFinding {
-  flowIndex: number;
-  status: "confirmed" | "inconclusive";
-  summary: string;
-  failure?: string;
-}
-
 export interface ExplorationBatch {
   executionId: string;
   args: CliArgs;
@@ -80,48 +74,6 @@ export interface ExplorationBatch {
   confirmedFlows: ConfirmedFlow[];
   evidenceIssues: EvidenceReadIssue[];
   redactor: Redactor;
-}
-
-interface ConfirmedFlow extends FlowEntries {
-  origin: "discovered" | "derived";
-  sourceFlowIndex?: number;
-  scenarioId?: string;
-  responseVariant?: ResponseVariant;
-}
-
-interface SafetyEvent {
-  phase: "exploration" | "replay";
-  method: string;
-  url: string;
-}
-
-const BROWSER_CLOSE_TIMEOUT_MS = 5_000;
-
-async function closeBrowserWithTimeout(browser: Browser | null | undefined, logger: Logger, phase: string): Promise<void> {
-  if (!browser || !browser.isConnected()) return;
-
-  logger.debug("browser.close_started", `Closing browser after ${phase}`, { phase });
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const closePromise = browser.close().then(
-    () => true,
-    (error: unknown) => {
-      logger.debug("browser.close_failed", "Browser close returned an error", { phase, error: logError(error) });
-      return true;
-    },
-  );
-  const closed = await Promise.race([
-    closePromise,
-    new Promise<boolean>((resolve) => {
-      timeoutId = setTimeout(() => resolve(false), BROWSER_CLOSE_TIMEOUT_MS);
-    }),
-  ]);
-  if (timeoutId !== undefined) clearTimeout(timeoutId);
-  if (!closed) {
-    logger.warn(`  Browser cleanup exceeded ${BROWSER_CLOSE_TIMEOUT_MS}ms; continuing finalization`);
-    logger.debug("browser.close_timeout", "Browser close did not finish before the cleanup deadline", { phase, timeoutMs: BROWSER_CLOSE_TIMEOUT_MS });
-  } else {
-    logger.debug("browser.close_completed", "Browser cleanup completed", { phase });
-  }
 }
 
 function emptySafety(): ReportSafety {
@@ -209,19 +161,6 @@ async function navigateOrLogin(page: Page, args: CliArgs, hasPreloadedState = fa
   }
 }
 
-function createProvider(provider: ProviderName, model: string, apiKey: string | undefined, redactor: Redactor, logger = appLogger): LlmProvider {
-  const inner = provider === "gemini"
-    ? new GeminiProvider(apiKey!, model, logger)
-    : provider === "ollama"
-      ? new OllamaProvider(model, undefined, logger)
-      : provider === "grok"
-        ? new GrokProvider(apiKey!, model, logger)
-        : provider === "openai"
-          ? new OpenAIProvider(apiKey!, model, logger)
-          : new AnthropicProvider(apiKey!, model, logger);
-  return new RedactingProvider(inner, redactor);
-}
-
 export function redactorForArgs(args: CliArgs): Redactor {
   const apiKeyEnvVar = args.provider === "gemini"
     ? "GEMINI_API_KEY"
@@ -246,260 +185,6 @@ function validatePersona(args: CliArgs) {
     process.exit(1);
   }
   return persona;
-}
-
-async function proposeResponseVariants(
-  provider: ProviderName,
-  model: string,
-  apiKey: string | undefined,
-  flowName: string,
-  fixtures: ResponseFixture[],
-  maxVariants: number,
-  finalSnapshot: string,
-  replayTimeline: Array<{ url: string; snapshot: string }>,
-  redactor: Redactor,
-  logger = appLogger,
-): Promise<ResponseVariantParseResult> {
-  const plannerLogger = logger.child({ operation: "response_variant_planner" });
-  plannerLogger.debug("response_variants.planning_started", "Response variant planning started", {
-    flowName,
-    fixtureCount: fixtures.length,
-    maxVariants,
-    maxOutputTokens: RESPONSE_VARIANT_MAX_OUTPUT_TOKENS,
-    replaySteps: replayTimeline.length,
-  });
-  const planner = createProvider(provider, model, apiKey, redactor, plannerLogger);
-  const turn = await planner.start({
-    systemPrompt:
-      "You are a conservative response-variant planner for browser test generation. Return only the JSON requested by the user. Never invent application behavior or fields.",
-    tools: [],
-    initialInput: responseVariantPrompt(flowName, fixtures, maxVariants, finalSnapshot, replayTimeline),
-    maxOutputTokens: RESPONSE_VARIANT_MAX_OUTPUT_TOKENS,
-  });
-  if (turn.type !== "text") {
-    const result = {
-      variants: [],
-      candidates: 0,
-      rejected: 0,
-      rejectionReasons: [],
-      reason: "Planner did not return a text response.",
-    };
-    plannerLogger.debug("response_variants.planning_parsed", "Response variant planner returned no text proposals", {
-      responseType: turn.type,
-      candidates: result.candidates,
-      accepted: result.variants.length,
-      rejected: result.rejected,
-      reason: result.reason,
-    });
-    return result;
-  }
-  const result = parseResponseVariantsDetailed(turn.text, fixtures, maxVariants);
-  if (turn.incompleteReason) {
-    result.incomplete = true;
-    result.reason = `Planner response was incomplete: ${turn.incompleteReason}.`;
-  }
-  plannerLogger.debug("response_variants.planning_response", "Response variant planner response received", {
-    responseType: turn.type,
-    responseLength: turn.text.length,
-    incompleteReason: turn.incompleteReason,
-    plannerReason: result.plannerReason,
-  });
-  plannerLogger.debug("response_variants.planning_parsed", "Response variant planner output parsed", {
-    candidates: result.candidates,
-    accepted: result.variants.length,
-    rejected: result.rejected,
-    rejectionReasons: result.rejectionReasons,
-    reason: result.reason,
-  });
-  return result;
-}
-
-function derivedEvidenceEntries(
-  actions: ReturnType<typeof extractActions>,
-  steps: import("../types.js").StepResult[],
-  runId: string,
-  flowIndex: number,
-  scenarioId: string,
-  expectationResult?: import("../agent/tools.js").ToolCallResult,
-  expectationStepIndex?: number,
-  expectationInput?: Record<string, unknown>,
-): EvidenceEntry[] {
-  const entries: EvidenceEntry[] = [];
-  if (expectationResult && expectationStepIndex === -1) {
-    entries.push({
-      index: entries.length,
-      flowIndex,
-      runId,
-      scenarioId,
-      origin: "derived",
-      timestamp: new Date().toISOString(),
-      toolCall: { name: "verifyExpectation", input: expectationInput ?? {} },
-      result: expectationResult,
-      network: [],
-      console: [],
-      runtimeErrors: [],
-    });
-  }
-  actions.forEach((action, index) => {
-    entries.push({
-      index: entries.length,
-      flowIndex,
-      runId,
-      scenarioId,
-      origin: "derived",
-      timestamp: new Date().toISOString(),
-      toolCall: { name: action.name, input: action.input },
-      result: steps[index],
-      network: [],
-      console: [],
-      runtimeErrors: [],
-    });
-    if (expectationResult && expectationStepIndex === index) {
-      entries.push({
-        index: entries.length,
-        flowIndex,
-        runId,
-        scenarioId,
-        origin: "derived",
-        timestamp: new Date().toISOString(),
-        toolCall: { name: "verifyExpectation", input: expectationInput ?? {} },
-        result: expectationResult,
-        network: [],
-        console: [],
-        runtimeErrors: [],
-      });
-    }
-  });
-  if (expectationResult && expectationStepIndex === undefined) {
-    entries.push({
-      index: entries.length,
-      flowIndex,
-      runId,
-      scenarioId,
-      origin: "derived",
-      timestamp: new Date().toISOString(),
-      toolCall: { name: "verifyExpectation", input: expectationInput ?? {} },
-      result: expectationResult,
-      network: [],
-      console: [],
-      runtimeErrors: [],
-    });
-  }
-  return entries;
-}
-
-/** Maps the configured engine name to the Playwright BrowserType that launches it — chromium,
- * firefox, and webkit share the same Browser/BrowserContext/Page API, so nothing downstream of
- * launch needs to know which one is running. */
-function resolveBrowserType(engine: BrowserEngine): BrowserType {
-  switch (engine) {
-    case "firefox": return firefox;
-    case "webkit": return webkit;
-    default: return chromium;
-  }
-}
-
-/** A device profile (viewport, user agent, touch, device scale factor) is only ever settable when
- * a BrowserContext is created — unlike viewport size alone, it can't be changed mid-session by a
- * tool call — so it has to be folded into every newContext() call for a persona that wants one,
- * not applied once via a tool. `defaultBrowserType` on the descriptor is Playwright's own hint for
- * which engine a real device would use, not a valid newContext() option — dropped rather than
- * spread through, so a persona's device choice never silently overrides the run's chosen engine
- * (chromium by default), the same way Chrome DevTools device emulation doesn't switch engines. */
-export function deviceContextOptions(persona?: Persona): Record<string, unknown> {
-  if (!persona?.devicePreset) return {};
-  const device = devices[persona.devicePreset];
-  if (!device) throw new Error(`Unknown device preset "${persona.devicePreset}" for persona "${persona.name}".`);
-  const { defaultBrowserType: _defaultBrowserType, ...contextOptions } = device;
-  return contextOptions;
-}
-
-// A page the agent explicitly switches to (openTab, switchTab, openInNewTab, reopenBrowser) all
-// go through this, so calling it more than once on the same page (e.g. switchTab revisiting a
-// tab already instrumented) must not double up the listener — that would double-log every future
-// popup from that page.
-const popupInstrumentedPages = new WeakSet<Page>();
-
-/** Logs a new tab the target app opens on its own — a target="_blank" link, window.open(), an OAuth
- * popup — which the agent otherwise has no way to notice, since it only ever sees a fresh snapshot
- * of whichever page it already knew about. `page.on('popup')` (unlike `context.on('page')`) fires
- * only for pages the page itself opens, so it doesn't also fire for tabs appwalk opens deliberately
- * via context.newPage(). When a `tabRegistryHandle` is given, the popup is also registered into
- * whichever tab registry is current (same `tab-N` id scheme as `openTab`), so `switchTab` can reach
- * it — the handle indirection is required because the registry itself is rebuilt per flow (loop.ts)
- * or scoped to one replay (replay.ts), both well after this listener was attached. */
-export function attachPopupDetection(page: Page, logger: Logger, tabRegistryHandle?: TabRegistryHandle): void {
-  if (popupInstrumentedPages.has(page)) return;
-  popupInstrumentedPages.add(page);
-  page.on("popup", (popup) => {
-    configurePageTimeouts(popup);
-    logger.verbose(`  The page opened a new tab on its own: ${popup.url()}`);
-    logger.debug("browser.popup_opened", "The page opened a popup", { url: popup.url() });
-    if (tabRegistryHandle) {
-      const newId = `tab-${tabRegistryHandle.tabs.size}`;
-      tabRegistryHandle.tabs.set(newId, popup);
-      logger.verbose(`  Registered as ${newId}; switchTab can reach it.`);
-      logger.debug("browser.popup_registered", "Popup registered as an addressable tab", { tabId: newId, url: popup.url() });
-    }
-  });
-}
-
-// Same reasoning as popupInstrumentedPages — attachCrashDetection is called on every activePage
-// switch, and must not double-report one crash from a page revisited via switchTab.
-const crashInstrumentedPages = new WeakSet<Page>();
-
-/** `page.on('crash')` has no context-level equivalent (unlike response/console/weberror), so this
- * follows the same page-scoped, reinstall-on-switch pattern as attachPopupDetection rather than
- * EvidenceRecorder's usual context-level attachment. */
-export function attachCrashDetection(page: Page, recorder: EvidenceRecorder): void {
-  if (crashInstrumentedPages.has(page)) return;
-  crashInstrumentedPages.add(page);
-  page.on("crash", () => recorder.recordCrash(page.url()));
-}
-
-// Same reasoning again — websocket, like crash and popup, has no context-level equivalent.
-const webSocketInstrumentedPages = new WeakSet<Page>();
-
-/** Captures WebSocket traffic frame-by-frame — a real-time target (live inventory, order status,
- * chat, price tickers) pushes state over a channel HTTP-only capture (`EvidenceRecorder`'s
- * context-level response listener) can't see at all. Binary frames are summarized, not serialized
- * raw, to stay JSON-safe in evidence.jsonl. */
-export function attachWebSocketCapture(page: Page, recorder: EvidenceRecorder): void {
-  if (webSocketInstrumentedPages.has(page)) return;
-  webSocketInstrumentedPages.add(page);
-  page.on("websocket", (ws) => {
-    const url = ws.url();
-    ws.on("framesent", ({ payload }) => recorder.recordWebSocketFrame({ url, direction: "sent", payload: webSocketPayloadToText(payload) }));
-    ws.on("framereceived", ({ payload }) => recorder.recordWebSocketFrame({ url, direction: "received", payload: webSocketPayloadToText(payload) }));
-  });
-}
-
-function webSocketPayloadToText(payload: string | Buffer): string {
-  return typeof payload === "string" ? payload : `(binary, ${payload.length} bytes)`;
-}
-
-/** Starts a Playwright trace on a context — a full visual timeline (DOM snapshots, network, console,
- * source) viewable with `npx playwright show-trace`. Started after login/setup (same reasoning as
- * EvidenceRecorder: setup traffic shouldn't pollute the diagnostic artifact). Never fails the run —
- * tracing is a diagnostic extra, not a correctness requirement. */
-export async function startTracing(context: BrowserContext, logger: Logger): Promise<void> {
-  try {
-    await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
-  } catch (error) {
-    logger.debug("tracing.start_failed", "Failed to start Playwright tracing", { error: logError(error) });
-  }
-}
-
-/** Stops a trace started by startTracing and saves it to `path`. Tolerates a context that's already
- * closed (reopenBrowser closes the whole browser mid-run, abandoning whatever context was tracing)
- * rather than letting a diagnostic-artifact failure take down the run. */
-export async function stopTracing(context: BrowserContext, path: string, logger: Logger): Promise<void> {
-  try {
-    await context.tracing.stop({ path });
-    logger.debug("tracing.saved", "Playwright trace saved", { path });
-  } catch (error) {
-    logger.debug("tracing.stop_failed", "Failed to save Playwright trace", { error: logError(error) });
-  }
 }
 
 async function exploreAndVerify(args: CliArgs, evidenceLog: EvidenceLog, runId: string, runName: string): Promise<ExplorationRun> {
@@ -659,6 +344,7 @@ async function exploreAndVerifyInBrowser(
     runLogger.phase(`  Verifying ${verifiedFlows.length} of ${discovery.flows.length} discovered flow(s) by replay in a clean session`);
     if (args.trace) mkdirSync(join(args.output, "traces"), { recursive: true });
     let replayBrowser: Browser | undefined;
+    const replayContexts = new Set<BrowserContext>();
     try {
       replayBrowser = await resolveBrowserType(args.browserEngine).launch();
       try {
@@ -671,56 +357,31 @@ async function exploreAndVerifyInBrowser(
           !persona?.coreActionTypes ||
           actions.some((action) => persona.coreActionTypes!.includes(action.name));
         const findingCandidate = persona?.intent === "challenge" && !flow.verified && hasCoreAction;
-        const flowStorageState = index > 0 && flow.startStorageState
-          ? JSON.parse(flow.startStorageState)
-          : args.storageStatePath;
-
-        const replayContext = await replayBrowser.newContext({
-          ...deviceContextOptions(persona),
-          ...(flowStorageState ? { storageState: flowStorageState } : {}),
-        });
-        const replayPage = await replayContext.newPage();
-        configurePageTimeouts(replayPage);
-        // A recorded flow may include a switchTab to a tab that originally came from a popup, not
-        // openTab — replay needs that same registration so the id still resolves in this clean session.
-        const replayTabRegistryHandle: TabRegistryHandle = { tabs: new Map() };
-        attachPopupDetection(replayPage, flowLogger, replayTabRegistryHandle);
-        await navigateOrLogin(
-          replayPage,
-          args,
-          index > 0 && Boolean(flow.startStorageState),
-          index > 0 && flow.startUrl ? flow.startUrl : args.url,
-          flowLogger,
-        );
-        await installDestructiveActionGuard(replayContext, guardOptions);
-        const replayRecorder = new EvidenceRecorder(replayContext, flowLogger, { redactor });
-        activeRecorder = replayRecorder;
-        attachCrashDetection(replayPage, replayRecorder);
-        if (args.trace) await startTracing(replayContext, flowLogger);
         const expectedExpectations = flowEntries
           .filter((entry) => entry.result?.expectation)
           .map((entry) => entry.result!.expectation!) as ExpectationObservation[];
-        const replayResult = await replay(
-          replayPage,
+        if (!replayBrowser) throw new Error("Replay browser was not initialized.");
+        const replayExecution = await executeReplay({
+          replayBrowser,
+          flow,
+          flowIndex: index,
           actions,
-          persona?.verificationMode ?? "completion",
-          replayRecorder,
           expectedExpectations,
-          undefined,
+          args,
+          persona,
+          redactor,
           flowLogger,
-          () => safetyEvents.filter((event) => event.phase === "replay").length,
-          undefined,
-          async (newPage) => {
-            await installDestructiveActionGuard(newPage.context(), guardOptions);
-            attachPopupDetection(newPage, flowLogger, replayTabRegistryHandle);
-            attachCrashDetection(newPage, replayRecorder);
-          },
-          replayTabRegistryHandle,
           guardOptions,
-        );
+          getSafetyBlockCount: () => safetyEvents.filter((event) => event.phase === "replay").length,
+          navigateOrLogin,
+          setActiveRecorder: (nextRecorder) => { activeRecorder = nextRecorder; },
+          trackedContexts: replayContexts,
+        });
+        replayBrowser = replayExecution.replayBrowser;
+        const replayResult = replayExecution.replayResult;
+        const replayRecorder = replayExecution.replayRecorder;
         runtimeErrorEntries.push(...replayRecorder.runtimeErrors.map((error) => ({ error, phase: "replay" as const, flowIndex: index + 1 })));
         if (!replayResult.reproduced) {
-          const runtimeIssues = replayRecorder.runtimeErrors.filter((error) => !error.safetyRelated);
           replayFailures[index] = {
             reason: replayResult.failedAt
               ? "A recorded action could not be completed in the clean replay session."
@@ -737,11 +398,6 @@ async function exploreAndVerifyInBrowser(
             lastSnapshot: replayResult.finalSnapshot,
           };
         }
-        const activeBrowser = replayResult.finalPage.context().browser();
-        if (activeBrowser && activeBrowser !== replayBrowser) replayBrowser = activeBrowser;
-        if (args.trace) await stopTracing(replayContext, join(args.output, "traces", `flow-${index + 1}.zip`), flowLogger);
-        await replayResult.finalPage.close();
-
         if (findingCandidate) {
           const confirmedFinding =
             !replayResult.failedAt &&
@@ -818,185 +474,43 @@ async function exploreAndVerifyInBrowser(
         responseVariantAudits.push(responseVariantAudit);
 
         if (baseFlow.responseFixtures?.length && responseVariantAudit.enabled) {
-          let variants: ResponseVariant[] = [];
-          try {
-            flowLogger.verbose(`    Flow ${index + 1}: planning response scenarios`);
-            const planning = await proposeResponseVariants(
-              provider,
-              model,
-              apiKey,
-              baseFlow.name,
-              baseFlow.responseFixtures,
-              args.responseVariantMax!,
-              replayResult.finalSnapshot,
-              replayResult.steps.map((step) => ({ url: step.url, snapshot: step.snapshot })),
-              redactor,
-              flowLogger,
-            );
-            variants = planning.variants;
-            responseVariantAudit.plannerCandidates = planning.candidates;
-            responseVariantAudit.plannerRejected = planning.rejected;
-            responseVariantAudit.plannerRejectionReasons = planning.rejectionReasons;
-            responseVariantAudit.plannerReason = planning.reason;
-            responseVariantAudit.proposed = variants.length;
-            responseVariantAudit.planningStatus = planning.incomplete ? "incomplete" : "completed";
-            flowLogger.verbose(`    Flow ${index + 1}: response planner proposals=${planning.candidates}, accepted=${planning.variants.length}, rejected=${planning.rejected}`);
-            if (planning.reason) {
-              flowLogger.verbose(`    Flow ${index + 1}: response planner note: ${planning.reason}`);
-            }
-          } catch (error) {
-            const reason = (error as Error).message;
-            responseVariantAudit.planningStatus = "failed";
-            responseVariantAudit.plannerReason = reason;
-            responseVariantAudit.skipped.push({ name: "planner", reason });
-            flowLogger.warn(`    Flow ${index + 1}: response scenario planning skipped`);
-            flowLogger.debug("response_variants.planning_failed", "Response scenario planning failed", { error: reason });
-          }
+          const variantRun = await runResponseVariants({
+            replayBrowser,
+            baseFlow,
+            flow,
+            flowIndex: index,
+            runId,
+            actions,
+            expectedExpectations,
+            baselineReplayResult: replayResult,
+            responseVariantAudit,
+            args,
+            persona,
+            provider,
+            model,
+            apiKey,
+            redactor,
+            flowLogger,
+            guardOptions,
+            getSafetyBlockCount: () => safetyEvents.filter((event) => event.phase === "replay").length,
+            navigateOrLogin,
+            setActiveRecorder: (nextRecorder) => { activeRecorder = nextRecorder; },
+            trackedContexts: replayContexts,
+            evidenceLog,
+          });
+          replayBrowser = variantRun.replayBrowser;
+          confirmedFlows.push(...variantRun.confirmedFlows);
+          runtimeErrorEntries.push(...variantRun.runtimeErrorEntries);
 
-          for (const [variantIndex, variant] of variants.entries()) {
-            try {
-            const variantFixtures = applyResponseVariant(baseFlow.responseFixtures, variant);
-            if (!variantFixtures) {
-              responseVariantAudit.skipped.push({ name: variant.name, reason: "The proposed patch did not apply to the captured response." });
-              continue;
-            }
-            const scenarioId = `derived-${runId}-${index + 1}-${variantIndex + 1}`;
-            const variantStorageState = index > 0 && flow.startStorageState
-              ? JSON.parse(flow.startStorageState)
-              : args.storageStatePath;
-            const variantContext = await replayBrowser.newContext({
-              ...deviceContextOptions(persona),
-              ...(variantStorageState ? { storageState: variantStorageState } : {}),
-            });
-            const variantPage = await variantContext.newPage();
-            configurePageTimeouts(variantPage);
-            const variantTabRegistryHandle: TabRegistryHandle = { tabs: new Map() };
-            attachPopupDetection(variantPage, flowLogger, variantTabRegistryHandle);
-            let variantSourceMatched = false;
-            await installResponseFixtures(variantPage, variantFixtures, {
-              onFixtureApplied: (fixture, requestUrl) => {
-                if (responseFixtureMatchesSelector(fixture, {
-                  method: variant.sourceMethod,
-                  url: variant.sourceUrl,
-                  occurrence: variant.sourceOccurrence,
-                })) {
-                  variantSourceMatched = true;
-                  flowLogger.debug("response_variant.source_applied", "Variant source response was applied", {
-                    method: fixture.method,
-                    sourceUrl: fixture.url,
-                    occurrence: fixture.occurrence,
-                    requestUrl,
-                  });
-                }
-              },
-            });
-            await navigateOrLogin(
-              variantPage,
-              args,
-              index > 0 && Boolean(flow.startStorageState),
-              index > 0 && flow.startUrl ? flow.startUrl : args.url,
-              flowLogger,
-            );
-            await installDestructiveActionGuard(variantContext, guardOptions);
-            const variantRecorder = new EvidenceRecorder(variantContext, flowLogger, { redactor });
-            activeRecorder = variantRecorder;
-            attachCrashDetection(variantPage, variantRecorder);
-            const variantResult = await replay(
-              variantPage,
-              actions,
-              persona?.verificationMode ?? "completion",
-              variantRecorder,
-              expectedExpectations,
-              variant.expectation,
-              flowLogger.child({ scenarioId }),
-              () => safetyEvents.filter((event) => event.phase === "replay").length,
-              { selector: { method: variant.sourceMethod, url: variant.sourceUrl, occurrence: variant.sourceOccurrence }, isMatched: () => variantSourceMatched },
-              async (newPage) => {
-                await installDestructiveActionGuard(newPage.context(), guardOptions);
-                attachPopupDetection(newPage, flowLogger, variantTabRegistryHandle);
-                attachCrashDetection(newPage, variantRecorder);
-              },
-              variantTabRegistryHandle,
-            );
-            runtimeErrorEntries.push(...variantRecorder.runtimeErrors.map((error) => ({ error, phase: "replay" as const, flowIndex: index + 1 })));
-            const variantExpectationResult = variantResult.variantExpectationResult;
-            const activeVariantBrowser = variantResult.finalPage.context().browser();
-            if (activeVariantBrowser && activeVariantBrowser !== replayBrowser) replayBrowser = activeVariantBrowser;
-            await variantResult.finalPage.close();
-
-            if (!variantResult.reproduced) {
-              responseVariantAudit.skipped.push({ name: variant.name, reason: variantResult.failedAt
-                ? `Replay failed at step ${variantResult.failedAt.index}: ${variantResult.failedAt.error}`
-                : variantResult.safetyBlocked > 0
-                  ? `Replay was limited by safety policy: ${variantResult.safetyBlocked} request${variantResult.safetyBlocked === 1 ? "" : "s"} blocked.`
-                : variantResult.variantSourceMatched === false
-                  ? "The source response was not observed during replay."
-                : variantResult.variantExpectationResult?.expectation?.status !== "met"
-                  ? "The derived expectation was not observed after the source response was applied."
-                : variantResult.expectationsReproduced ? "Replay did not satisfy the flow verification." : "Replay did not reproduce the original expectation signals." });
-              flowLogger.verbose(`      Response scenario "${variant.name}": replay failed`);
-              continue;
-            }
-            if (variantExpectationResult?.expectation?.status !== "met") {
-              responseVariantAudit.skipped.push({ name: variant.name, reason: "The derived expectation was not observed after the source response was applied." });
-              flowLogger.verbose(`      Response scenario "${variant.name}": expectation not observed`);
-              continue;
-            }
-            if (!hasObservableReplayDifference(replayResult, variantResult)) {
-              responseVariantAudit.skipped.push({ name: variant.name, reason: "The response patch caused no observable UI difference." });
-              flowLogger.verbose(`      Response scenario "${variant.name}": no observable UI difference`);
-              continue;
-            }
-
-            const variantEntries = derivedEvidenceEntries(
-              actions,
-              variantResult.steps,
-              runId,
-              index,
-              scenarioId,
-              variantExpectationResult,
-              variantResult.variantExpectationStep,
-              {
-                expectationIndex: 1,
-                assertion: variant.expectation.assertion,
-                locator: variant.expectation.locator,
-                value: variant.expectation.value,
-              },
-            );
-            const safeVariantEntries = variantEntries.map((entry) => redactor.redact(entry, { preserveToolInputs: true }) as EvidenceEntry);
-            for (const entry of safeVariantEntries) evidenceLog.append(entry);
-            confirmedFlows.push({
-              name: `${baseFlow.name} — ${variant.name}`,
-              title: `${baseFlow.title ?? formatTestTitle(baseFlow.name)} — ${variant.name}`,
-              entries: safeVariantEntries,
-              startUrl: baseFlow.startUrl,
-              startStorageState: baseFlow.startStorageState,
-              responseFixtures: variantFixtures,
-              fixtureBaseId: baseFlow.fixtureBaseId,
-              baseResponseFixtures: baseFlow.responseFixtures,
-              origin: "derived",
-              sourceFlowIndex: index,
-              scenarioId,
-              responseVariant: variant,
-              devicePreset: baseFlow.devicePreset,
-            });
-            responseVariantAudit.confirmed += 1;
-            responseVariantAudit.confirmedScenarios.push(variant.name);
-            flowLogger.verbose(`      Response scenario "${variant.name}": replay confirmed`);
-            } catch (error) {
-              responseVariantAudit.skipped.push({ name: variant.name, reason: (error as Error).message });
-              flowLogger.verbose(`      Response scenario "${variant.name}": replay skipped`);
-              flowLogger.debug("response_variant.failed", "Response scenario replay failed", { name: variant.name, error: logError(error) });
-            }
-          }
-          flowLogger.verbose(`    Flow ${index + 1}: response scenarios accepted=${responseVariantAudit.proposed}, rejected=${responseVariantAudit.plannerRejected}, confirmed=${responseVariantAudit.confirmed}, skipped=${responseVariantAudit.skipped.length}`);
         }
+        await closeTrackedContexts(replayContexts, flowLogger, `flow ${index + 1} finalization`);
         }
       } finally {
         const replayBlockedRequests = safetyEvents.filter((event) => event.phase === "replay").length;
         if (replayBlockedRequests > 0) {
           runLogger.warn(`  Safety policy blocked ${replayBlockedRequests} destructive request${replayBlockedRequests === 1 ? "" : "s"} during replay`);
         }
+        await closeTrackedContexts(replayContexts, runLogger, "replay finalization");
         await closeBrowserWithTimeout(replayBrowser, runLogger, "replay");
       }
     } catch (error) {

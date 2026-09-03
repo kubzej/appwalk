@@ -115,7 +115,7 @@ async function main() {
   logResolvedConfiguration(args);
   appLogger.debug("execution.config_resolved", "Execution configuration resolved", resolvedConfigurationDetails(args));
   const execution = createExecutionDirectory(args.output);
-  const executionArgs = { ...args, output: execution.path, outputSpecified: true };
+  const executionArgs = { ...args, output: execution.path };
   const executionCommand: "explore" | "run" = args.command === "explore" ? "explore" : "run";
 
   const batch = await exploreCoverage(executionArgs, execution.id);

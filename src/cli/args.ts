@@ -13,7 +13,6 @@ export interface CliArgs {
   email?: string;
   password?: string;
   output: string;
-  outputSpecified: boolean;
   maxSteps: number;
   model?: string;
   provider?: ProviderName;
@@ -97,7 +96,6 @@ export function parseArgs(argv: string[]): CliArgs {
     command: commandValue,
     url: url ?? "",
     output: DEFAULT_OUTPUT_DIR,
-    outputSpecified: false,
     maxSteps: DEFAULT_MAX_STEPS,
     browserEngine: "chromium",
     allowDestructive: false,
@@ -152,7 +150,6 @@ export function parseArgs(argv: string[]): CliArgs {
     }
     else if ((flag === "-o" || flag === "--output") && value) {
       args.output = value;
-      args.outputSpecified = true;
       args.cliSpecified.add("output");
     } else if ((flag === "-n" || flag === "--max-steps") && value) {
       args.maxSteps = Number(value);
