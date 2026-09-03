@@ -1,5 +1,6 @@
 import type { Page } from "playwright";
 import type { StepResult } from "../types.js";
+import { defaultRedactor, type Redactor } from "../security/redaction.js";
 
 interface InteractiveElementObservation {
   tag: string;
@@ -30,9 +31,9 @@ interface PageObservation {
   hasHorizontalOverflow: boolean;
 }
 
-export async function captureSnapshot(page: Page): Promise<string> {
+export async function captureSnapshot(page: Page, redactor: Redactor = defaultRedactor): Promise<string> {
   const observation = await capturePageObservation(page);
-  return formatPageObservation(observation);
+  return redactor.text(formatPageObservation(observation));
 }
 
 /** A page whose accessibility tree has no natural bound (an unpaginated list with hundreds or
@@ -51,8 +52,8 @@ export function truncateAccessibilityTree(tree: string): string {
   return `${head}\n... [truncated: ${omittedChars} more characters omitted — this page contains an unusually large amount of content, likely an unpaginated list]`;
 }
 
-export async function toStepResult(page: Page): Promise<StepResult> {
-  return { url: page.url(), snapshot: await captureSnapshot(page) };
+export async function toStepResult(page: Page, redactor: Redactor = defaultRedactor): Promise<StepResult> {
+  return { url: redactor.url(page.url()), snapshot: await captureSnapshot(page, redactor) };
 }
 
 async function capturePageObservation(page: Page): Promise<PageObservation> {
@@ -95,7 +96,7 @@ async function capturePageObservation(page: Page): Promise<PageObservation> {
         const id = htmlElement.id.trim();
         const nameAttribute = htmlElement.getAttribute("name")?.trim();
         const rawHref = htmlElement.getAttribute("href")?.trim();
-        const href = rawHref ? safeUrl(rawHref) : undefined;
+        const href = rawHref || undefined;
         const cssLocator = stableCssLocator(tag, htmlElement.classList);
         const locator = testId
           ? `[data-testid=${JSON.stringify(testId)}]`
@@ -141,7 +142,7 @@ async function capturePageObservation(page: Page): Promise<PageObservation> {
         const title = frame.title.trim() || undefined;
         const name = frame.name.trim() || undefined;
         const rawSrc = frame.getAttribute("src")?.trim() || undefined;
-        const src = rawSrc ? safeUrl(rawSrc) : undefined;
+        const src = rawSrc || undefined;
         return {
           title,
           name,
@@ -191,14 +192,6 @@ async function capturePageObservation(page: Page): Promise<PageObservation> {
         return candidate ? `${tag}[class~=${JSON.stringify(candidate)}]` : undefined;
       }
 
-      function safeUrl(value: string): string {
-        try {
-          const parsed = new URL(value, window.location.href);
-          return `${parsed.origin}${parsed.pathname}`;
-        } catch {
-          return value.slice(0, 200);
-        }
-      }
     }),
   ]);
   return { accessibilityTree: truncateAccessibilityTree(accessibilityTree), ...domObservation };
@@ -226,8 +219,13 @@ function formatPageObservation(observation: PageObservation): string {
   return `${layoutNote}Accessibility tree:\n${observation.accessibilityTree}\n\nInteractive elements:\n${interactive}\n\nFrames:\n${frames}`;
 }
 
-export async function captureScreenshot(page: Page): Promise<string> {
+export async function captureScreenshot(page: Page, options: { maskInputs?: boolean } = {}): Promise<string> {
   // JPEG at CSS scale keeps vision useful while avoiding a full-resolution PNG on every LLM turn.
-  const buffer = await page.screenshot({ type: "jpeg", quality: 60, scale: "css" });
+  const buffer = await page.screenshot({
+    type: "jpeg",
+    quality: 60,
+    scale: "css",
+    ...(options.maskInputs ? { mask: [page.locator("input"), page.locator("textarea")], maskColor: "#000000" } : {}),
+  });
   return buffer.toString("base64");
 }

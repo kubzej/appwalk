@@ -3,7 +3,7 @@ import "dotenv/config";
 import { applyConfig, parseArgs } from "./args.js";
 import { createExecutionDirectory } from "./execution.js";
 import { generateFromManifest } from "./manifest.js";
-import { exploreCoverage, writeDiscoveryArtifacts } from "./orchestrate.js";
+import { exploreCoverage, redactorForArgs, writeDiscoveryArtifacts } from "./orchestrate.js";
 import { writeExecutionReport } from "./report.js";
 import { logCodegenCompleted, logCodegenPlan } from "./codegen-log.js";
 import { appLogger, setAppLogger } from "./logger-state.js";
@@ -104,12 +104,13 @@ function resolvedConfigurationDetails(args: CliArgs): Record<string, unknown> {
 
 async function main() {
   const parsedArgs = parseArgs(process.argv.slice(2));
-  setAppLogger(new Logger(parsedArgs.logLevel));
+  setAppLogger(new Logger(parsedArgs.logLevel, undefined, {}, { redactor: redactorForArgs(parsedArgs) }));
   if (parsedArgs.command === "generate") {
     generateFromManifest(parsedArgs);
     return;
   }
   const args = applyConfig(parsedArgs);
+  setAppLogger(new Logger(args.logLevel, undefined, {}, { redactor: redactorForArgs(args) }));
   appLogger.phase(`Starting ${args.command} execution for ${args.url}`);
   logResolvedConfiguration(args);
   appLogger.debug("execution.config_resolved", "Execution configuration resolved", resolvedConfigurationDetails(args));

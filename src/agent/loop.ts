@@ -10,6 +10,7 @@ import { executeToolCall, TOOL_DEFINITIONS } from "./tools.js";
 import type { TabRegistryHandle } from "./tools.js";
 import type { VerificationMode } from "./verification.js";
 import { verifyFlow } from "./verification.js";
+import { defaultRedactor, type Redactor } from "../security/redaction.js";
 
 const DEFAULT_CONTEXT_CHECKPOINT_ACTIONS = 8;
 const MODEL_SNAPSHOT_MAX_CHARS = 18_000;
@@ -281,6 +282,8 @@ export async function runAgentLoop(
      * listener attached outside this function (see attachPopupDetection) can register a tab the
      * target app opens on its own, making it reachable via switchTab like an agent-opened tab. */
     tabRegistryHandle?: TabRegistryHandle;
+    /** Shared policy for browser state retained in agent history or sent to a provider. */
+    redactor?: Redactor;
     logger?: Logger;
   },
 ): Promise<LoopResult> {
@@ -289,9 +292,10 @@ export async function runAgentLoop(
   const history: LoopStep[] = [];
   const flows: FlowResult[] = [];
   const initialUrl = page.url();
+  const redactor = options.redactor ?? defaultRedactor;
 
-  const initialSnapshot = await toStepResult(page);
-  const initialScreenshot = options.captureScreenshots ? await captureScreenshot(page) : undefined;
+  const initialSnapshot = await toStepResult(page, redactor);
+  const initialScreenshot = options.captureScreenshots ? await captureScreenshot(page, { maskInputs: true }) : undefined;
   const expectationObservations: Array<ExpectationObservation & { flowIndex: number; historyIndex: number }> = [];
   const systemPrompt = () => buildSystemPrompt(
     options.maxSteps,
@@ -330,7 +334,7 @@ export async function runAgentLoop(
     const isFlowCompleteTool = turn.type === "tool_call" && turn.toolCall.name === "flowComplete";
 
     if (turn.type === "text") {
-      const stopStep: LoopStep = { finalText: turn.text, result: await toStepResult(page) };
+      const stopStep: LoopStep = { finalText: redactor.text(turn.text), result: await toStepResult(page, redactor) };
       history.push(stopStep);
       options.onStep?.(stopStep, history.length - 1, flowIndex);
       options.logger?.warn(
@@ -360,7 +364,7 @@ export async function runAgentLoop(
       const title = isFlowCompleteTool && turn.type === "tool_call" && typeof turn.toolCall.input.title === "string"
         ? turn.toolCall.input.title
         : undefined;
-      const currentState = await toStepResult(page);
+      const currentState = await toStepResult(page, redactor);
 
       const step: LoopStep = { finalText, result: currentState };
       if (isFlowCompleteTool && turn.type === "tool_call") {
@@ -433,8 +437,8 @@ export async function runAgentLoop(
       // the next flow independent from the completed one while the browser session is still reused.
       if (stepsRemaining > 0) {
         await page.goto(initialUrl);
-        const restartSnapshot = await toStepResult(page);
-        const restartScreenshot = options.captureScreenshots ? await captureScreenshot(page) : undefined;
+        const restartSnapshot = await toStepResult(page, redactor);
+        const restartScreenshot = options.captureScreenshots ? await captureScreenshot(page, { maskInputs: true }) : undefined;
 
         flowIndex += 1;
         flowStartIndex = history.length;
@@ -485,7 +489,12 @@ export async function runAgentLoop(
 
     try {
       const toolResult = await executeToolCall(page, toolCall, tabRegistryHandle.tabs);
-      result = toolResult;
+      result = {
+        ...toolResult,
+        url: redactor.url(toolResult.url),
+        snapshot: redactor.text(toolResult.snapshot),
+        ...(toolResult.expectation ? { expectation: redactor.redact(toolResult.expectation) as StepResult["expectation"] } : {}),
+      };
       resultText = `URL: ${result.url}\n${clipForCheckpoint(result.snapshot, MODEL_SNAPSHOT_MAX_CHARS)}`;
       if (result.expectation) {
         resultText += `\nExpectation ${result.expectation.expectationIndex}: ${result.expectation.status} — ${result.expectation.detail}`;
@@ -530,7 +539,7 @@ export async function runAgentLoop(
     options.onStep?.(step, history.length - 1, flowIndex);
 
     actionCount += 1;
-    const screenshot = options.captureScreenshots ? await captureScreenshot(page) : undefined;
+    const screenshot = options.captureScreenshots ? await captureScreenshot(page, { maskInputs: true }) : undefined;
     if (actionCount >= options.maxSteps) {
       options.logger?.debug("agent.finalization_requested", "Requesting a flow classification after the final allowed browser action", {
         flowIndex, actionCount, maxSteps: options.maxSteps,
@@ -551,7 +560,7 @@ export async function runAgentLoop(
 
     const checkpointEvery = options.contextCheckpointActions ?? DEFAULT_CONTEXT_CHECKPOINT_ACTIONS;
     if (checkpointEvery > 0 && actionCount % checkpointEvery === 0) {
-      const currentSnapshot = result ?? await toStepResult(page);
+      const currentSnapshot = result ?? await toStepResult(page, redactor);
       turn = await provider.start({
         systemPrompt: systemPrompt(),
         tools: TOOL_DEFINITIONS,

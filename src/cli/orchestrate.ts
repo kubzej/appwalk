@@ -29,10 +29,12 @@ import { GeminiProvider } from "../providers/gemini.js";
 import { GrokProvider } from "../providers/grok.js";
 import { OllamaProvider } from "../providers/ollama.js";
 import { OpenAIProvider } from "../providers/openai.js";
+import { RedactingProvider } from "../providers/redacting.js";
 import type { LlmProvider } from "../providers/provider.js";
 import type { SafetyConfig } from "../safety/guard.js";
 import { installDestructiveActionGuard } from "../safety/guard.js";
 import { logError, type Logger } from "../logging/logger.js";
+import { Redactor } from "../security/redaction.js";
 import type {
   ReportFlow,
   ReportResponseVariantAudit,
@@ -77,6 +79,7 @@ export interface ExplorationBatch {
   allEntries: EvidenceEntry[];
   confirmedFlows: ConfirmedFlow[];
   evidenceIssues: EvidenceReadIssue[];
+  redactor: Redactor;
 }
 
 interface ConfirmedFlow extends FlowEntries {
@@ -206,8 +209,8 @@ async function navigateOrLogin(page: Page, args: CliArgs, hasPreloadedState = fa
   }
 }
 
-function createProvider(provider: ProviderName, model: string, apiKey: string | undefined, logger = appLogger): LlmProvider {
-  return provider === "gemini"
+function createProvider(provider: ProviderName, model: string, apiKey: string | undefined, redactor: Redactor, logger = appLogger): LlmProvider {
+  const inner = provider === "gemini"
     ? new GeminiProvider(apiKey!, model, logger)
     : provider === "ollama"
       ? new OllamaProvider(model, undefined, logger)
@@ -216,6 +219,24 @@ function createProvider(provider: ProviderName, model: string, apiKey: string | 
         : provider === "openai"
           ? new OpenAIProvider(apiKey!, model, logger)
           : new AnthropicProvider(apiKey!, model, logger);
+  return new RedactingProvider(inner, redactor);
+}
+
+export function redactorForArgs(args: CliArgs): Redactor {
+  const apiKeyEnvVar = args.provider === "gemini"
+    ? "GEMINI_API_KEY"
+    : args.provider === "grok"
+      ? "XAI_API_KEY"
+      : args.provider === "openai"
+        ? "OPENAI_API_KEY"
+        : "ANTHROPIC_API_KEY";
+  return new Redactor([
+    args.email,
+    args.password,
+    args.storageStatePath,
+    args.safetyConfigPath,
+    args.provider === "ollama" ? undefined : process.env[apiKeyEnvVar],
+  ]);
 }
 
 function validatePersona(args: CliArgs) {
@@ -236,6 +257,7 @@ async function proposeResponseVariants(
   maxVariants: number,
   finalSnapshot: string,
   replayTimeline: Array<{ url: string; snapshot: string }>,
+  redactor: Redactor,
   logger = appLogger,
 ): Promise<ResponseVariantParseResult> {
   const plannerLogger = logger.child({ operation: "response_variant_planner" });
@@ -246,7 +268,7 @@ async function proposeResponseVariants(
     maxOutputTokens: RESPONSE_VARIANT_MAX_OUTPUT_TOKENS,
     replaySteps: replayTimeline.length,
   });
-  const planner = createProvider(provider, model, apiKey, plannerLogger);
+  const planner = createProvider(provider, model, apiKey, redactor, plannerLogger);
   const turn = await planner.start({
     systemPrompt:
       "You are a conservative response-variant planner for browser test generation. Return only the JSON requested by the user. Never invent application behavior or fields.",
@@ -515,6 +537,7 @@ async function exploreAndVerifyInBrowser(
   if (requiresApiKey && !apiKey) {
     throw new Error("Set " + apiKeyEnvVar + " before starting an exploration run.");
   }
+  const redactor = redactorForArgs(args);
 
   const evidencePath = join(args.output, "evidence.jsonl");
   const safetyConfig = loadSafetyConfig(args.safetyConfigPath);
@@ -559,14 +582,14 @@ async function exploreAndVerifyInBrowser(
   await installDestructiveActionGuard(context, guardOptions);
   // Start recording after setup so login and token-refresh traffic never become application
   // fixtures. Also context-scoped, for the same reason.
-  const recorder = new EvidenceRecorder(context, runLogger);
+  const recorder = new EvidenceRecorder(context, runLogger, { redactor });
   activeRecorder = recorder;
   attachCrashDetection(page, recorder);
   attachWebSocketCapture(page, recorder);
   if (args.trace) await startTracing(context, runLogger);
 
   runLogger.phase("  Exploring application");
-  const discovery = await runAgentLoop(page, createProvider(provider, model, apiKey, runLogger), {
+  const discovery = await runAgentLoop(page, createProvider(provider, model, apiKey, redactor, runLogger), {
     maxSteps: args.maxSteps,
     recorder,
     captureScreenshots: args.screenshots,
@@ -576,6 +599,7 @@ async function exploreAndVerifyInBrowser(
     logger: runLogger,
     getSafetyBlockCount: () => safetyEvents.filter((event) => event.phase === "exploration").length,
     tabRegistryHandle,
+    redactor,
     // A new tab (openTab, openInNewTab, reopenBrowser) is a fresh Page — the destructive-action guard
     // is installed with `page.route`, which is page-scoped and does not follow a page switch on its own.
     // A same-context switch (openTab, switchTab) is already covered by the context-level guard
@@ -601,9 +625,10 @@ async function exploreAndVerifyInBrowser(
           runtimeErrors,
           webSocketFrames,
         } satisfies EvidenceEntry;
-        runEntries.push(entry);
-        evidenceLog.append(entry);
-    },
+        const safeEntry = redactor.redact(entry, { preserveToolInputs: true }) as EvidenceEntry;
+        runEntries.push(safeEntry);
+        evidenceLog.append(safeEntry);
+      },
   });
   runLogger.debug("exploration.finalization_started", "Finalizing exploration evidence and browser session");
   await recorder.waitForPendingBodies();
@@ -667,7 +692,7 @@ async function exploreAndVerifyInBrowser(
           flowLogger,
         );
         await installDestructiveActionGuard(replayContext, guardOptions);
-        const replayRecorder = new EvidenceRecorder(replayContext, flowLogger);
+        const replayRecorder = new EvidenceRecorder(replayContext, flowLogger, { redactor });
         activeRecorder = replayRecorder;
         attachCrashDetection(replayPage, replayRecorder);
         if (args.trace) await startTracing(replayContext, flowLogger);
@@ -761,7 +786,7 @@ async function exploreAndVerifyInBrowser(
           entries: flowEntries,
           startUrl: index === 0 ? undefined : flow.startUrl,
           startStorageState: index === 0 ? undefined : flow.startStorageState,
-          responseFixtures: extractResponseFixtures(flowEntries, args.url, args.responseFixtureMaxBytes),
+          responseFixtures: extractResponseFixtures(flowEntries, args.url, args.responseFixtureMaxBytes, redactor),
           origin: "discovered",
           sourceFlowIndex: index,
           fixtureBaseId: `${runId}-flow-${index + 1}`,
@@ -803,6 +828,7 @@ async function exploreAndVerifyInBrowser(
               args.responseVariantMax!,
               replayResult.finalSnapshot,
               replayResult.steps.map((step) => ({ url: step.url, snapshot: step.snapshot })),
+              redactor,
               flowLogger,
             );
             variants = planning.variants;
@@ -870,7 +896,7 @@ async function exploreAndVerifyInBrowser(
               flowLogger,
             );
             await installDestructiveActionGuard(variantContext, guardOptions);
-            const variantRecorder = new EvidenceRecorder(variantContext, flowLogger);
+            const variantRecorder = new EvidenceRecorder(variantContext, flowLogger, { redactor });
             activeRecorder = variantRecorder;
             attachCrashDetection(variantPage, variantRecorder);
             const variantResult = await replay(
@@ -935,11 +961,12 @@ async function exploreAndVerifyInBrowser(
                 value: variant.expectation.value,
               },
             );
-            for (const entry of variantEntries) evidenceLog.append(entry);
+            const safeVariantEntries = variantEntries.map((entry) => redactor.redact(entry, { preserveToolInputs: true }) as EvidenceEntry);
+            for (const entry of safeVariantEntries) evidenceLog.append(entry);
             confirmedFlows.push({
               name: `${baseFlow.name} — ${variant.name}`,
               title: `${baseFlow.title ?? formatTestTitle(baseFlow.name)} — ${variant.name}`,
-              entries: variantEntries,
+              entries: safeVariantEntries,
               startUrl: baseFlow.startUrl,
               startStorageState: baseFlow.startStorageState,
               responseFixtures: variantFixtures,
@@ -1030,7 +1057,8 @@ function createCoverageRuns(args: CliArgs): Array<{ id: string; name: string; ar
 export async function exploreCoverage(args: CliArgs, executionId: string): Promise<ExplorationBatch> {
   mkdirSync(args.output, { recursive: true });
   const evidencePath = join(args.output, "evidence.jsonl");
-  const evidenceLog = new EvidenceLog(evidencePath);
+  const redactor = redactorForArgs(args);
+  const evidenceLog = new EvidenceLog(evidencePath, redactor);
   const runs: ExplorationRun[] = [];
 
   const configuredRuns = createCoverageRuns(args);
@@ -1070,7 +1098,7 @@ export async function exploreCoverage(args: CliArgs, executionId: string): Promi
         safety: emptySafety(),
         runtimeErrors: [],
         replayFailures: {},
-        error: message,
+        error: redactor.text(message),
       });
     }
   }
@@ -1085,7 +1113,7 @@ export async function exploreCoverage(args: CliArgs, executionId: string): Promi
     ...flow,
     name: `${run.runName}: ${flow.name}`,
   })));
-  return { executionId, args, evidencePath, runs, allEntries, confirmedFlows, evidenceIssues: evidence.issues };
+  return { executionId, args, evidencePath, runs, allEntries, confirmedFlows, evidenceIssues: evidence.issues, redactor };
 }
 
 function manifestFor(batch: ExplorationBatch): DiscoveryManifest {
@@ -1179,6 +1207,7 @@ function manifestFor(batch: ExplorationBatch): DiscoveryManifest {
 
 export function writeDiscoveryArtifacts(batch: ExplorationBatch): string {
   const manifestPath = join(batch.args.output, "discovery.json");
-  writeFileSync(manifestPath, JSON.stringify(manifestFor(batch), null, 2) + "\n");
+  const manifest = batch.redactor.redact(manifestFor(batch), { preservePathFields: true }) as DiscoveryManifest;
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   return manifestPath;
 }

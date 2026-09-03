@@ -29,6 +29,19 @@ The execution ID combines an ISO timestamp and a short random suffix. This keeps
 | `auth.ts` | Playwright users | Shared credential login helper used by generated tests when email/password login is configured. |
 | `fixtures.ts` and `fixtures/` | Playwright users | Shared response replay helper, captured baseline JSON, and response-variant patch descriptors. |
 
+## Data handling
+
+Textual evidence, reports, discovery metadata, browser snapshots, console/runtime messages, response
+bodies, WebSocket payloads, and provider inputs pass through one redaction policy. Configured login
+credentials and provider keys are replaced wherever they appear; sensitive object fields and URL
+parameters are redacted as well. Replayable non-sensitive tool inputs remain available so generated
+flows keep working.
+
+Screenshots are sent to a provider only when `--screenshots` is enabled, and form controls are masked
+in those screenshots. A Playwright trace is a diagnostic artifact and can contain page content,
+network data, and source metadata; treat `--trace` output as sensitive and protect or delete it
+according to the environment's retention policy.
+
 ## Exit codes
 
 | Exit code | Meaning |
@@ -65,7 +78,7 @@ Read the report in this order:
 3. **Flows**: review the status of each discovered or derived flow. Unconfirmed discoveries are useful leads, not regression coverage.
 4. **Findings**: inspect confirmed and inconclusive challenge results separately.
 5. **Response scenarios**: distinguish baseline fixtures used to stabilize the original flow from planner proposals and confirmed derived scenarios. Variants are shown beneath their baseline flow in the report navigation and flow order. A variant is confirmed only when its selected source response was actually applied during replay and its derived expectation was observed afterwards. Accepted, rejected, and skipped proposals are reported separately, so a planner that returned invalid patches is not presented as if it returned no scenarios.
-6. **Runtime issues, recorded steps, and evidence**: review potential browser/application errors, then use the exact action sequence and raw evidence when debugging. Errors caused directly by a safety-blocked request are labeled as safety-related and are excluded from potential-bug review; navigation cancellations such as `ERR_ABORTED` are lifecycle noise and are excluded as well. The safety limitation itself still makes coverage inconclusive.
+6. **Runtime issues, recorded steps, and evidence**: review potential browser/application errors, then use the exact action sequence and redacted evidence when debugging. Errors caused directly by a safety-blocked request are labeled as safety-related and are excluded from potential-bug review; navigation cancellations such as `ERR_ABORTED` are lifecycle noise and are excluded as well. The safety limitation itself still makes coverage inconclusive.
 
 ## Evidence warnings
 

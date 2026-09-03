@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path";
 import type { ConsoleEntry, NetworkEntry, RuntimeErrorEntry, WebSocketFrameEntry } from "./recorder.js";
 import type { StepResult } from "../types.js";
+import { defaultRedactor, type Redactor } from "../security/redaction.js";
 
 export interface EvidenceEntry {
   index: number;
@@ -36,13 +37,17 @@ export interface EvidenceReadResult {
 }
 
 export class EvidenceLog {
-  constructor(private readonly path: string) {
+  constructor(
+    private readonly path: string,
+    private readonly redactor: Redactor = defaultRedactor,
+  ) {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, "");
   }
 
   append(entry: EvidenceEntry): void {
-    appendFileSync(this.path, JSON.stringify(entry) + "\n");
+    const safeEntry = this.redactor.redact(entry, { preserveToolInputs: true });
+    appendFileSync(this.path, JSON.stringify(safeEntry) + "\n");
   }
 }
 

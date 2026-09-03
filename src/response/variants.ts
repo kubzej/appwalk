@@ -1,6 +1,7 @@
 import type { Page } from "playwright";
 import type { EvidenceEntry } from "../evidence/log.js";
 import type { ExpectationAssertion } from "../types.js";
+import { defaultRedactor, type Redactor } from "../security/redaction.js";
 
 export interface ResponseFixture {
   method: string;
@@ -98,15 +99,6 @@ function sameOrigin(url: string, applicationUrl: string): boolean {
   }
 }
 
-const SENSITIVE_RESPONSE_KEY = /token$|^(api[-_]?key|authorization|cookie|password|secret|credential)$/i;
-
-function containsSensitiveResponseField(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some((item) => containsSensitiveResponseField(item));
-  if (typeof value === "string") return /^Bearer\s|^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/i.test(value);
-  if (!value || typeof value !== "object") return false;
-  return Object.entries(value).some(([key, entry]) => SENSITIVE_RESPONSE_KEY.test(key) || containsSensitiveResponseField(entry));
-}
-
 function isAuthenticationEndpoint(url: string): boolean {
   try {
     const pathname = new URL(url).pathname.toLowerCase();
@@ -146,7 +138,7 @@ export function responseFixtureUrlPattern(url: string): string {
 }
 
 /** Extracts bounded, replayable JSON responses observed during a flow. */
-export function extractResponseFixtures(entries: EvidenceEntry[], applicationUrl: string, maxFixtureBytes?: number): ResponseFixture[] {
+export function extractResponseFixtures(entries: EvidenceEntry[], applicationUrl: string, maxFixtureBytes?: number, redactor: Redactor = defaultRedactor): ResponseFixture[] {
   const fixtures: ResponseFixture[] = [];
   const occurrences = new Map<string, number>();
   for (const entry of entries) {
@@ -155,7 +147,7 @@ export function extractResponseFixtures(entries: EvidenceEntry[], applicationUrl
       if (response.body === undefined || !sameOrigin(response.url, applicationUrl)) continue;
       // Authentication responses can contain bearer tokens or session material. They are
       // never needed to replay an already authenticated flow and must not enter generated code.
-      if (isAuthenticationEndpoint(response.url) || containsSensitiveResponseField(response.body)) continue;
+      if (isAuthenticationEndpoint(response.url) || redactor.hasSensitiveData(response.body)) continue;
       const fixtureKey = `${response.method} ${response.url}`;
       let serialized: string;
       try {
@@ -173,7 +165,7 @@ export function extractResponseFixtures(entries: EvidenceEntry[], applicationUrl
         occurrence,
         urlPattern: urlPattern === response.url ? undefined : urlPattern,
         status: response.status,
-        body: jsonClone(response.body),
+        body: jsonClone(redactor.redact(response.body)),
       });
     }
   }

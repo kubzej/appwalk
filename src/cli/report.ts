@@ -45,15 +45,14 @@ function reportActionLabel(name: string): string {
   return labels[name] ?? name;
 }
 
-function reportStepValue(entry: EvidenceEntry): string | undefined {
-  const input = entry.toolCall?.input ?? {};
+function reportStepValue(entry: EvidenceEntry, redactor: ExplorationBatch["redactor"]): string | undefined {
+  const input = redactor.redact(entry.toolCall?.input ?? {}) as Record<string, unknown>;
   const value = input.value ?? input.key ?? input.mode;
   if (value === undefined) return undefined;
-  const target = typeof input.locator === "string" ? input.locator : "";
-  return /password|card|cvv|secret|token/i.test(target) ? "[redacted]" : String(value);
+  return String(value);
 }
 
-function reportSteps(entries: EvidenceEntry[], errorLabel: string): ReportStep[] {
+function reportSteps(entries: EvidenceEntry[], errorLabel: string, redactor: ExplorationBatch["redactor"]): ReportStep[] {
   return entries
     .filter((entry) => entry.toolCall && entry.toolCall.name !== "flowComplete")
     .map((entry, index) => {
@@ -69,7 +68,7 @@ function reportSteps(entries: EvidenceEntry[], errorLabel: string): ReportStep[]
         number: index + 1,
         action: reportActionLabel(entry.toolCall!.name),
         target,
-        value: reportStepValue(entry),
+        value: reportStepValue(entry, redactor),
         error: entry.error,
         errorLabel: entry.error ? errorLabel : undefined,
         safetyBlocked: entry.safetyBlocked,
@@ -87,7 +86,7 @@ function flowSimilarityKey(flow: ReportFlow): string {
     .trim();
 }
 
-function reportFlowsForRun(run: ExplorationRun): ReportFlow[] {
+function reportFlowsForRun(run: ExplorationRun, redactor: ExplorationBatch["redactor"]): ReportFlow[] {
   const discovered = (run.discovery?.flows ?? []).map((flow, index): ReportFlow => {
     const entries = run.allEntries.filter((entry) => entry.flowIndex === index && entry.scenarioId === undefined);
     const finding = run.findings.find((candidate) => candidate.flowIndex === index);
@@ -100,7 +99,7 @@ function reportFlowsForRun(run: ExplorationRun): ReportFlow[] {
       discoveryVerified: flow.verified,
       replayConfirmed: run.replayConfirmedIds.includes(index + 1),
       runtimeIssues,
-      steps: reportSteps(entries, "Exploration action failed"),
+      steps: reportSteps(entries, "Exploration action failed", redactor),
       replayFailure: run.replayFailures[index],
       finding,
     };
@@ -118,7 +117,7 @@ function reportFlowsForRun(run: ExplorationRun): ReportFlow[] {
       discoveryVerified: true,
       replayConfirmed: true,
       runtimeIssues: [],
-      steps: reportSteps(flow.entries, "Replay action failed"),
+      steps: reportSteps(flow.entries, "Replay action failed", redactor),
     }));
   const firstBySimilarity = new Map<string, string>();
   return [...discovered, ...derived].map((flow) => {
@@ -182,14 +181,15 @@ export function writeExecutionReport(
         stopReason: outcome.stopReason,
         safety: run.safety,
         runtimeErrors: run.runtimeErrors,
-        flows: reportFlowsForRun(run),
+        flows: reportFlowsForRun(run, batch.redactor),
         findings: run.findings,
         responseVariants: run.responseVariantAudits,
         error: run.error,
       };
     }),
   });
-  writeFileSync(join(batch.args.output, artifacts.reportJson), JSON.stringify(report, null, 2) + "\n");
-  writeFileSync(join(batch.args.output, artifacts.reportHtml), renderHtmlReport(report));
-  return report;
+  const safeReport = batch.redactor.redact(report) as ExecutionReport;
+  writeFileSync(join(batch.args.output, artifacts.reportJson), JSON.stringify(safeReport, null, 2) + "\n");
+  writeFileSync(join(batch.args.output, artifacts.reportHtml), renderHtmlReport(safeReport));
+  return safeReport;
 }
