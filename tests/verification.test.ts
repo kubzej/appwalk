@@ -106,3 +106,34 @@ test("consistency and visual do not fall back to completion", () => {
     }],
   }), true);
 });
+
+test("visual accepts a new layout signal observed after the flow started", () => {
+  const layoutSignal = "Layout: the page is wider than its own viewport (unexpected horizontal scroll).\nAccessibility tree:";
+  assert.equal(verifyFlow("visual", context({
+    finalSnapshot: layoutSignal,
+    snapshots: [layoutSignal],
+  })), true);
+});
+
+test("visual ignores a layout signal that already existed before the flow", () => {
+  const layoutSignal = "Layout: the page is wider than its own viewport (unexpected horizontal scroll).\nAccessibility tree:";
+  assert.equal(verifyFlow("visual", context({
+    flowStartSnapshot: layoutSignal,
+    finalSnapshot: layoutSignal,
+    snapshots: [layoutSignal],
+  })), false);
+});
+
+test("consistency requires a value or state assertion", () => {
+  const visibleExpectation = {
+    expectationIndex: 1,
+    status: "met" as const,
+    assertion: "visible" as const,
+    locator: "role=status",
+    detail: "The dependent status is visible.",
+  };
+  assert.equal(verifyFlow("consistency", context({ expectations: [visibleExpectation] })), false);
+  assert.equal(verifyFlow("consistency", context({
+    expectations: [{ ...visibleExpectation, assertion: "containsText", value: "Total: 20" }],
+  })), true);
+});

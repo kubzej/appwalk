@@ -418,6 +418,7 @@ export async function runAgentLoop(
           finalUrl: url,
           finalSnapshot: snapshot,
           network,
+          snapshots: actionHistory.flatMap((step) => step.result?.snapshot ? [step.result.snapshot] : []),
           runtimeErrors: options.recorder?.runtimeErrors.slice(flowRuntimeErrorStart) ?? [],
           expectations: actionHistory.flatMap((step) => step.result?.expectation ? [step.result.expectation] : []),
         });

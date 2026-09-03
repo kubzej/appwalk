@@ -18,6 +18,8 @@ export interface VerificationContext {
   finalUrl: string;
   finalSnapshot: string;
   network: NetworkEntry[];
+  /** Snapshots captured after real actions in this flow, used for objective layout signals. */
+  snapshots?: string[];
   /** Runtime failures observed during this flow, including transport failures without HTTP status. */
   runtimeErrors?: RuntimeErrorEntry[];
   /** Concrete signals checked by verifyExpectation during this flow. */
@@ -29,6 +31,8 @@ const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 // "- alert: <text>", aria-invalid="true" renders as a "[invalid]" suffix on the field's own line.
 const ALERT_PATTERN = /-\s*alert:/i;
 const INVALID_FIELD_PATTERN = /\[invalid\]/i;
+const CONSISTENCY_ASSERTIONS = new Set(["containsText", "value", "count", "checked", "unchecked"]);
+const VISUAL_SIGNAL_PATTERN = /(?:^|\n)Layout:|content-overflows/i;
 
 function hasSuccessfulStateChange(network: NetworkEntry[]): boolean {
   return network.some(
@@ -46,6 +50,20 @@ function hasExplicitMetExpectation(ctx: VerificationContext): boolean {
 
 function hasObservableChange(ctx: VerificationContext): boolean {
   return ctx.finalUrl !== ctx.flowStartUrl || ctx.finalSnapshot !== ctx.flowStartSnapshot;
+}
+
+function hasExplicitConsistencyExpectation(ctx: VerificationContext): boolean {
+  return ctx.expectations?.some((expectation) =>
+    expectation.status === "met" && CONSISTENCY_ASSERTIONS.has(expectation.assertion),
+  ) ?? false;
+}
+
+function hasNewVisualSignal(ctx: VerificationContext): boolean {
+  const initialSignals = new Set(ctx.flowStartSnapshot.split("\n").filter((line) => VISUAL_SIGNAL_PATTERN.test(line)));
+  const observedSnapshots = [...(ctx.snapshots ?? []), ctx.finalSnapshot];
+  return observedSnapshots
+    .flatMap((snapshot) => snapshot.split("\n"))
+    .some((line) => VISUAL_SIGNAL_PATTERN.test(line) && !initialSignals.has(line));
 }
 
 function hasFailedRequest(ctx: VerificationContext): boolean {
@@ -122,8 +140,8 @@ function looksLikeCompletion(ctx: VerificationContext): boolean {
   return newSuccessUrl || newSuccessSnapshot;
 }
 
-/** `consistency` and `visual` don't have a generic implementation yet. They need an explicit
- * expectation until domain-aware value comparison and screenshot comparison are implemented. */
+/** Consistency uses explicit value/state assertions; visual uses those assertions or a new,
+ * objective layout signal. Neither mode claims to perform generic business-value or pixel diffing. */
 function verifySingle(mode: VerificationMode, ctx: VerificationContext): boolean {
   switch (mode) {
     case "rejection":
@@ -139,8 +157,9 @@ function verifySingle(mode: VerificationMode, ctx: VerificationContext): boolean
     case "completion":
       return looksLikeCompletion(ctx);
     case "consistency":
+      return hasExplicitConsistencyExpectation(ctx);
     case "visual":
-      return hasExplicitMetExpectation(ctx);
+      return hasExplicitMetExpectation(ctx) || hasNewVisualSignal(ctx);
     default:
       return false;
   }

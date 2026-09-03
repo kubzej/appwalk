@@ -159,6 +159,7 @@ export async function replay(
     finalUrl,
     finalSnapshot,
     network: recorder?.network.slice(replayNetworkStart) ?? [],
+    snapshots: steps.map((step) => step.snapshot),
     runtimeErrors: recorder?.runtimeErrors.slice(replayRuntimeErrorStart) ?? [],
     expectations: [
       ...replayedExpectations,
