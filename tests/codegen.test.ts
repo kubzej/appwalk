@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ts from "typescript";
 import { generateSpec, generateSpecBundle } from "../src/codegen/spec.js";
+import { escapeJsString, serializeJsValue, toLocatorExpression } from "../src/codegen/locator.js";
 import { writeGeneratedSuite } from "../src/cli/generated-suite.js";
+import type { EvidenceEntry } from "../src/evidence/log.js";
 
 test("generated login helpers are typed and duplicate flow titles are unique", () => {
   const spec = generateSpec([
@@ -265,6 +267,63 @@ test("generated navigation rejects non-web URLs", () => {
       }],
     }], { url: "https://example.test" }),
     /Generated navigate URL must be a valid absolute http or https URL\./,
+  );
+});
+
+test("generated JavaScript escapes line terminators and regex locators safely", () => {
+  const value = "line 1\nline 2\r\n\u2028\u2029'\\";
+  const escaped = escapeJsString(value);
+  assert.equal(escaped, "line 1\\nline 2\\r\\n\\u2028\\u2029\\'\\\\");
+  assert.match(toLocatorExpression("text=/price.+tax/i"), /new RegExp\("price\.\+tax", "i"\)/);
+  assert.equal(serializeJsValue("line\u2028break"), '"line\\u2028break"');
+  assert.throws(
+    () => toLocatorExpression("text=/[/i"),
+    /Invalid text locator regular expression/,
+  );
+});
+
+test("codegen validates action inputs and never interpolates handleDialog behavior", () => {
+  const baseEntry = (name: string, input: Record<string, unknown>) => ({
+    index: 0,
+    flowIndex: 0,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    toolCall: { name, input },
+    network: [],
+    console: [],
+  });
+
+  assert.throws(
+    () => generateSpec([{ name: "Invalid dialog", entries: [baseEntry("handleDialog", { behavior: "accept(); hacked()" })] }], { url: "https://example.test" }),
+    /Cannot generate handleDialog: .*must be one of accept, dismiss/,
+  );
+  assert.throws(
+    () => generateSpec([{ name: "Invalid fill", entries: [baseEntry("fill", { locator: "#name", value: 42 })] }], { url: "https://example.test" }),
+    /Cannot generate fill: .*\.value must be a string/,
+  );
+
+  const spec = generateSpec([{ name: "Safe dialog", entries: [baseEntry("handleDialog", { behavior: "dismiss" })] }], { url: "https://example.test" });
+  assert.match(spec, /dialog\.dismiss\(\)/);
+  assert.doesNotMatch(spec, /dialog\.accept\(\); hacked/);
+});
+
+test("codegen rejects malformed expectations before interpolating them", () => {
+  const baseEntry = (expectation: Record<string, unknown>) => ({
+    index: 0,
+    flowIndex: 0,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    toolCall: { name: "verifyExpectation", input: { expectationIndex: 1, assertion: "visible" } },
+    result: { url: "https://example.test", snapshot: "", expectation },
+    network: [],
+    console: [],
+  }) as unknown as EvidenceEntry;
+
+  assert.throws(
+    () => generateSpec([{ name: "Invalid count", entries: [baseEntry({ status: "met", assertion: "count", locator: "#items", expectedCount: "0); hacked()" })] }], { url: "https://example.test" }),
+    /expectedCount must be a non-negative safe integer/,
+  );
+  assert.throws(
+    () => generateSpec([{ name: "Invalid assertion", entries: [baseEntry({ status: "met", assertion: "count; hacked()" })] }], { url: "https://example.test" }),
+    /assertion is invalid/,
   );
 });
 

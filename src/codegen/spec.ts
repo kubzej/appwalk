@@ -1,9 +1,12 @@
 import type { EvidenceEntry } from "../evidence/log.js";
 import { assertValidBurstCount } from "../limits.js";
 import { type ResponseFixture, type ResponseVariant } from "../response/variants.js";
-import { escapeJsString, toLocatorExpression } from "./locator.js";
+import { escapeJsString, serializeJsValue, toLocatorExpression } from "./locator.js";
 import { assertValidWebUrl } from "../url.js";
 import { LOGIN_CONTRACT } from "../browser/login-contract.js";
+import { TOOL_DEFINITIONS } from "../agent/tools.js";
+import { validateToolInput } from "../agent/validation.js";
+import type { ExpectationObservation } from "../types.js";
 
 export interface CodegenOptions {
   url: string;
@@ -429,19 +432,21 @@ function actionToStatement(
     case "waitFor":
       return `await ${locatorExpr()}.first().waitFor({ state: 'visible' });`;
     case "uploadFile":
-      return `await ${locatorExpr()}.setInputFiles(${JSON.stringify(input.filePaths)});`;
+      return `await ${locatorExpr()}.setInputFiles(${serializeJsValue(input.filePaths)});`;
     case "download":
       // A real, non-empty saved file, not just the event having fired — the same distinction the
       // live download() action checks (suggestedFilename() alone can't tell a real file from a
       // broken/empty one).
       return `{ const downloadPromise = page.waitForEvent('download'); await ${locatorExpr()}.click(); const download = await downloadPromise; expect(await download.failure()).toBeNull(); const downloadPath = await download.path(); expect(downloadPath).toBeTruthy(); if (downloadPath) { const downloadStats = await stat(downloadPath); expect(downloadStats.size).toBeGreaterThan(0); } }`;
     case "handleDialog":
-      return `page.once('dialog', (dialog) => dialog.${input.behavior as string}());`;
+      if (input.behavior !== "accept" && input.behavior !== "dismiss") {
+        throw new Error("Cannot generate handleDialog: behavior must be accept or dismiss.");
+      }
+      return `page.once('dialog', (dialog) => dialog.${input.behavior}());`;
     case "burst": {
       // Short on purpose, matching the real `burst()` — a repetition whose target is already gone
       // (an earlier one navigated away) should fail fast, not wait out Playwright's much longer default.
       const count = input.count;
-      assertValidBurstCount(count, "Cannot generate burst");
       const innerAction = input.action as string;
       const innerStatement =
         innerAction === "click"
@@ -490,7 +495,7 @@ function actionToStatement(
     case "apiRequest": {
       const method = escapeJsString((input.method as string) ?? "GET");
       const requestUrl = escapeJsString(input.url as string);
-      const headers = input.headers && typeof input.headers === "object" ? JSON.stringify(input.headers) : undefined;
+      const headers = input.headers && typeof input.headers === "object" ? serializeJsValue(input.headers) : undefined;
       return `await page.request.fetch('${requestUrl}', { method: '${method}'${headers ? `, headers: ${headers}` : ""} });`;
     }
     case "verifyExpectation":
@@ -501,8 +506,8 @@ function actionToStatement(
 }
 
 function expectationToStatement(entry: EvidenceEntry): string | null {
-  const observation = entry.result?.expectation;
-  if (!observation || observation.status !== "met") return null;
+  const observation = validateCodegenExpectation(entry.result?.expectation);
+  if (!observation) return null;
   const locator = observation.locator ? toLocatorExpression(observation.locator) : null;
   switch (observation.assertion) {
     case "visible":
@@ -540,6 +545,39 @@ function expectationToStatement(entry: EvidenceEntry): string | null {
     default:
       return null;
   }
+}
+
+function validateCodegenExpectation(value: unknown): ExpectationObservation | null {
+  if (value === undefined) return null;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Cannot generate expectation: expected an object.");
+  }
+
+  const observation = value as Record<string, unknown>;
+  if (observation.status !== "met") return null;
+
+  const assertions = new Set([
+    "visible", "hidden", "containsText", "urlContains", "urlEquals", "value",
+    "checked", "unchecked", "disabled", "enabled", "count", "unknown",
+  ]);
+  if (typeof observation.assertion !== "string" || !assertions.has(observation.assertion)) {
+    throw new Error("Cannot generate expectation: assertion is invalid.");
+  }
+  if (observation.locator !== undefined && typeof observation.locator !== "string") {
+    throw new Error("Cannot generate expectation: locator must be a string.");
+  }
+  if (observation.value !== undefined && typeof observation.value !== "string") {
+    throw new Error("Cannot generate expectation: value must be a string.");
+  }
+  if (
+    observation.expectedCount !== undefined
+    && (typeof observation.expectedCount !== "number"
+      || !Number.isSafeInteger(observation.expectedCount)
+      || observation.expectedCount < 0)
+  ) {
+    throw new Error("Cannot generate expectation: expectedCount must be a non-negative safe integer.");
+  }
+  return observation as unknown as ExpectationObservation;
 }
 
 function codegenViewportDimension(value: unknown, name: string): number {
@@ -597,7 +635,7 @@ function flowToTest(
   // item is present in the cart) and must run before later actions navigate away from that state.
   const bodyLines = toolCalls
     .flatMap((entry) => [
-      actionToStatement(entry.toolCall!.name, entry.toolCall!.input, fixtureScenario, needsTabRegistry),
+      actionToStatement(entry.toolCall!.name, validateCodegenToolInput(entry.toolCall!.name, entry.toolCall!.input), fixtureScenario, needsTabRegistry),
       expectationToStatement(entry),
     ])
     .filter((line): line is string => line !== null);
@@ -666,6 +704,18 @@ ${indentedBody}
     ...setupNavigationLines,
   ].map((line) => `  ${line}`).join("\n");
   return `test('${escapeJsString(testTitle)}', async (${fixtureParams}) => {\n${setup}\n${body}\n});`;
+}
+
+function validateCodegenToolInput(name: string, input: Record<string, unknown>): Record<string, unknown> {
+  const definition = TOOL_DEFINITIONS.find((candidate) => candidate.name === name);
+  if (!definition) throw new Error(`Cannot generate ${name}: unknown tool.`);
+  if (name === "burst") assertValidBurstCount(input.count, "Cannot generate burst");
+  try {
+    return validateToolInput(definition, input);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot generate ${name}: ${detail}`);
+  }
 }
 
 function fixtureFileContent(fixtures: ResponseFixture[]): string {

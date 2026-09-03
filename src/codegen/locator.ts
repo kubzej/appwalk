@@ -3,7 +3,20 @@ const TEXT_EXACT_PATTERN = /^text="([^"]*)"$/;
 const TEXT_REGEX_PATTERN = /^text=\/(.+)\/([a-z]*)$/;
 
 export function escapeJsString(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
+/** Serializes a JSON-compatible value for generated JavaScript, including legacy line terminators. */
+export function serializeJsValue(value: unknown): string {
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new Error("Cannot serialize value into generated JavaScript.");
+  return serialized.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
 
 /** Turns one of our internal Playwright locator strings into readable generated-test source. */
@@ -33,7 +46,14 @@ function toLocatorExpressionFromRoot(locator: string, root: string): string {
 
   const textRegexMatch = locator.match(TEXT_REGEX_PATTERN);
   if (textRegexMatch) {
-    return `${root}.getByText(/${textRegexMatch[1]}/${textRegexMatch[2]})`;
+    const pattern = textRegexMatch[1]!;
+    const flags = textRegexMatch[2]!;
+    try {
+      new RegExp(pattern, flags);
+    } catch (error) {
+      throw new Error(`Invalid text locator regular expression: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return `${root}.getByText(new RegExp(${serializeJsValue(pattern)}, ${serializeJsValue(flags)}))`;
   }
 
   // Not a shape we constrain the agent to (e.g. a raw [data-test="..."] fallback) — pass through as-is.
