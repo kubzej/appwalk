@@ -1,8 +1,9 @@
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ConsoleEntry, NetworkEntry, RuntimeErrorEntry, WebSocketFrameEntry } from "./recorder.js";
 import type { StepResult } from "../types.js";
 import { defaultRedactor, type Redactor } from "../security/redaction.js";
+import { formatArtifactIssues, MAX_ARTIFACT_FILE_BYTES, MAX_ARTIFACT_LINE_BYTES, validateEvidenceEntry } from "../artifacts/validation.js";
 
 export interface EvidenceEntry {
   index: number;
@@ -54,12 +55,25 @@ export class EvidenceLog {
 export function readEvidenceLog(path: string): EvidenceReadResult {
   const entries: EvidenceEntry[] = [];
   const issues: EvidenceReadIssue[] = [];
+  if (statSync(path).size > MAX_ARTIFACT_FILE_BYTES) {
+    throw new Error(`Evidence file exceeds the ${MAX_ARTIFACT_FILE_BYTES} byte safety limit: ${path}`);
+  }
   const lines = readFileSync(path, "utf-8").split("\n");
 
   for (const [index, line] of lines.entries()) {
     if (line.trim().length === 0) continue;
+    if (Buffer.byteLength(line, "utf8") > MAX_ARTIFACT_LINE_BYTES) {
+      issues.push({ line: index + 1, reason: `record exceeds the ${MAX_ARTIFACT_LINE_BYTES} byte safety limit` });
+      continue;
+    }
     try {
-      entries.push(JSON.parse(line) as EvidenceEntry);
+      const parsed: unknown = JSON.parse(line);
+      const validationIssues = validateEvidenceEntry(parsed, index + 1);
+      if (validationIssues.length > 0) {
+        issues.push({ line: index + 1, reason: formatArtifactIssues(validationIssues) });
+        continue;
+      }
+      entries.push(parsed as EvidenceEntry);
     } catch (error) {
       issues.push({
         line: index + 1,

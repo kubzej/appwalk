@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type FlowEntries } from "../codegen/spec.js";
 import { readEvidenceLog } from "../evidence/log.js";
@@ -10,6 +10,7 @@ import { createExecutionDirectory } from "./execution.js";
 import { logCodegenCompleted, logCodegenPlan } from "./codegen-log.js";
 import { appLogger } from "./logger-state.js";
 import { writeGeneratedSuite } from "./generated-suite.js";
+import { formatArtifactIssues, MAX_ARTIFACT_FILE_BYTES, validateDiscoveryManifest } from "../artifacts/validation.js";
 
 export interface DiscoveryManifestFlow {
   id: number;
@@ -74,12 +75,19 @@ function resolveDiscoveryInput(input: string): { manifestPath: string; inputDir:
   return { manifestPath, inputDir: dirname(manifestPath) };
 }
 
-function loadManifest(path: string): DiscoveryManifest {
-  const manifest = JSON.parse(readFileSync(path, "utf-8")) as DiscoveryManifest;
-  if ((manifest.version !== 1 && manifest.version !== 2) || !Array.isArray(manifest.flows)) {
-    throw new Error("Unsupported discovery manifest: " + path);
+export function loadManifest(path: string): DiscoveryManifest {
+  if (statSync(path).size > MAX_ARTIFACT_FILE_BYTES) {
+    throw new Error(`Discovery manifest exceeds the ${MAX_ARTIFACT_FILE_BYTES} byte safety limit: ${path}`);
   }
-  return manifest;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf-8"));
+  } catch (error) {
+    throw new Error(`Invalid discovery manifest ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const issues = validateDiscoveryManifest(parsed);
+  if (issues.length > 0) throw new Error(`Invalid discovery manifest ${path}: ${formatArtifactIssues(issues)}`);
+  return parsed as DiscoveryManifest;
 }
 
 function selectManifestFlows(manifest: DiscoveryManifest, selection: number[] | undefined): DiscoveryManifestFlow[] {
@@ -104,7 +112,7 @@ export function generateFromManifest(args: CliArgs): void {
   const manifest = loadManifest(manifestPath);
   const evidence = readEvidenceLog(join(inputDir, "evidence.jsonl"));
   if (evidence.issues.length > 0) {
-    appLogger.warn(`Evidence warning: skipped ${evidence.issues.length} malformed record${evidence.issues.length === 1 ? "" : "s"}`);
+    throw new Error(`Invalid evidence log ${join(inputDir, "evidence.jsonl")}: ${evidence.issues.map((issue) => `line ${issue.line}: ${issue.reason}`).slice(0, 8).join("; ")}`);
   }
   const entries = evidence.entries;
   const selected = selectManifestFlows(manifest, args.flowSelection);
