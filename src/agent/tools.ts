@@ -487,12 +487,13 @@ export async function executeToolCall(
   call: ToolCall,
   tabs?: TabRegistry,
   safety?: SafetyRequestOptions,
+  browserRestartHooks?: actions.BrowserRestartHooks,
 ): Promise<ToolCallResult> {
   const definition = TOOL_DEFINITIONS.find((tool) => tool.name === call.name);
   if (!definition) throw new Error(`Unknown tool: ${call.name}`);
   const validatedInput = validateToolInput(definition, call.input);
   const tabsBefore = tabs ? new Set(tabs.keys()) : undefined;
-  const result = await dispatchToolCall(page, { ...call, input: validatedInput }, tabs, safety);
+  const result = await dispatchToolCall(page, { ...call, input: validatedInput }, tabs, safety, browserRestartHooks);
   if (tabs && tabsBefore && call.name !== "openTab") {
     const newTabIds = [...tabs.keys()].filter((id) => !tabsBefore.has(id));
     if (newTabIds.length > 0) {
@@ -503,7 +504,13 @@ export async function executeToolCall(
   return result;
 }
 
-async function dispatchToolCall(page: Page, call: ToolCall, tabs?: TabRegistry, safety?: SafetyRequestOptions): Promise<ToolCallResult> {
+async function dispatchToolCall(
+  page: Page,
+  call: ToolCall,
+  tabs?: TabRegistry,
+  safety?: SafetyRequestOptions,
+  browserRestartHooks?: actions.BrowserRestartHooks,
+): Promise<ToolCallResult> {
   const input = call.input;
   switch (call.name) {
     case "navigate":
@@ -556,7 +563,7 @@ async function dispatchToolCall(page: Page, call: ToolCall, tabs?: TabRegistry, 
       return { ...result, snapshot: `${result.snapshot}\n\nSwitched to tab: ${tabId}. Open tabs: ${openIds} (active: ${tabId}).` };
     }
     case "reopenBrowser":
-      return actions.reopenBrowser(page);
+      return actions.reopenBrowser(page, browserRestartHooks);
     case "scroll":
       return actions.scroll(page, input.locator as string | undefined);
     case "setViewportSize":

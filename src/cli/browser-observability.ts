@@ -68,3 +68,57 @@ export async function stopTracing(context: BrowserContext, path: string, logger:
     logger.debug("tracing.stop_failed", "Failed to save Playwright trace", { error: logError(error) });
   }
 }
+
+export interface TraceSession {
+  beforeRestart: (page: Page) => Promise<void>;
+  afterRestart: (page: Page) => Promise<void>;
+  switchTo: (page: Page) => Promise<void>;
+  finish: () => Promise<void>;
+}
+
+/** Keeps an opt-in trace alive across `reopenBrowser`, which replaces the traced context. */
+export async function createTraceSession(
+  initialContext: BrowserContext,
+  basePath: string,
+  logger: Logger,
+): Promise<TraceSession> {
+  let currentContext: BrowserContext | undefined = initialContext;
+  let segment = 1;
+  await startTracing(initialContext, logger);
+
+  const segmentPath = () => segment === 1
+    ? basePath
+    : basePath.replace(/\.zip$/i, `-part-${segment}.zip`);
+
+  return {
+    beforeRestart: async () => {
+      if (!currentContext) return;
+      const context = currentContext;
+      currentContext = undefined;
+      await stopTracing(context, segmentPath(), logger);
+    },
+    afterRestart: async (page) => {
+      segment += 1;
+      currentContext = page.context();
+      await startTracing(currentContext, logger);
+    },
+    switchTo: async (page) => {
+      const nextContext = page.context();
+      if (currentContext === nextContext) return;
+      if (currentContext) {
+        const previousContext = currentContext;
+        currentContext = undefined;
+        await stopTracing(previousContext, segmentPath(), logger);
+      }
+      segment += 1;
+      currentContext = nextContext;
+      await startTracing(currentContext, logger);
+    },
+    finish: async () => {
+      if (!currentContext) return;
+      const context = currentContext;
+      currentContext = undefined;
+      await stopTracing(context, segmentPath(), logger);
+    },
+  };
+}

@@ -14,6 +14,12 @@ export type ClickButton = 'left' | 'right' | 'middle';
 export type ClickModifier = 'Alt' | 'Control' | 'Meta' | 'Shift';
 type ClickOptions = { button?: ClickButton; modifiers?: ClickModifier[] };
 
+/** Hooks for run-level services that must follow a browser replacement, such as tracing. */
+export interface BrowserRestartHooks {
+  beforeRestart?: (page: Page) => Promise<void>;
+  afterRestart?: (page: Page) => Promise<void>;
+}
+
 /** Applies Appwalk's timeout contract to every page, including pages from a new context. */
 export function configurePageTimeouts(page: Page): void {
   page.setDefaultTimeout(ACTION_TIMEOUT_MS);
@@ -267,7 +273,7 @@ export async function switchTab(target: Page): Promise<StepResult & { activePage
  * captures cookies + localStorage, but NOT sessionStorage — Playwright's storageState API doesn't
  * carry it, which matches how a real browser restart also drops sessionStorage), closes the browser,
  * launches a fresh one from that saved state, and navigates back to the same URL. */
-export async function reopenBrowser(page: Page): Promise<StepResult & { activePage: Page }> {
+export async function reopenBrowser(page: Page, hooks?: BrowserRestartHooks): Promise<StepResult & { activePage: Page }> {
   const url = page.url();
   // Without `indexedDB: true`, Playwright's storageState snapshot omits IndexedDB entirely — that
   // would make this simulation lose IndexedDB data a real browser restart/new-tab actually keeps.
@@ -277,12 +283,14 @@ export async function reopenBrowser(page: Page): Promise<StepResult & { activePa
   // Relaunches whichever engine was actually running (chromium/firefox/webkit), not hardcoded —
   // a run configured for firefox must reopen as firefox, not silently switch engines mid-flow.
   const browserType = browser.browserType();
+  await hooks?.beforeRestart?.(page);
   await browser.close();
   const newBrowser = await browserType.launch();
   try {
     const newPage = await newBrowser.newPage({ storageState });
     configurePageTimeouts(newPage);
     await newPage.goto(url);
+    await hooks?.afterRestart?.(newPage);
     const result = await stepResultWithStorage(newPage);
     return { ...result, activePage: newPage };
   } catch (error) {

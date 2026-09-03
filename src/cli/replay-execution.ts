@@ -16,8 +16,8 @@ import { Redactor } from "../security/redaction.js";
 import {
   attachCrashDetection,
   attachPopupDetection,
-  startTracing,
-  stopTracing,
+  createTraceSession,
+  type TraceSession,
 } from "./browser-observability.js";
 import { closeTrackedContexts, deviceContextOptions } from "./browser-lifecycle.js";
 
@@ -25,6 +25,7 @@ export interface ReplayExecutionInput {
   replayBrowser: Browser;
   flow: FlowResult;
   flowIndex: number;
+  runId: string;
   actions: ToolCall[];
   expectedExpectations: ExpectationObservation[];
   args: CliArgs;
@@ -51,6 +52,7 @@ export async function executeReplay(input: ReplayExecutionInput): Promise<Replay
     replayBrowser: initialBrowser,
     flow,
     flowIndex,
+    runId,
     actions,
     args,
     persona,
@@ -77,6 +79,7 @@ export async function executeReplay(input: ReplayExecutionInput): Promise<Replay
 
   let replayResult: ReplayResult | undefined;
   let replayBrowser = initialBrowser;
+  let traceSession: TraceSession | undefined;
   try {
     await navigateOrLogin(
       replayPage,
@@ -89,7 +92,9 @@ export async function executeReplay(input: ReplayExecutionInput): Promise<Replay
     const replayRecorder = new EvidenceRecorder(replayContext, flowLogger, { redactor });
     setActiveRecorder(replayRecorder);
     attachCrashDetection(replayPage, replayRecorder);
-    if (args.trace) await startTracing(replayContext, flowLogger);
+    if (args.trace) {
+      traceSession = await createTraceSession(replayContext, joinTracePath(args, runId, flowIndex), flowLogger);
+    }
     replayResult = await replay(
       replayPage,
       actions,
@@ -101,6 +106,7 @@ export async function executeReplay(input: ReplayExecutionInput): Promise<Replay
       getSafetyBlockCount,
       undefined,
       async (newPage) => {
+        await traceSession?.switchTo(newPage);
         trackedContexts.add(newPage.context());
         await installDestructiveActionGuard(newPage.context(), guardOptions);
         attachPopupDetection(newPage, flowLogger, replayTabRegistryHandle);
@@ -108,12 +114,13 @@ export async function executeReplay(input: ReplayExecutionInput): Promise<Replay
       },
       replayTabRegistryHandle,
       guardOptions,
+      traceSession,
     );
     const activeBrowser = replayResult.finalPage.context().browser();
     if (activeBrowser && activeBrowser !== replayBrowser) replayBrowser = activeBrowser;
     return { replayBrowser, replayResult, replayRecorder };
   } finally {
-    if (args.trace) await stopTracing(replayContext, joinTracePath(args, flowIndex), flowLogger);
+    await traceSession?.finish();
     if (replayResult) {
       const finalContext = replayResult.finalPage.context();
       await replayResult.finalPage.close();
@@ -123,6 +130,6 @@ export async function executeReplay(input: ReplayExecutionInput): Promise<Replay
   }
 }
 
-function joinTracePath(args: CliArgs, flowIndex: number): string {
-  return join(args.output, "traces", `flow-${flowIndex + 1}.zip`);
+function joinTracePath(args: CliArgs, runId: string, flowIndex: number): string {
+  return join(args.output, "traces", `${runId}-flow-${flowIndex + 1}.zip`);
 }

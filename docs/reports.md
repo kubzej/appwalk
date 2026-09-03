@@ -9,6 +9,8 @@ appwalk-output/
     report.json
     discovery.json
     evidence.jsonl
+    trace-exploration-run-1.zip  # only with --trace; one or more segments if the browser is reopened
+    traces/                       # replay traces, named per run and flow
     discovered.spec.ts       # only when run generated confirmed flows
     auth.ts                   # shared credential login helper, when credentials are used
     .secrets.json             # local credentials sidecar, when credential login is used

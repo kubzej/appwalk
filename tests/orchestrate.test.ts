@@ -5,8 +5,8 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { chromium, devices } from "playwright";
-import { attachCrashDetection, attachPopupDetection, attachWebSocketCapture, deviceContextOptions, startTracing, stopTracing, writeDiscoveryArtifacts, type ExplorationBatch } from "../src/cli/orchestrate.js";
+import { chromium, devices, type Browser } from "playwright";
+import { attachCrashDetection, attachPopupDetection, attachWebSocketCapture, createTraceSession, deviceContextOptions, startTracing, stopTracing, writeDiscoveryArtifacts, type ExplorationBatch } from "../src/cli/orchestrate.js";
 import type { Persona } from "../src/agent/personas.js";
 import { executeToolCall, type TabRegistryHandle } from "../src/agent/tools.js";
 import { EvidenceRecorder } from "../src/evidence/recorder.js";
@@ -457,6 +457,38 @@ test("stopTracing tolerates a context that closed mid-run instead of crashing th
 
     await assert.doesNotReject(stopTracing(context, join(directory, "trace.zip"), logger));
   } finally {
+    await browser.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("trace session follows reopenBrowser into a second trace segment", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "appwalk-trace-reopen-"));
+  const logger = new Logger("quiet");
+  const browser = await chromium.launch({ headless: true });
+  let reopenedBrowser: Browser | undefined;
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto("data:text/html,<h1>before restart</h1>");
+    const traceSession = await createTraceSession(context, join(directory, "flow.zip"), logger);
+    const result = await executeToolCall(
+      page,
+      { id: "reopen", name: "reopenBrowser", input: {} },
+      undefined,
+      undefined,
+      traceSession,
+    );
+    reopenedBrowser = result.activePage?.context().browser() ?? undefined;
+    await traceSession.finish();
+
+    for (const tracePath of [join(directory, "flow.zip"), join(directory, "flow-part-2.zip")]) {
+      const stats = statSync(tracePath);
+      assert.ok(stats.size > 0, `trace segment must not be empty: ${tracePath}`);
+      assert.equal(readFileSync(tracePath).subarray(0, 4).toString("hex"), "504b0304");
+    }
+  } finally {
+    await reopenedBrowser?.close();
     await browser.close();
     rmSync(directory, { recursive: true, force: true });
   }

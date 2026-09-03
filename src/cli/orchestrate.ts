@@ -41,12 +41,11 @@ import {
   attachCrashDetection,
   attachPopupDetection,
   attachWebSocketCapture,
-  startTracing,
-  stopTracing,
+  createTraceSession,
 } from "./browser-observability.js";
 
 export { deviceContextOptions } from "./browser-lifecycle.js";
-export { attachCrashDetection, attachPopupDetection, attachWebSocketCapture, startTracing, stopTracing } from "./browser-observability.js";
+export { attachCrashDetection, attachPopupDetection, attachWebSocketCapture, createTraceSession, startTracing, stopTracing } from "./browser-observability.js";
 
 export interface ExplorationRun {
   runId: string;
@@ -271,7 +270,9 @@ async function exploreAndVerifyInBrowser(
   activeRecorder = recorder;
   attachCrashDetection(page, recorder);
   attachWebSocketCapture(page, recorder);
-  if (args.trace) await startTracing(context, runLogger);
+  const traceSession = args.trace
+    ? await createTraceSession(context, join(args.output, `trace-exploration-${runId}.zip`), runLogger)
+    : undefined;
 
   runLogger.phase("  Exploring application");
   const discovery = await runAgentLoop(page, createProvider(provider, model, apiKey, redactor, runLogger), {
@@ -286,6 +287,7 @@ async function exploreAndVerifyInBrowser(
     tabRegistryHandle,
     redactor,
     safety: guardOptions,
+    browserRestartHooks: traceSession,
     // A new tab (openTab, openInNewTab, reopenBrowser) is a fresh Page — the destructive-action guard
     // is installed with `page.route`, which is page-scoped and does not follow a page switch on its own.
     // A same-context switch (openTab, switchTab) is already covered by the context-level guard
@@ -293,6 +295,7 @@ async function exploreAndVerifyInBrowser(
     // so both re-run here unconditionally — cheap no-ops for the former, essential for the latter.
     // Popup detection is page-scoped either way and always needs (re-)attaching.
     onActivePageChange: async (newPage) => {
+      await traceSession?.switchTo(newPage);
       await installDestructiveActionGuard(newPage.context(), guardOptions);
       attachPopupDetection(newPage, runLogger, tabRegistryHandle);
       attachCrashDetection(newPage, recorder);
@@ -318,7 +321,7 @@ async function exploreAndVerifyInBrowser(
   });
   runLogger.debug("exploration.finalization_started", "Finalizing exploration evidence and browser session");
   await recorder.waitForPendingBodies();
-  if (args.trace) await stopTracing(context, join(args.output, "trace-exploration.zip"), runLogger);
+  await traceSession?.finish();
   await closeBrowserWithTimeout(discovery.finalPage.context().browser(), runLogger, "exploration");
   runLogger.debug("exploration.finalization_completed", "Exploration cleanup completed");
   const explorationBlockedRequests = safetyEvents.filter((event) => event.phase === "exploration").length;
@@ -365,6 +368,7 @@ async function exploreAndVerifyInBrowser(
           replayBrowser,
           flow,
           flowIndex: index,
+          runId,
           actions,
           expectedExpectations,
           args,

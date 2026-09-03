@@ -3,7 +3,7 @@ import { executeToolCall } from "../agent/tools.js";
 import type { TabRegistryHandle } from "../agent/tools.js";
 import type { VerificationMode } from "../agent/verification.js";
 import { verifyFlow } from "../agent/verification.js";
-import { configurePageTimeouts } from "../browser/actions.js";
+import { configurePageTimeouts, type BrowserRestartHooks } from "../browser/actions.js";
 import { captureSnapshot } from "../browser/snapshot.js";
 import type { EvidenceEntry } from "../evidence/log.js";
 import type { EvidenceRecorder } from "../evidence/recorder.js";
@@ -71,6 +71,8 @@ export async function replay(
   tabRegistryHandle: TabRegistryHandle = { tabs: new Map() },
   /** The same request safety policy used during exploration, including direct apiRequest calls. */
   safety?: SafetyRequestOptions,
+  /** Called immediately before and after `reopenBrowser` replaces the browser context. */
+  browserRestartHooks?: BrowserRestartHooks,
 ): Promise<ReplayResult> {
   const flowStartUrl = page.url();
   const flowStartSnapshot = await captureSnapshot(page);
@@ -108,7 +110,7 @@ export async function replay(
   for (const [index, action] of actions.entries()) {
     logger?.debug("replay.step_started", "Replay action started", { stepIndex: index, action: action.name, input: action.input });
     try {
-      const result = await executeToolCall(page, action, tabRegistryHandle.tabs, safety);
+      const result = await executeToolCall(page, action, tabRegistryHandle.tabs, safety, browserRestartHooks);
       steps.push(result);
       finalUrl = result.url;
       if (result.activePage) {

@@ -58,7 +58,7 @@ Requirements below are evaluated after command-line values and the explicitly pa
 | `--scope <text>` | `run`, `explore` | Never | Natural-language area or objective for the exploration. It can be used independently to focus discovery. |
 | `--expect <text>` | `run`, `explore` | Only with `--scope` | User-visible acceptance criterion. Repeatable. |
 | `--screenshots` | `run`, `explore` | Never | Captures a screenshot after actions for providers/models with vision support. |
-| `--trace` | `run`, `explore` | Never | Saves a Playwright trace (`.zip`, viewable with `npx playwright show-trace`) for exploration and each replayed flow. |
+| `--trace` | `run`, `explore` | Never | Saves Playwright trace archives (`.zip`, viewable with `npx playwright show-trace`) for exploration and each replayed flow. A flow that replaces its browser with `reopenBrowser` is split into numbered trace segments. |
 | `--config <path>` | `run`, `explore` | Only when using YAML configuration | Explicit YAML config. Config files are not auto-discovered. |
 | `--flows <ids>` | `generate` | Never | Comma-separated flow IDs, for example `1,3`. Selected flows must be replay-confirmed. |
 | `--response-variant-max <number>` | `run`, `explore` | Never | Enables up to this many LLM-proposed response scenarios per confirmed base flow. `0` disables them. |
