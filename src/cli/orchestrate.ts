@@ -255,8 +255,7 @@ async function exploreAndVerifyInBrowser(
       await traceSession?.switchTo(page);
     },
   });
-  appLogger.phase("  Launching browser");
-  const browser = await browserLifecycle.launchBrowser();
+  const browser = await runLogger.task("Launching browser", () => browserLifecycle.launchBrowser());
   try {
 
   // All contexts/pages in exploration are created through the lifecycle adapter. That keeps the
@@ -267,8 +266,7 @@ async function exploreAndVerifyInBrowser(
   attachPopupDetection(page, runLogger, tabRegistryHandle);
   const runEntries: EvidenceEntry[] = [];
 
-  runLogger.phase("  Navigating to application URL");
-  await navigateOrLogin(page, args, false, args.url, runLogger);
+  await runLogger.task("Navigating to application URL", () => navigateOrLogin(page, args, false, args.url, runLogger));
   // Start recording after setup so login and token-refresh traffic never become application
   // fixtures. Also context-scoped, for the same reason.
   const recorder = new EvidenceRecorder(context, runLogger, { redactor });
@@ -280,7 +278,7 @@ async function exploreAndVerifyInBrowser(
   await browserLifecycle.prepareContext(context);
   await browserLifecycle.preparePage(page);
 
-  runLogger.phase("  Exploring application");
+  runLogger.phase("Exploring application");
   const discovery = await runAgentLoop(page, createProvider(provider, model, apiKey, redactor, runLogger), {
     maxSteps: args.maxSteps,
     recorder,
@@ -327,9 +325,9 @@ async function exploreAndVerifyInBrowser(
   runLogger.debug("exploration.finalization_completed", "Exploration cleanup completed");
   const explorationBlockedRequests = safetyEvents.filter((event) => event.phase === "exploration").length;
   if (explorationBlockedRequests > 0) {
-    runLogger.warn(`  Safety policy blocked ${explorationBlockedRequests} destructive request${explorationBlockedRequests === 1 ? "" : "s"} during exploration`);
+    runLogger.warn(`Safety policy blocked ${explorationBlockedRequests} destructive request${explorationBlockedRequests === 1 ? "" : "s"} during exploration`);
   }
-  runLogger.info(`  Exploration completed: ${discovery.flows.length} flow(s) found${discovery.exhausted ? "; action budget reached" : ""}`);
+  runLogger.info(`Exploration completed: ${discovery.flows.length} flow(s) found${discovery.exhausted ? "; action budget reached" : ""}`);
   runLogger.debug("exploration.completed", "Exploration completed", { flowsFound: discovery.flows.length, exhausted: discovery.exhausted });
 
   const verifiedFlows = discovery.flows
@@ -345,7 +343,7 @@ async function exploreAndVerifyInBrowser(
   let runError: string | undefined;
 
   if (verifiedFlows.length > 0) {
-    runLogger.phase(`  Verifying ${verifiedFlows.length} of ${discovery.flows.length} discovered flow(s) by replay in a clean session`);
+    runLogger.phase(`Verifying ${verifiedFlows.length} of ${discovery.flows.length} discovered flow(s) by replay in a clean session`);
     if (args.trace) mkdirSync(join(args.output, "traces"), { recursive: true });
     let replayBrowser: Browser | undefined;
     const replayContexts = new Set<BrowserContext>();
@@ -424,24 +422,24 @@ async function exploreAndVerifyInBrowser(
                   : undefined,
           };
           findings.push(finding);
-          flowLogger.warn(`    Flow ${index + 1}: ${confirmedFinding ? "finding confirmed" : "finding inconclusive"}${finding.failure ? ` (${finding.failure})` : ""}`);
+          flowLogger.warn(`Flow ${index + 1}: ${confirmedFinding ? "finding confirmed" : "finding inconclusive"}${finding.failure ? ` (${finding.failure})` : ""}`);
           continue;
         }
 
         if (!replayResult.reproduced) {
           if (replayResult.failedAt) {
-            flowLogger.warn(`    Flow ${index + 1} not confirmed: replay could not complete the ${replayResult.failedAt.action} action at step ${replayResult.failedAt.index + 1}`);
+            flowLogger.warn(`Flow ${index + 1} not confirmed: replay could not complete the ${replayResult.failedAt.action} action at step ${replayResult.failedAt.index + 1}`);
             flowLogger.debug("replay.step_failed", "Replay action failed", { stepIndex: replayResult.failedAt.index, action: replayResult.failedAt.action, error: replayResult.failedAt.error });
           } else if (!replayResult.expectationsReproduced) {
-            flowLogger.warn(`    Flow ${index + 1} not confirmed: expected result was not reproduced`);
+            flowLogger.warn(`Flow ${index + 1} not confirmed: expected result was not reproduced`);
           } else if (replayResult.safetyBlocked > 0) {
-            flowLogger.warn(`    Flow ${index + 1} not confirmed: replay was limited by safety policy (${replayResult.safetyBlocked} request${replayResult.safetyBlocked === 1 ? "" : "s"} blocked)`);
+            flowLogger.warn(`Flow ${index + 1} not confirmed: replay was limited by safety policy (${replayResult.safetyBlocked} request${replayResult.safetyBlocked === 1 ? "" : "s"} blocked)`);
           } else {
-            flowLogger.warn(`    Flow ${index + 1} not confirmed: expected final state was not reached`);
+            flowLogger.warn(`Flow ${index + 1} not confirmed: expected final state was not reached`);
           }
           continue;
         }
-        flowLogger.success(`    Flow ${index + 1} replay confirmed`);
+        flowLogger.success(`Flow ${index + 1} replay confirmed`);
         replayConfirmedIds.push(index + 1);
         const baseFlow: ConfirmedFlow = {
           name: flow.finalText || "Flow " + (index + 1),
@@ -513,14 +511,14 @@ async function exploreAndVerifyInBrowser(
       } finally {
         const replayBlockedRequests = safetyEvents.filter((event) => event.phase === "replay").length;
         if (replayBlockedRequests > 0) {
-          runLogger.warn(`  Safety policy blocked ${replayBlockedRequests} destructive request${replayBlockedRequests === 1 ? "" : "s"} during replay`);
+          runLogger.warn(`Safety policy blocked ${replayBlockedRequests} destructive request${replayBlockedRequests === 1 ? "" : "s"} during replay`);
         }
         await closeTrackedContexts(replayContexts, runLogger, "replay finalization");
         await closeBrowserWithTimeout(replayBrowser, runLogger, "replay");
       }
     } catch (error) {
       runError = logError(error);
-      runLogger.error(`  Replay stopped before all discovered flows were verified: ${runError}`);
+      runLogger.error(`Replay stopped before all discovered flows were verified: ${runError}`);
       runLogger.debug("replay.incomplete", "Replay stopped with partial results", {
         confirmedFlows: confirmedFlows.length,
         replayConfirmed: replayConfirmedIds.length,
@@ -529,7 +527,7 @@ async function exploreAndVerifyInBrowser(
       });
     }
   } else {
-    runLogger.warn("  No flows were ready for replay");
+    runLogger.warn("No flows were ready for replay");
   }
 
   const summarizedRuntimeErrors = summarizeRuntimeErrors(runtimeErrorEntries);
@@ -588,11 +586,12 @@ export async function exploreCoverage(args: CliArgs, executionId: string, signal
   const configuredRuns = createCoverageRuns(args);
   for (const [runIndex, configuredRun] of configuredRuns.entries()) {
     const personaLabel = configuredRun.args.personaName ?? configuredRun.name;
+    const batchRunLogger = appLogger.child({ persona: personaLabel });
     appLogger.phase(`Persona ${runIndex + 1}/${configuredRuns.length}: ${personaLabel}`);
     try {
       const run = await exploreAndVerify(configuredRun.args, evidenceLog, configuredRun.id, configuredRun.name, signal);
       runs.push(run);
-      appLogger.phase(`  Summary: ${run.replayConfirmedIds.length} of ${run.discovery?.flows.length ?? 0} discovered flow(s) replay-confirmed`, {
+      batchRunLogger.phase(`Summary: ${run.replayConfirmedIds.length} of ${run.discovery?.flows.length ?? 0} discovered flow(s) replay-confirmed`, {
         runId: configuredRun.id,
         flowsFound: run.discovery?.flows.length ?? 0,
         replayConfirmed: run.replayConfirmedIds.length,
@@ -604,12 +603,12 @@ export async function exploreCoverage(args: CliArgs, executionId: string, signal
           : runOutcome(run).stopReason === "no_progress"
             ? "exploration stopped after repeated no-progress attempts"
             : "exploration ended before the next flow was completed";
-        appLogger.warn(`  Coverage incomplete for ${personaLabel}: ${reason}`);
+        batchRunLogger.warn(`Coverage incomplete: ${reason}`);
       }
     } catch (error) {
       if (signal?.aborted) throw error;
       const message = error instanceof Error ? error.message : String(error);
-      appLogger.error(`  Persona failed: ${message}`);
+      batchRunLogger.error(`Persona failed: ${message}`);
       runs.push({
         runId: configuredRun.id,
         runName: configuredRun.name,
@@ -630,7 +629,7 @@ export async function exploreCoverage(args: CliArgs, executionId: string, signal
 
   const evidence = readEvidenceLog(evidencePath);
   if (evidence.issues.length > 0) {
-    appLogger.warn(`  Evidence warning: skipped ${evidence.issues.length} malformed record${evidence.issues.length === 1 ? "" : "s"}`);
+    appLogger.warn(`Evidence warning: skipped ${evidence.issues.length} malformed record${evidence.issues.length === 1 ? "" : "s"}`);
     appLogger.debug("evidence.records_skipped", "Malformed evidence records were skipped", { issues: evidence.issues });
   }
   const allEntries = evidence.entries;

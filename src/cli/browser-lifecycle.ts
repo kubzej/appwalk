@@ -26,7 +26,7 @@ export async function closeBrowserWithTimeout(browser: Browser | null | undefine
   ]);
   if (timeoutId !== undefined) clearTimeout(timeoutId);
   if (!closed) {
-    logger.warn(`  Browser cleanup exceeded ${BROWSER_CLOSE_TIMEOUT_MS}ms; continuing finalization`);
+    logger.warn(`Browser cleanup exceeded ${BROWSER_CLOSE_TIMEOUT_MS}ms; continuing finalization`);
     logger.debug("browser.close_timeout", "Browser close did not finish before the cleanup deadline", { phase, timeoutMs: BROWSER_CLOSE_TIMEOUT_MS });
   } else {
     logger.debug("browser.close_completed", "Browser cleanup completed", { phase });
@@ -51,7 +51,7 @@ export async function closeContextWithTimeout(context: BrowserContext, logger: L
   ]);
   if (timeoutId !== undefined) clearTimeout(timeoutId);
   if (!closed) {
-    logger.warn(`  Browser context cleanup exceeded ${BROWSER_CLOSE_TIMEOUT_MS}ms; continuing finalization`);
+    logger.warn(`Browser context cleanup exceeded ${BROWSER_CLOSE_TIMEOUT_MS}ms; continuing finalization`);
     logger.debug("browser.context_close_timeout", "Browser context close did not finish before the cleanup deadline", { phase, timeoutMs: BROWSER_CLOSE_TIMEOUT_MS });
   } else {
     logger.debug("browser.context_close_completed", "Browser context cleanup completed", { phase });

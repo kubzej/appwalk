@@ -88,7 +88,7 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
   let variants = [] as Awaited<ReturnType<typeof proposeResponseVariants>>["variants"];
 
   try {
-    flowLogger.verbose(`    Flow ${flowIndex + 1}: planning response scenarios`);
+    flowLogger.verbose(`Flow ${flowIndex + 1}: planning response scenarios`);
     const planning = await proposeResponseVariants(
       provider,
       model,
@@ -108,14 +108,14 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
     responseVariantAudit.plannerReason = planning.reason;
     responseVariantAudit.proposed = variants.length;
     responseVariantAudit.planningStatus = planning.incomplete ? "incomplete" : "completed";
-    flowLogger.verbose(`    Flow ${flowIndex + 1}: response planner proposals=${planning.candidates}, accepted=${planning.variants.length}, rejected=${planning.rejected}`);
-    if (planning.reason) flowLogger.verbose(`    Flow ${flowIndex + 1}: response planner note: ${planning.reason}`);
+    flowLogger.verbose(`Flow ${flowIndex + 1}: response planner proposals=${planning.candidates}, accepted=${planning.variants.length}, rejected=${planning.rejected}`);
+    if (planning.reason) flowLogger.verbose(`Flow ${flowIndex + 1}: response planner note: ${planning.reason}`);
   } catch (error) {
     const reason = (error as Error).message;
     responseVariantAudit.planningStatus = "failed";
     responseVariantAudit.plannerReason = reason;
     responseVariantAudit.skipped.push({ name: "planner", reason });
-    flowLogger.warn(`    Flow ${flowIndex + 1}: response scenario planning skipped`);
+    flowLogger.warn(`Flow ${flowIndex + 1}: response scenario planning skipped`);
     flowLogger.debug("response_variants.planning_failed", "Response variant planning failed", { error: reason });
   }
 
@@ -226,17 +226,17 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
               : variantResult.variantExpectationResult?.expectation?.status !== "met"
                 ? "The derived expectation was not observed after the source response was applied."
                 : variantResult.expectationsReproduced ? "Replay did not satisfy the flow verification." : "Replay did not reproduce the original expectation signals." });
-        flowLogger.verbose(`      Response scenario "${variant.name}": replay failed`);
+        flowLogger.verbose(`Response scenario "${variant.name}": replay failed`);
         continue;
       }
       if (variantExpectationResult?.expectation?.status !== "met") {
       responseVariantAudit.skipped.push({ name: variant.name, reason: "The derived expectation was not observed after the source response was applied." });
-        flowLogger.verbose(`      Response scenario "${variant.name}": expectation not observed`);
+        flowLogger.verbose(`Response scenario "${variant.name}": expectation not observed`);
         continue;
       }
       if (!hasObservableReplayDifference(baselineReplayResult, variantResult)) {
         responseVariantAudit.skipped.push({ name: variant.name, reason: "The response patch caused no observable UI difference." });
-        flowLogger.verbose(`      Response scenario "${variant.name}": no observable UI difference`);
+        flowLogger.verbose(`Response scenario "${variant.name}": no observable UI difference`);
         continue;
       }
 
@@ -269,14 +269,14 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
       });
       responseVariantAudit.confirmed += 1;
       responseVariantAudit.confirmedScenarios.push(variant.name);
-      flowLogger.verbose(`      Response scenario "${variant.name}": replay confirmed`);
+      flowLogger.verbose(`Response scenario "${variant.name}": replay confirmed`);
     } catch (error) {
       await closeTrackedContexts(trackedContexts, flowLogger, `flow ${flowIndex + 1} response variant ${variantIndex + 1} failure`);
       responseVariantAudit.skipped.push({ name: variant.name, reason: (error as Error).message });
-      flowLogger.verbose(`      Response scenario "${variant.name}": replay skipped`);
+      flowLogger.verbose(`Response scenario "${variant.name}": replay skipped`);
       flowLogger.debug("response_variant.failed", "Response scenario replay failed", { name: variant.name, error: (error as Error).message });
     }
   }
-  flowLogger.verbose(`    Flow ${flowIndex + 1}: response scenarios accepted=${responseVariantAudit.proposed}, rejected=${responseVariantAudit.plannerRejected}, confirmed=${responseVariantAudit.confirmed}, skipped=${responseVariantAudit.skipped.length}`);
+  flowLogger.verbose(`Flow ${flowIndex + 1}: response scenarios accepted=${responseVariantAudit.proposed}, rejected=${responseVariantAudit.plannerRejected}, confirmed=${responseVariantAudit.confirmed}, skipped=${responseVariantAudit.skipped.length}`);
   return { replayBrowser, confirmedFlows, runtimeErrorEntries };
 }

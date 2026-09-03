@@ -11,6 +11,7 @@ import { logCodegenCompleted, logCodegenPlan } from "./codegen-log.js";
 import { appLogger } from "./logger-state.js";
 import { writeGeneratedSuite } from "./generated-suite.js";
 import { formatArtifactIssues, MAX_ARTIFACT_FILE_BYTES, validateDiscoveryManifest } from "../artifacts/validation.js";
+import { renderArtifactPanel, type ArtifactRow } from "../report/terminal-summary.js";
 
 export interface DiscoveryManifestFlow {
   id: number;
@@ -155,8 +156,12 @@ export function generateFromManifest(args: CliArgs): void {
     storageStatePath,
   });
   logCodegenCompleted(appLogger, "generate", flows);
-  appLogger.result("done:\n  execution:                           " + execution.path + "\n  test suite (" + flows.length + " test(s)): " + generatedSuite.specPath +
-    (generatedSuite.fixtureHelperPath ? "\n  fixtures:                             " + generatedSuite.fixtureHelperPath : "") +
-    (generatedSuite.credentialsPath ? "\n  local credentials:                    " + generatedSuite.credentialsPath : "") +
-    (generatedSuite.storageStatePath ? "\n  local storage state:                 " + generatedSuite.storageStatePath : ""));
+  const rows: ArtifactRow[] = [
+    { label: "execution", value: execution.path },
+    { label: `test suite (${flows.length})`, value: generatedSuite.specPath },
+    ...(generatedSuite.fixtureHelperPath ? [{ label: "fixtures", value: generatedSuite.fixtureHelperPath }] : []),
+    ...(generatedSuite.credentialsPath ? [{ label: "local credentials", value: generatedSuite.credentialsPath }] : []),
+    ...(generatedSuite.storageStatePath ? [{ label: "local storage state", value: generatedSuite.storageStatePath }] : []),
+  ];
+  process.stdout.write(renderArtifactPanel("Generated", rows));
 }

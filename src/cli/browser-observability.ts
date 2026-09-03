@@ -17,12 +17,12 @@ export function attachPopupDetection(page: Page, logger: Logger, tabRegistryHand
   popupInstrumentedPages.add(page);
   page.on("popup", (popup) => {
     configurePageTimeouts(popup);
-    logger.verbose(`  The page opened a new tab on its own: ${popup.url()}`);
+    logger.verbose(`The page opened a new tab on its own: ${popup.url()}`);
     logger.debug("browser.popup_opened", "The page opened a popup", { url: popup.url() });
     if (tabRegistryHandle) {
       const newId = `tab-${tabRegistryHandle.tabs.size}`;
       tabRegistryHandle.tabs.set(newId, popup);
-      logger.verbose(`  Registered as ${newId}; switchTab can reach it.`);
+      logger.verbose(`Registered as ${newId}; switchTab can reach it.`);
       logger.debug("browser.popup_registered", "Popup registered as an addressable tab", { tabId: newId, url: popup.url() });
     }
   });

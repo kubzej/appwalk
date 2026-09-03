@@ -7,9 +7,9 @@ import { exploreCoverage, redactorForArgs, writeDiscoveryArtifacts } from "./orc
 import { writeExecutionReport } from "./report.js";
 import { logCodegenCompleted, logCodegenPlan } from "./codegen-log.js";
 import { appLogger, setAppLogger } from "./logger-state.js";
-import { Logger, logError } from "../logging/logger.js";
+import { Logger, chip, logError, streamSupportsColor } from "../logging/logger.js";
 import { writeGeneratedSuite } from "./generated-suite.js";
-import { join } from "node:path";
+import { renderArtifactPanel, renderExecutionSummary, renderRows, type ArtifactRow } from "../report/terminal-summary.js";
 import type { CliArgs } from "./args.js";
 import { EXIT_CODES } from "../exit-codes.js";
 
@@ -19,6 +19,10 @@ interface ResolvedRunLog {
   maxSteps: number;
   scope?: string;
   expectations: string[];
+  /** True only when this run's config explicitly overrides the global scope/expect — so the
+   * Configuration panel can show the global value once instead of repeating it per run. */
+  scopeOverridden: boolean;
+  expectationsOverridden: boolean;
 }
 
 function resolvedRuns(args: CliArgs): ResolvedRunLog[] {
@@ -29,6 +33,8 @@ function resolvedRuns(args: CliArgs): ResolvedRunLog[] {
       maxSteps: run.maxSteps ?? args.maxSteps,
       scope: run.scope ?? args.scope,
       expectations: run.expect !== undefined ? run.expect : args.expectations,
+      scopeOverridden: run.scope !== undefined,
+      expectationsOverridden: run.expect !== undefined,
     }));
   }
   const persona = args.personaName ?? "default";
@@ -38,6 +44,8 @@ function resolvedRuns(args: CliArgs): ResolvedRunLog[] {
     maxSteps: args.maxSteps,
     scope: args.scope,
     expectations: args.expectations,
+    scopeOverridden: false,
+    expectationsOverridden: false,
   }];
 }
 
@@ -47,6 +55,7 @@ function oneLine(value: string): string {
 
 function logResolvedConfiguration(args: CliArgs): void {
   const runs = resolvedRuns(args);
+  const colorEnabled = streamSupportsColor(process.stderr);
   const auth = args.email && args.password
     ? `credentials (${oneLine(args.email)})`
     : args.storageStatePath
@@ -56,33 +65,48 @@ function logResolvedConfiguration(args: CliArgs): void {
     ? "destructive requests allowed"
     : `blocked methods: ${args.blockMethods.join(", ")}`;
 
-  appLogger.phase("Configuration");
-  appLogger.info(`  Source: ${args.configPath ?? "CLI arguments"}`);
-  appLogger.info(`  Target: ${args.url}`);
-  appLogger.info(`  Provider: ${args.provider}`);
-  appLogger.info(`  Model: ${args.model}`);
-  appLogger.info(`  Browser: ${args.browserEngine}`);
-  appLogger.info(`  Output root: ${args.output}`);
-  appLogger.info(`  Authentication: ${auth}`);
-  appLogger.info(`  Screenshots: ${args.screenshots ? "enabled" : "disabled"}`);
-  appLogger.info(`  Response variants: ${(args.responseVariantMax ?? 0) > 0 ? `up to ${args.responseVariantMax}` : "disabled"}`);
-  appLogger.info(`  Response fixture limit: ${args.responseFixtureMaxBytes !== undefined ? `${args.responseFixtureMaxBytes} bytes` : "default"}`);
-  appLogger.info(`  Safety: ${safety}${args.safetyConfigPath ? `; URL rules: ${args.safetyConfigPath}` : ""}`);
-  appLogger.info(`  Runs: ${runs.length}`);
+  const rows: ArtifactRow[] = [
+    { label: "source", value: args.configPath ?? "CLI arguments" },
+    { label: "target", value: args.url },
+    { label: "provider", value: String(args.provider) },
+    { label: "model", value: String(args.model) },
+    { label: "browser", value: args.browserEngine },
+    { label: "output root", value: args.output },
+    { label: "authentication", value: auth },
+    { label: "screenshots", value: args.screenshots ? "enabled" : "disabled" },
+    { label: "response variants", value: (args.responseVariantMax ?? 0) > 0 ? `up to ${args.responseVariantMax}` : "disabled" },
+    { label: "response fixture limit", value: args.responseFixtureMaxBytes !== undefined ? `${args.responseFixtureMaxBytes} bytes` : "default" },
+    { label: "safety", value: `${safety}${args.safetyConfigPath ? `; URL rules: ${args.safetyConfigPath}` : ""}` },
+    { label: "runs", value: String(runs.length) },
+    ...(args.scope ? [{ label: "scope", value: oneLine(args.scope) }] : []),
+    ...(args.scope && args.expectations.length > 0 ? [{ label: "expectations", value: String(args.expectations.length) }] : []),
+  ];
+  const lines = renderRows(rows, colorEnabled);
+  if (args.scope && args.expectations.length > 0) {
+    args.expectations.forEach((expectation, index) => lines.push(`    ${index + 1}. ${oneLine(expectation)}`));
+  }
+  // Each run only lists what actually distinguishes it (persona, max steps) plus scope/expect
+  // when THAT run overrides the global value — repeating an identical global scope three times
+  // over is noise, not information.
   runs.forEach((run, index) => {
-    appLogger.info(`    Run ${index + 1}: ${run.name}`);
-    appLogger.info(`      Persona: ${run.persona}`);
-    appLogger.info(`      Max steps: ${run.maxSteps}`);
-    appLogger.info(`      Scope: ${run.scope ? oneLine(run.scope) : "none"}`);
-    if (run.expectations.length === 0) {
-      appLogger.info("      Expectations: none");
-    } else {
-      appLogger.info(`      Expectations: ${run.expectations.length}`);
+    lines.push("");
+    const runRows: ArtifactRow[] = [
+      { label: `run ${index + 1}`, value: run.name },
+      { label: "persona", value: run.persona },
+      { label: "max steps", value: String(run.maxSteps) },
+      ...(run.scopeOverridden ? [{ label: "scope", value: run.scope ? oneLine(run.scope) : "none" }] : []),
+      ...(run.expectationsOverridden ? [{ label: "expectations", value: String(run.expectations.length) }] : []),
+    ];
+    lines.push(...renderRows(runRows, colorEnabled));
+    if (run.expectationsOverridden) {
       run.expectations.forEach((expectation, expectationIndex) => {
-        appLogger.info(`        ${expectationIndex + 1}. ${oneLine(expectation)}`);
+        lines.push(`    ${expectationIndex + 1}. ${oneLine(expectation)}`);
       });
     }
   });
+
+  appLogger.info(`\n${chip("Configuration", colorEnabled)}`);
+  appLogger.info(lines.join("\n"));
 }
 
 function resolvedConfigurationDetails(args: CliArgs): Record<string, unknown> {
@@ -138,23 +162,19 @@ async function main() {
   const executionCommand: "explore" | "run" = args.command === "explore" ? "explore" : "run";
 
   const batch = await withProcessCancellation((signal) => exploreCoverage(executionArgs, execution.id, signal));
-  const manifestPath = writeDiscoveryArtifacts(batch);
-  appLogger.result("done:\n  execution:                           " + execution.path +
-    "\n  report JSON:                         " + join(executionArgs.output, "report.json") +
-    "\n  report HTML:                         " + join(executionArgs.output, "report.html") +
-    "\n  discovery bundle:                   " + manifestPath +
-    "\n  evidence:                           " + batch.evidencePath);
+  writeDiscoveryArtifacts(batch);
 
   if (executionArgs.command === "explore") {
     const report = writeExecutionReport(batch, executionCommand, execution, 0);
     process.exitCode = report.exitCode;
-    appLogger.result(`summary: ${report.summary.runs} persona(s), ${report.summary.flowsFound} flow(s) found, ${report.summary.replayConfirmed} replay-confirmed`);
+    process.stdout.write(renderExecutionSummary(report, execution.path));
     return;
   }
   if (batch.confirmedFlows.length === 0) {
     const report = writeExecutionReport(batch, executionCommand, execution, 0);
     process.exitCode = report.exitCode;
-    appLogger.result("No confirmed regression flow to generate; see the execution report.");
+    appLogger.warn("No confirmed regression flow to generate; see the execution report.");
+    process.stdout.write(renderExecutionSummary(report, execution.path));
     return;
   }
 
@@ -167,21 +187,20 @@ async function main() {
     storageStatePath: executionArgs.storageStatePath,
   });
   logCodegenCompleted(appLogger, "run", batch.confirmedFlows);
-  appLogger.result("test suite (" + batch.confirmedFlows.length + " test(s)): " + generatedSuite.specPath);
-  if (generatedSuite.fixtureHelperPath) {
-    appLogger.result("fixtures: " + generatedSuite.fixtureHelperPath);
-  }
-  if (generatedSuite.credentialsPath) {
-    appLogger.result("local credentials: " + generatedSuite.credentialsPath);
-  }
-  if (generatedSuite.storageStatePath) {
-    appLogger.result("local storage state: " + generatedSuite.storageStatePath);
-  }
+
+  const generatedRows: ArtifactRow[] = [
+    { label: `test suite (${batch.confirmedFlows.length})`, value: generatedSuite.specPath },
+    ...(generatedSuite.fixtureHelperPath ? [{ label: "fixtures", value: generatedSuite.fixtureHelperPath }] : []),
+    ...(generatedSuite.credentialsPath ? [{ label: "local credentials", value: generatedSuite.credentialsPath }] : []),
+    ...(generatedSuite.storageStatePath ? [{ label: "local storage state", value: generatedSuite.storageStatePath }] : []),
+  ];
+  process.stdout.write(renderArtifactPanel("Generated", generatedRows));
+
   const report = writeExecutionReport(batch, executionCommand, execution, batch.confirmedFlows.length, {
     fixtures: generatedSuite.fixtureHelperPath ? "fixtures.ts" : undefined,
   });
   process.exitCode = report.exitCode;
-  appLogger.result(`summary: ${report.summary.runs} persona(s), ${report.summary.flowsFound} flow(s) found, ${report.summary.replayConfirmed} replay-confirmed, ${report.summary.generatedTests} test(s) generated`);
+  process.stdout.write(renderExecutionSummary(report, execution.path));
 }
 
 main().catch((err) => {

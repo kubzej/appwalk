@@ -91,7 +91,7 @@ export async function installDestructiveActionGuard(
     const decision = evaluateSafetyRequest(request.method(), url, options);
     if (decision.blocked) {
       options.onBlocked?.({ method: request.method(), url: safePath(url) });
-      options.logger?.verbose(`      Blocked destructive request: ${request.method()} ${safePath(url)}`);
+      options.logger?.verbose(`Blocked destructive request: ${request.method()} ${safePath(url)}`);
       options.logger?.debug("safety.request_blocked", "Destructive request blocked", {
         method: request.method(), url, matchedBlockRule: decision.matchedBlockRule, blockMethods: options.blockMethods ?? DEFAULT_BLOCK_METHODS,
       });
