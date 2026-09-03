@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import ts from "typescript";
 import { generateSpec, generateSpecBundle } from "../src/codegen/spec.js";
 import { writeGeneratedSuite } from "../src/cli/generated-suite.js";
 
@@ -144,6 +145,62 @@ test("generated suites copy supplied storage state beside the spec", () => {
   } finally {
     rmSync(sourceDirectory, { recursive: true, force: true });
     rmSync(outputDirectory, { recursive: true, force: true });
+  }
+});
+
+test("a representative generated suite compiles as TypeScript", () => {
+  // Keep this temporary directory below the repository so TypeScript resolves the same
+  // node_modules that a user has after installing Appwalk, including @playwright/test.
+  const directory = mkdtempSync(join(process.cwd(), ".appwalk-generated-compile-"));
+  try {
+    const output = writeGeneratedSuite(directory, [{
+      name: "Checkout flow",
+      title: "Checkout",
+      devicePreset: "Desktop Chrome",
+      entries: [{
+        index: 0,
+        flowIndex: 0,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        toolCall: { name: "click", input: { locator: "#checkout" } },
+        network: [],
+        console: [],
+      }],
+      responseFixtures: [{
+        method: "GET",
+        url: "https://example.test/api/cart",
+        occurrence: 1,
+        urlPattern: "https://example.test/api/*",
+        status: 200,
+        body: { items: [] },
+      }],
+    }], {
+      url: "https://example.test",
+      username: "tester",
+      password: "secret",
+    });
+    const sourcePaths = [
+      output.specPath,
+      join(directory, "auth.ts"),
+      output.fixtureHelperPath,
+    ].filter((path): path is string => path !== undefined && existsSync(path));
+    const program = ts.createProgram(sourcePaths, {
+      target: ts.ScriptTarget.ES2023,
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      strict: true,
+      noEmit: true,
+      skipLibCheck: true,
+      types: ["node"],
+    });
+    const errors = ts.getPreEmitDiagnostics(program).filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+    const details = ts.formatDiagnosticsWithColorAndContext(errors, {
+      getCanonicalFileName: (fileName) => fileName,
+      getCurrentDirectory: () => process.cwd(),
+      getNewLine: () => "\n",
+    });
+    assert.equal(errors.length, 0, details);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
