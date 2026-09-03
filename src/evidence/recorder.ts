@@ -8,6 +8,8 @@ export interface NetworkEntry {
   status?: number;
   /** Parsed JSON response body — only populated when content-type is application/json, and only once the async read settles (see waitForPendingBodies). */
   body?: unknown;
+  /** True when the body read exceeded the configured timeout and the entry was finalized without a body. */
+  bodyReadTimedOut?: boolean;
 }
 
 export interface ConsoleEntry {
@@ -193,21 +195,32 @@ export class EvidenceRecorder {
   private async readJsonBody(response: { json: () => Promise<unknown>; url: () => string }, entry: NetworkEntry): Promise<void> {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
+    let finalized = false;
     try {
       await new Promise<void>((resolve) => {
         timeoutId = setTimeout(() => {
+          if (finalized) return;
+          finalized = true;
           timedOut = true;
+          entry.bodyReadTimedOut = true;
           resolve();
         }, this.bodyReadTimeoutMs);
         try {
           response.json()
             .then((body) => {
+              if (finalized) return;
+              finalized = true;
               entry.body = this.redactor.redact(body); // mutates the already-pushed entry, order unaffected
               resolve();
             })
-            .catch(() => resolve());
+            .catch(() => {
+              if (finalized) return;
+              finalized = true;
+              resolve();
+            });
         } catch {
           // Not actually available (redirected, empty, malformed despite the header) — leave unset.
+          finalized = true;
           resolve();
         }
       });

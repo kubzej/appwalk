@@ -79,6 +79,29 @@ test("does not block cleanup on a JSON response body that never settles", async 
   await recorder.waitForPendingBodies();
 
   assert.equal(recorder.network[0]?.body, undefined);
+  assert.equal(recorder.network[0]?.bodyReadTimedOut, true);
+});
+
+test("does not mutate evidence when a timed-out JSON body resolves later", async () => {
+  const context = new EventEmitter() as unknown as BrowserContext;
+  const recorder = new EvidenceRecorder(context, undefined, { bodyReadTimeoutMs: 10 });
+  let resolveBody!: (body: unknown) => void;
+  const bodyPromise = new Promise<unknown>((resolve) => { resolveBody = resolve; });
+  const response = {
+    request: () => ({ method: () => "GET" }),
+    url: () => "https://example.test/api/slow",
+    status: () => 200,
+    headers: () => ({ "content-type": "application/json" }),
+    json: () => bodyPromise,
+  } as unknown as Response;
+
+  (context as unknown as { emit: (event: string, value: unknown) => boolean }).emit("response", response);
+  await recorder.waitForPendingBodies();
+  resolveBody({ arrivedAfterFinalization: true });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(recorder.network[0]?.body, undefined);
+  assert.equal(recorder.network[0]?.bodyReadTimedOut, true);
 });
 
 test("captures network and console activity from a second page in the same context with no reattach", async () => {
