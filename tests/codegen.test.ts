@@ -168,6 +168,25 @@ test("generates iframe locators and expanded actions as Playwright APIs", () => 
   assert.match(spec, /page\.locator\('#tags'\)\.selectOption\(\['one', 'three'\]\);/);
 });
 
+test("generated tab flows register popups opened by the application", () => {
+  const spec = generateSpec([
+    {
+      name: "OAuth popup flow",
+      entries: [
+        { index: 0, flowIndex: 0, timestamp: "2026-01-01T00:00:00.000Z", toolCall: { name: "click", input: { locator: "role=button[name=\"Continue\"]" } }, network: [], console: [] },
+        { index: 1, flowIndex: 0, timestamp: "2026-01-01T00:00:00.000Z", toolCall: { name: "switchTab", input: { tabId: "tab-1" } }, network: [], console: [] },
+      ],
+    },
+  ], { url: "https://example.test" });
+
+  assert.match(spec, /const popupPages = new WeakSet<typeof page>\(\);/);
+  assert.match(spec, /sourcePage\.on\('popup', \(popup\) => \{/);
+  assert.match(spec, /tabs\[newId\] = popup;/);
+  assert.match(spec, /registerPopupPage\(popup\);/);
+  assert.match(spec, /registerPopupPage\(page\);/);
+  assert.match(spec, /page = tabs\['tab-1'\];/);
+});
+
 test("generates a genuine context-wide setOffline call, not a route mock", () => {
   const spec = generateSpec([
     {

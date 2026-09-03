@@ -345,7 +345,12 @@ export async function installFixtures(context: BrowserContext, fixtures: Respons
 }
 `;
 
-function actionToStatement(name: string, input: Record<string, unknown>, fixtureScenario?: string): string | null {
+function actionToStatement(
+  name: string,
+  input: Record<string, unknown>,
+  fixtureScenario?: string,
+  trackPopups = false,
+): string | null {
   const locatorExpr = () => toLocatorExpression(input.locator as string);
   const sourceLocatorExpr = () => toLocatorExpression(input.source as string);
   const targetLocatorExpr = () => toLocatorExpression(input.target as string);
@@ -406,20 +411,20 @@ function actionToStatement(name: string, input: Record<string, unknown>, fixture
     // `page.context().newPage()` — Playwright rejects a second page on the implicit context every page
     // in this codebase is created with ("Please use browser.newContext()").
     case "openInNewTab":
-      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); const newContext = await browser.newContext({ storageState }); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url); }`;
+      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); const newContext = await browser.newContext({ storageState }); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url);${trackPopups ? " registerPopupPage(page);" : ""} }`;
     // A genuine second page of the *same* context — real, live-shared cookies/localStorage, like two
     // real browser tabs — rather than a storageState clone into a fresh context. `tabs` maps every tab
     // id ever opened to its page, mirroring the runtime tab registry: the id formula
     // (`tab-${count so far}`) must match it exactly, since a later switchTab statement was recorded
     // against the id the runtime assigned.
     case "openTab":
-      return `{ const url = page.url(); const newPage = await page.context().newPage(); await newPage.goto(url); tabs[\`tab-\${Object.keys(tabs).length}\`] = page = newPage; }`;
+      return `{ const url = page.url(); const newPage = await page.context().newPage(); await newPage.goto(url); tabs[\`tab-\${Object.keys(tabs).length}\`] = page = newPage;${trackPopups ? " registerPopupPage(newPage);" : ""} }`;
     case "switchTab":
       return `page = tabs['${escapeJsString(input.tabId as string)}'];`;
     // Closes just the context, not the shared `browser` fixture the test runner owns — closing that
     // would break the runner, not just this one test's simulated "browser restart".
     case "reopenBrowser":
-      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); await page.context().close(); const newContext = await browser.newContext({ storageState }); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url); }`;
+      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); await page.context().close(); const newContext = await browser.newContext({ storageState }); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url);${trackPopups ? " registerPopupPage(page);" : ""} }`;
     case "scroll":
       return input.locator ? `await ${locatorExpr()}.scrollIntoViewIfNeeded();` : `await page.mouse.wheel(0, 10000);`;
     case "setViewportSize":
@@ -570,11 +575,30 @@ function flowToTest(
   fixtureScenario?: string,
 ): string {
   const toolCalls = flow.entries.filter((entry) => entry.toolCall && !entry.error && entry.toolCall.name !== "flowComplete");
+  // The runtime registers app-opened popups as tab-1, tab-2, ... so a later switchTab can reach
+  // them. Generated tests need the same registry whenever a flow switches tabs.
+  const needsTabRegistry = toolCalls.some(
+    (entry) => entry.toolCall!.name === "openTab" || entry.toolCall!.name === "switchTab",
+  );
+  const tabRegistrySetup = needsTabRegistry ? [
+    "const tabs: Record<string, typeof page> = { 'tab-0': page };",
+    "const popupPages = new WeakSet<typeof page>();",
+    "function registerPopupPage(sourcePage: typeof page): void {",
+    "  if (popupPages.has(sourcePage)) return;",
+    "  popupPages.add(sourcePage);",
+    "  sourcePage.on('popup', (popup) => {",
+    "    const newId = 'tab-' + Object.keys(tabs).length;",
+    "    tabs[newId] = popup;",
+    "    registerPopupPage(popup);",
+    "  });",
+    "}",
+    "registerPopupPage(page);",
+  ] : [];
   // Preserve the original timeline: an expectation may describe an intermediate state (e.g. an
   // item is present in the cart) and must run before later actions navigate away from that state.
   const bodyLines = toolCalls
     .flatMap((entry) => [
-      actionToStatement(entry.toolCall!.name, entry.toolCall!.input, fixtureScenario),
+      actionToStatement(entry.toolCall!.name, entry.toolCall!.input, fixtureScenario, needsTabRegistry),
       expectationToStatement(entry),
     ])
     .filter((line): line is string => line !== null);
@@ -583,13 +607,7 @@ function flowToTest(
   // A recorded final expectation can already express the flow completion signal. Avoid emitting
   // the same assertion again as a generic confirmation fallback.
   const finalAssertion = assertion && bodyLines.includes(assertion) ? null : assertion;
-  // `openTab`/`switchTab` (Talia) need an id -> page map alongside `page` itself — declared once,
-  // right where `page` is first bound, only when the flow actually uses either tool.
-  const needsTabRegistry = toolCalls.some(
-    (entry) => entry.toolCall!.name === "openTab" || entry.toolCall!.name === "switchTab",
-  );
-  const allBodyLines = needsTabRegistry ? ["const tabs: Record<string, typeof page> = { 'tab-0': page };", ...bodyLines] : bodyLines;
-  const body = [...allBodyLines, finalAssertion].filter((line): line is string => line !== null).map((line) => `  ${line}`).join("\n");
+  const body = [...bodyLines, finalAssertion].filter((line): line is string => line !== null).map((line) => `  ${line}`).join("\n");
 
   // `openInNewTab`/`reopenBrowser` need the `browser` fixture to open a fresh context from; `openTab`
   // only needs `page.context()`, since it stays in the same context. Every other action only ever
@@ -624,6 +642,7 @@ function flowToTest(
       .map((line) => `  ${line}`)
       .join("\n");
     const setupLines = [
+      ...tabRegistrySetup,
       ...(fixtureScenario ? [`await installFixtures(page.context(), loadScenario('${escapeJsString(fixtureScenario)}'));`] : []),
       ...setupNavigationLines,
     ].map((line) => `  ${line}`).join("\n");
@@ -640,6 +659,7 @@ ${indentedBody}
   }
 
   const setup = [
+    ...tabRegistrySetup,
     ...(fixtureScenario ? [
       `const responseFixtures = loadScenario('${escapeJsString(fixtureScenario)}');`,
       "await installFixtures(page.context(), responseFixtures);",
