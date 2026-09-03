@@ -77,6 +77,7 @@ export async function replay(
   const flowStartUrl = page.url();
   const flowStartSnapshot = await captureSnapshot(page);
   const replayNetworkStart = recorder?.network.length ?? 0;
+  const replayRuntimeErrorStart = recorder?.runtimeErrors.length ?? 0;
   tabRegistryHandle.tabs = new Map([["tab-0", page]]);
   const steps: StepResult[] = [];
   let variantExpectationResult: import("../agent/tools.js").ToolCallResult | undefined;
@@ -158,6 +159,7 @@ export async function replay(
     finalUrl,
     finalSnapshot,
     network: recorder?.network.slice(replayNetworkStart) ?? [],
+    runtimeErrors: recorder?.runtimeErrors.slice(replayRuntimeErrorStart) ?? [],
     expectations: [
       ...replayedExpectations,
       ...(variantExpectationResult?.expectation ? [variantExpectationResult.expectation] : []),

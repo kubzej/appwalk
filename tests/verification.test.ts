@@ -36,6 +36,31 @@ test("completion does not treat an unrelated state-changing request as success",
   })), false);
 });
 
+test("recovery recognizes a transport failure without an HTTP status", () => {
+  assert.equal(verifyFlow("recovery", context({
+    finalSnapshot: "- heading: Successfully completed",
+    runtimeErrors: [{
+      kind: "request_failed",
+      message: "net::ERR_INTERNET_DISCONNECTED",
+      method: "POST",
+      url: "https://example.test/api/save",
+    }],
+  })), true);
+});
+
+test("recovery ignores lifecycle cancellation as a transport failure", () => {
+  assert.equal(verifyFlow("recovery", context({
+    finalSnapshot: "- heading: Successfully completed",
+    runtimeErrors: [{
+      kind: "request_failed",
+      message: "net::ERR_ABORTED",
+      method: "GET",
+      url: "https://example.test/form",
+      lifecycle: true,
+    }],
+  })), false);
+});
+
 test("rejection ignores an alert that existed before the flow", () => {
   assert.equal(verifyFlow("rejection", context({
     flowStartSnapshot: "- alert: Invalid email\n- heading: Sign in",

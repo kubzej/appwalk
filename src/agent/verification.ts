@@ -1,4 +1,4 @@
-import type { NetworkEntry } from "../evidence/recorder.js";
+import type { NetworkEntry, RuntimeErrorEntry } from "../evidence/recorder.js";
 import { looksLikeSuccessByNetwork, looksLikeSuccessBySnapshot, looksLikeSuccessByUrl } from "./success.js";
 import type { ExpectationObservation } from "../types.js";
 
@@ -18,6 +18,8 @@ export interface VerificationContext {
   finalUrl: string;
   finalSnapshot: string;
   network: NetworkEntry[];
+  /** Runtime failures observed during this flow, including transport failures without HTTP status. */
+  runtimeErrors?: RuntimeErrorEntry[];
   /** Concrete signals checked by verifyExpectation during this flow. */
   expectations?: ExpectationObservation[];
 }
@@ -46,8 +48,12 @@ function hasObservableChange(ctx: VerificationContext): boolean {
   return ctx.finalUrl !== ctx.flowStartUrl || ctx.finalSnapshot !== ctx.flowStartSnapshot;
 }
 
-function hasFailedRequest(network: NetworkEntry[]): boolean {
-  return network.some((entry) => entry.status !== undefined && entry.status >= 400);
+function hasFailedRequest(ctx: VerificationContext): boolean {
+  const httpFailure = ctx.network.some((entry) => entry.status !== undefined && entry.status >= 400);
+  const transportFailure = ctx.runtimeErrors?.some(
+    (error) => error.kind === "request_failed" && !error.lifecycle && !error.safetyRelated,
+  ) ?? false;
+  return httpFailure || transportFailure;
 }
 
 /** A generic proxy for "probably an unwanted duplicate side effect" — the same state-changing endpoint
@@ -91,7 +97,7 @@ function looksLikeRejection(ctx: VerificationContext): boolean {
     hasNewMatchingLine(ctx.flowStartSnapshot, ctx.finalSnapshot, ALERT_PATTERN) ||
     hasNewMatchingLine(ctx.flowStartSnapshot, ctx.finalSnapshot, INVALID_FIELD_PATTERN);
   if (newAlertOrInvalidMarker) return true;
-  return hasObservableChange(ctx) && hasFailedRequest(ctx.network) &&
+  return hasObservableChange(ctx) && hasFailedRequest(ctx) &&
     !looksLikeSuccessByNetwork(ctx.network, ctx.finalUrl) &&
     !looksLikeSuccessBySnapshot(ctx.finalSnapshot);
 }
@@ -105,7 +111,7 @@ function looksLikeStability(ctx: VerificationContext): boolean {
 }
 
 function looksLikeRecovery(ctx: VerificationContext): boolean {
-  return hasFailedRequest(ctx.network) && looksLikeCompletion(ctx);
+  return hasFailedRequest(ctx) && looksLikeCompletion(ctx);
 }
 
 function looksLikeCompletion(ctx: VerificationContext): boolean {

@@ -322,6 +322,7 @@ export async function runAgentLoop(
   let flowIndex = 0;
   let flowStartIndex = 0;
   let flowNetworkStart = options.recorder?.network.length ?? 0;
+  let flowRuntimeErrorStart = options.recorder?.runtimeErrors.length ?? 0;
   let flowStartUrl = initialSnapshot.url;
   let flowStartSnapshot = initialSnapshot.snapshot;
   let flowStartStorageState = JSON.stringify(await page.context().storageState({ indexedDB: true }));
@@ -417,6 +418,7 @@ export async function runAgentLoop(
           finalUrl: url,
           finalSnapshot: snapshot,
           network,
+          runtimeErrors: options.recorder?.runtimeErrors.slice(flowRuntimeErrorStart) ?? [],
           expectations: actionHistory.flatMap((step) => step.result?.expectation ? [step.result.expectation] : []),
         });
 
@@ -462,6 +464,7 @@ export async function runAgentLoop(
         flowIndex += 1;
         flowStartIndex = history.length;
         flowNetworkStart = options.recorder?.network.length ?? 0;
+        flowRuntimeErrorStart = options.recorder?.runtimeErrors.length ?? 0;
         flowStartUrl = restartSnapshot.url;
         flowStartSnapshot = restartSnapshot.snapshot;
         flowStartStorageState = JSON.stringify(await page.context().storageState({ indexedDB: true }));
