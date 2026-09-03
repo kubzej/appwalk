@@ -8,6 +8,8 @@ export interface RateLimitState {
   requestsResetAt?: number;
 }
 
+export const MAX_RATE_LIMIT_WAIT_MS = 60_000;
+
 import type { Logger } from "../logging/logger.js";
 
 interface TrackedRateLimit extends RateLimitState {
@@ -58,8 +60,22 @@ function headerResetAt(headers: Headers, ...names: string[]): number | undefined
   return undefined;
 }
 
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error("Operation was cancelled."));
+      return;
+    }
+    const timeoutId = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timeoutId);
+      reject(signal?.reason ?? new Error("Operation was cancelled."));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /**
@@ -83,8 +99,11 @@ export function rateLimitRetryDelayMs(headers: Headers, fallbackMs = 5_000): num
   );
   const requestResetAt = headerResetAt(headers, "x-ratelimit-reset-requests", "anthropic-ratelimit-requests-reset");
   const resets = [tokenResetAt, requestResetAt].filter((value): value is number => value !== undefined);
-  if (resets.length === 0) return fallbackMs;
-  return Math.max(Math.max(...resets) - Date.now() + RATE_LIMIT_RETRY_SAFETY_MARGIN_MS, RATE_LIMIT_RETRY_SAFETY_MARGIN_MS);
+  if (resets.length === 0) return Math.min(fallbackMs, MAX_RATE_LIMIT_WAIT_MS);
+  return Math.min(
+    Math.max(Math.max(...resets) - Date.now() + RATE_LIMIT_RETRY_SAFETY_MARGIN_MS, RATE_LIMIT_RETRY_SAFETY_MARGIN_MS),
+    MAX_RATE_LIMIT_WAIT_MS,
+  );
 }
 
 /**
@@ -95,7 +114,7 @@ export function rateLimitRetryDelayMs(headers: Headers, fallbackMs = 5_000): num
 export class RateLimitCoordinator {
   private readonly states = new Map<string, TrackedRateLimit>();
 
-  async beforeRequest(key: string, estimatedTokens: number, logger?: Logger): Promise<void> {
+  async beforeRequest(key: string, estimatedTokens: number, logger?: Logger, signal?: AbortSignal): Promise<void> {
     const state = this.states.get(key);
     if (!state) return;
 
@@ -143,11 +162,15 @@ export class RateLimitCoordinator {
       return;
     }
 
+    if (waitMs > MAX_RATE_LIMIT_WAIT_MS) {
+      throw new Error(`Provider rate-limit wait of ${Math.ceil(waitMs / 1000)}s exceeds the ${Math.ceil(MAX_RATE_LIMIT_WAIT_MS / 1000)}s safety limit.`);
+    }
+
     logger?.warn(`API quota reached (${reason} limit). Waiting ${Math.ceil(waitMs / 1000)}s before continuing.`);
     logger?.debug("provider.rate_limit_wait", "Waiting for the provider rate-limit window to reset", {
       key, reason, remainingTokens: state.remainingTokens, remainingRequests: state.remainingRequests, estimatedTokens, waitMs,
     });
-    await sleep(waitMs);
+    await sleep(waitMs, signal);
     // Only the dimension that actually triggered the wait is cleared — the other window's last
     // observed counters are still valid until its own reset time.
     if (reason === "token") {
@@ -169,8 +192,11 @@ export class RateLimitCoordinator {
     const state = this.states.get(key);
     if (!state) return fallbackMs;
     const resets = [state.resetAt, state.requestsResetAt].filter((value): value is number => value !== undefined);
-    if (resets.length === 0) return fallbackMs;
-    return Math.max(Math.max(...resets) - Date.now() + RATE_LIMIT_RETRY_SAFETY_MARGIN_MS, RATE_LIMIT_RETRY_SAFETY_MARGIN_MS);
+    if (resets.length === 0) return Math.min(fallbackMs, MAX_RATE_LIMIT_WAIT_MS);
+    return Math.min(
+      Math.max(Math.max(...resets) - Date.now() + RATE_LIMIT_RETRY_SAFETY_MARGIN_MS, RATE_LIMIT_RETRY_SAFETY_MARGIN_MS),
+      MAX_RATE_LIMIT_WAIT_MS,
+    );
   }
 
   observe(key: string, headers: Headers, inputTokens?: number): void {

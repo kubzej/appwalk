@@ -295,6 +295,8 @@ export async function runAgentLoop(
     tabRegistryHandle?: TabRegistryHandle;
     /** Shared policy for browser state retained in agent history or sent to a provider. */
     redactor?: Redactor;
+    /** Cancels the active provider request and any rate-limit backoff. */
+    signal?: AbortSignal;
     /** The same request safety policy used by the browser guard, including direct apiRequest calls. */
     safety?: SafetyRequestOptions;
     logger?: Logger;
@@ -323,6 +325,7 @@ export async function runAgentLoop(
     tools: TOOL_DEFINITIONS,
     initialInput: `Current page:\nURL: ${initialSnapshot.url}\n${clipForCheckpoint(initialSnapshot.snapshot, MODEL_SNAPSHOT_MAX_CHARS)}`,
     screenshot: initialScreenshot,
+    signal: options.signal,
   });
   options.logger?.debug("agent.turn_started", "Agent context started", { flowIndex: 0, actionCount: 0 });
 
@@ -385,7 +388,7 @@ export async function runAgentLoop(
           toolCallId: turn.toolCall.id,
           toolName: turn.toolCall.name,
           result: `Error: ${message}`,
-        });
+        }, { signal: options.signal });
         continue;
       }
       const finalText = completionInput.summary as string;
@@ -484,6 +487,7 @@ export async function runAgentLoop(
           tools: TOOL_DEFINITIONS,
           initialInput: nextFlowInput(flows, restartSnapshot, stepsRemaining),
           screenshot: restartScreenshot,
+          signal: options.signal,
         });
         options.logger?.phase(`    Exploring flow ${flowIndex + 1}`);
         options.logger?.debug("agent.turn_started", "New agent context started for the next flow", { flowIndex, remainingSteps: stepsRemaining });
@@ -588,8 +592,9 @@ export async function runAgentLoop(
           toolName: toolCall.name,
           result: resultText,
           screenshot,
-        });
+        }, { signal: options.signal });
       } catch (err) {
+        if (options.signal?.aborted) throw err;
         options.logger?.debug("agent.finalization_failed", "Could not classify the final browser state", { error: (err as Error).message });
         break;
       }
@@ -604,6 +609,7 @@ export async function runAgentLoop(
         tools: TOOL_DEFINITIONS,
         initialInput: checkpointInput(history, flowStartIndex, currentSnapshot, flows, options.maxSteps - actionCount),
         screenshot,
+        signal: options.signal,
       });
       options.logger?.debug("agent.context_checkpoint", "Agent context checkpoint created", { actionCount, remainingSteps: options.maxSteps - actionCount });
     } else {
@@ -612,7 +618,7 @@ export async function runAgentLoop(
         toolName: toolCall.name,
         result: resultText,
         screenshot,
-      });
+      }, { signal: options.signal });
     }
   }
 

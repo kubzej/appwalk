@@ -1,5 +1,5 @@
 import type { Redactor } from "../security/redaction.js";
-import type { LlmProvider, ProviderTurn, ToolDefinition, ToolResult } from "./provider.js";
+import type { LlmProvider, ProviderCallOptions, ProviderTurn, ToolDefinition, ToolResult } from "./provider.js";
 
 /**
  * Enforces the data boundary immediately before an LLM adapter receives browser output.
@@ -18,6 +18,7 @@ export class RedactingProvider implements LlmProvider {
     initialInput: string;
     screenshot?: string;
     maxOutputTokens?: number;
+    signal?: AbortSignal;
   }): Promise<ProviderTurn> {
     return this.inner.start({
       ...params,
@@ -26,10 +27,10 @@ export class RedactingProvider implements LlmProvider {
     });
   }
 
-  continue(toolResult: ToolResult): Promise<ProviderTurn> {
+  continue(toolResult: ToolResult, options?: ProviderCallOptions): Promise<ProviderTurn> {
     return this.inner.continue({
       ...toolResult,
       result: this.redactor.text(toolResult.result),
-    });
+    }, options);
   }
 }

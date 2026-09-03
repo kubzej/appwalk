@@ -186,11 +186,11 @@ function validatePersona(args: CliArgs) {
   return persona;
 }
 
-async function exploreAndVerify(args: CliArgs, evidenceLog: EvidenceLog, runId: string, runName: string): Promise<ExplorationRun> {
+async function exploreAndVerify(args: CliArgs, evidenceLog: EvidenceLog, runId: string, runName: string, signal?: AbortSignal): Promise<ExplorationRun> {
   appLogger.phase("  Launching browser");
   const browser = await resolveBrowserType(args.browserEngine).launch();
   try {
-    return await exploreAndVerifyInBrowser(args, evidenceLog, runId, runName, browser);
+    return await exploreAndVerifyInBrowser(args, evidenceLog, runId, runName, browser, signal);
   } finally {
     await closeBrowserWithTimeout(browser, appLogger.child({ runId }), "exploration owner");
   }
@@ -202,6 +202,7 @@ async function exploreAndVerifyInBrowser(
   runId: string,
   runName: string,
   browser: Browser,
+  signal?: AbortSignal,
 ): Promise<ExplorationRun> {
   const persona = validatePersona(args);
   const runLogger = appLogger.child({ runId, persona: args.personaName ?? runName });
@@ -287,6 +288,7 @@ async function exploreAndVerifyInBrowser(
     tabRegistryHandle,
     redactor,
     safety: guardOptions,
+    signal,
     browserRestartHooks: traceSession,
     // A new tab (openTab, openInNewTab, reopenBrowser) is a fresh Page — the destructive-action guard
     // is installed with `page.route`, which is page-scoped and does not follow a page switch on its own.
@@ -574,7 +576,7 @@ function createCoverageRuns(args: CliArgs): Array<{ id: string; name: string; ar
   }));
 }
 
-export async function exploreCoverage(args: CliArgs, executionId: string): Promise<ExplorationBatch> {
+export async function exploreCoverage(args: CliArgs, executionId: string, signal?: AbortSignal): Promise<ExplorationBatch> {
   mkdirSync(args.output, { recursive: true });
   const evidencePath = join(args.output, "evidence.jsonl");
   const redactor = redactorForArgs(args);
@@ -586,7 +588,7 @@ export async function exploreCoverage(args: CliArgs, executionId: string): Promi
     const personaLabel = configuredRun.args.personaName ?? configuredRun.name;
     appLogger.phase(`Persona ${runIndex + 1}/${configuredRuns.length}: ${personaLabel}`);
     try {
-      const run = await exploreAndVerify(configuredRun.args, evidenceLog, configuredRun.id, configuredRun.name);
+      const run = await exploreAndVerify(configuredRun.args, evidenceLog, configuredRun.id, configuredRun.name, signal);
       runs.push(run);
       appLogger.phase(`  Summary: ${run.replayConfirmedIds.length} of ${run.discovery?.flows.length ?? 0} discovered flow(s) replay-confirmed`, {
         runId: configuredRun.id,
@@ -603,6 +605,7 @@ export async function exploreCoverage(args: CliArgs, executionId: string): Promi
         appLogger.warn(`  Coverage incomplete for ${personaLabel}: ${reason}`);
       }
     } catch (error) {
+      if (signal?.aborted) throw error;
       const message = error instanceof Error ? error.message : String(error);
       appLogger.error(`  Persona failed: ${message}`);
       runs.push({

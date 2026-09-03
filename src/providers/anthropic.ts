@@ -1,18 +1,15 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type {
   LlmProvider,
+  ProviderCallOptions,
   ProviderTurn,
   ToolDefinition,
   ToolResult,
 } from "./provider.js";
 import { AGENT_MAX_OUTPUT_TOKENS } from "./provider.js";
-import { estimateRequestTokens, rateLimitHeadersSummary, rateLimitRetryDelayMs, sharedRateLimitCoordinator, sleep } from "./rate-limit.js";
+import { estimateRequestTokens, rateLimitHeadersSummary, rateLimitRetryDelayMs, sharedRateLimitCoordinator } from "./rate-limit.js";
 import { Logger } from "../logging/logger.js";
-
-/** Retries a 429 this many times before giving up — each attempt waits for the window the
- * response itself reported, so this only helps a request that got caught behind another
- * request's usage, not one whose own size will never fit in a single window (see rate-limit.ts). */
-const MAX_RATE_LIMIT_RETRIES = 3;
+import { providerHeaders, providerStatus, withHostedProviderRequest, HOSTED_PROVIDER_REQUEST_TIMEOUT_MS } from "./request-policy.js";
 
 // TS can't verify a cache_control-bearing spread against a discriminated union (ContentBlockParam)
 // without collapsing it — cast through `object` and back to `T` rather than fighting the inference.
@@ -33,7 +30,7 @@ export class AnthropicProvider implements LlmProvider {
     // The SDK retries 429s by default with its own backoff, blind to the reset time in the
     // response headers. We disable that and retry ourselves (see send()) so the wait actually
     // matches the window the provider reported instead of a generic exponential guess.
-    this.client = new Anthropic({ apiKey, maxRetries: 0 });
+    this.client = new Anthropic({ apiKey, maxRetries: 0, timeout: HOSTED_PROVIDER_REQUEST_TIMEOUT_MS });
     this.model = model;
     this.logger = logger;
   }
@@ -44,6 +41,7 @@ export class AnthropicProvider implements LlmProvider {
     initialInput: string;
     screenshot?: string;
     maxOutputTokens?: number;
+    signal?: AbortSignal;
   }): Promise<ProviderTurn> {
     this.systemPrompt = params.systemPrompt;
     this.tools = params.tools.map((tool) => ({
@@ -59,10 +57,10 @@ export class AnthropicProvider implements LlmProvider {
       });
     }
     this.messages = [{ role: "user", content }];
-    return this.send(params.maxOutputTokens);
+    return this.send(params.maxOutputTokens, params.signal);
   }
 
-  async continue(toolResult: ToolResult): Promise<ProviderTurn> {
+  async continue(toolResult: ToolResult, options?: ProviderCallOptions): Promise<ProviderTurn> {
     // Anthropic lets an image ride inside the tool_result block itself, unlike the
     // OpenAI/Grok Responses API shape, which needs a separate synthetic user message.
     const resultContent: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [
@@ -84,10 +82,10 @@ export class AnthropicProvider implements LlmProvider {
         },
       ],
     });
-    return this.send();
+    return this.send(undefined, options?.signal);
   }
 
-  private async send(maxOutputTokens = AGENT_MAX_OUTPUT_TOKENS): Promise<ProviderTurn> {
+  private async send(maxOutputTokens = AGENT_MAX_OUTPUT_TOKENS, signal?: AbortSignal): Promise<ProviderTurn> {
     const requestIndex = ++this.requestIndex;
     // Cache breakpoints on the last tool, the system prompt, and the last message block —
     // both are identical every turn, and history only ever grows, so each breakpoint lets
@@ -120,42 +118,32 @@ export class AnthropicProvider implements LlmProvider {
       tool_choice: { type: "auto" as const, disable_parallel_tool_use: true },
     };
     this.logger.debug("provider.request_started", "Anthropic request started", { provider: "anthropic", model: this.model, requestIndex });
-    await sharedRateLimitCoordinator.beforeRequest(
-      `anthropic:${this.model}`,
-      estimateRequestTokens(request, maxOutputTokens),
-      this.logger,
-    );
-
-    let response: Anthropic.Message;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        const result = await this.client.messages.create(request).withResponse();
-        response = result.data;
-        sharedRateLimitCoordinator.observe(
+    const result = await withHostedProviderRequest<{ data: Anthropic.Message; response: { headers: Headers } }>(
+      async (attemptSignal) => this.client.messages.create(request, { signal: attemptSignal }).withResponse(),
+      {
+        provider: "Anthropic",
+        model: this.model,
+        requestIndex,
+        signal,
+        logger: this.logger,
+        beforeAttempt: (attemptSignal) => sharedRateLimitCoordinator.beforeRequest(
           `anthropic:${this.model}`,
-          result.response.headers,
-          response.usage.input_tokens + (response.usage.cache_creation_input_tokens ?? 0),
-        );
-        this.logger.debug("provider.rate_limits_observed", "Anthropic rate limits observed", { provider: "anthropic", model: this.model, requestIndex, rateLimit: rateLimitHeadersSummary(result.response.headers).trim() || undefined });
-        break;
-      } catch (error) {
-        const status = (error as { status?: number }).status;
-        if (status !== 429) throw error;
-
-        const headers = (error as { headers?: Headers }).headers;
-        const limitHint = headers ? rateLimitHeadersSummary(headers) : "";
-        if (attempt < MAX_RATE_LIMIT_RETRIES) {
-          const waitMs = headers ? rateLimitRetryDelayMs(headers) : 5_000;
-          this.logger.warn(`Anthropic rate limit hit; retrying in ${Math.ceil(waitMs / 1000)}s (attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES}).${limitHint}`);
-          this.logger.debug("provider.rate_limited", "Anthropic request was rate limited; retrying", { provider: "anthropic", model: this.model, requestIndex, attempt, waitMs, hint: limitHint });
-          await sleep(waitMs);
-          continue;
-        }
-        this.logger.debug("provider.rate_limited", "Anthropic request was rate limited; retries exhausted", { provider: "anthropic", model: this.model, requestIndex, hint: limitHint });
-        throw new Error(`Anthropic rate limit reached; retried ${MAX_RATE_LIMIT_RETRIES} times without success.${limitHint}`);
-      }
-    }
-
+          estimateRequestTokens(request, maxOutputTokens),
+          this.logger,
+          attemptSignal,
+        ),
+        retryDelayMs: (error) => providerStatus(error) === 429 && providerHeaders(error)
+          ? rateLimitRetryDelayMs(providerHeaders(error) as Headers)
+          : undefined,
+      },
+    );
+    const response: Anthropic.Message = result.data;
+    sharedRateLimitCoordinator.observe(
+      `anthropic:${this.model}`,
+      result.response.headers,
+      response.usage.input_tokens + (response.usage.cache_creation_input_tokens ?? 0),
+    );
+    this.logger.debug("provider.rate_limits_observed", "Anthropic rate limits observed", { provider: "anthropic", model: this.model, requestIndex, rateLimit: rateLimitHeadersSummary(result.response.headers).trim() || undefined });
     const { input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens } =
       response.usage;
     this.logger.debug("provider.response_received", "Anthropic response received", {

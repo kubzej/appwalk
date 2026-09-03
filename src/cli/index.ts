@@ -102,6 +102,24 @@ function resolvedConfigurationDetails(args: CliArgs): Record<string, unknown> {
   };
 }
 
+async function withProcessCancellation<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const onSignal = () => {
+    if (!controller.signal.aborted) {
+      appLogger.warn("Cancellation requested; stopping the active exploration.");
+      controller.abort(new Error("Execution cancelled by signal."));
+    }
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+  try {
+    return await work(controller.signal);
+  } finally {
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+  }
+}
+
 async function main() {
   const parsedArgs = parseArgs(process.argv.slice(2));
   setAppLogger(new Logger(parsedArgs.logLevel, undefined, {}, { redactor: redactorForArgs(parsedArgs) }));
@@ -118,7 +136,7 @@ async function main() {
   const executionArgs = { ...args, output: execution.path };
   const executionCommand: "explore" | "run" = args.command === "explore" ? "explore" : "run";
 
-  const batch = await exploreCoverage(executionArgs, execution.id);
+  const batch = await withProcessCancellation((signal) => exploreCoverage(executionArgs, execution.id, signal));
   const manifestPath = writeDiscoveryArtifacts(batch);
   appLogger.result("done:\n  execution:                           " + execution.path +
     "\n  report JSON:                         " + join(executionArgs.output, "report.json") +

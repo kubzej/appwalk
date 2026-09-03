@@ -25,6 +25,10 @@ export type ProviderTurn =
   | { type: "tool_call"; toolCall: ToolCall }
   | { type: "text"; text: string; incompleteReason?: string };
 
+export interface ProviderCallOptions {
+  signal?: AbortSignal;
+}
+
 export interface LlmProvider {
   start(params: {
     systemPrompt: string;
@@ -34,7 +38,8 @@ export interface LlmProvider {
     screenshot?: string;
     /** Optional per-request output budget for one-shot operations such as response planning. */
     maxOutputTokens?: number;
+    signal?: AbortSignal;
   }): Promise<ProviderTurn>;
 
-  continue(toolResult: ToolResult): Promise<ProviderTurn>;
+  continue(toolResult: ToolResult, options?: ProviderCallOptions): Promise<ProviderTurn>;
 }

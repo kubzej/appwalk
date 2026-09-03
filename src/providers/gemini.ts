@@ -2,18 +2,15 @@ import { GoogleGenAI } from "@google/genai";
 import type { Content, Part } from "@google/genai";
 import type {
   LlmProvider,
+  ProviderCallOptions,
   ProviderTurn,
   ToolDefinition,
   ToolResult,
 } from "./provider.js";
 import { AGENT_MAX_OUTPUT_TOKENS } from "./provider.js";
-import { estimateRequestTokens, sharedRateLimitCoordinator, sleep } from "./rate-limit.js";
+import { estimateRequestTokens, sharedRateLimitCoordinator } from "./rate-limit.js";
 import { Logger } from "../logging/logger.js";
-
-/** Retries a 429 this many times before giving up — each attempt waits for the window the
- * coordinator last observed, so this only helps a request that got caught behind another
- * request's usage, not one whose own size will never fit in a single window (see rate-limit.ts). */
-const MAX_RATE_LIMIT_RETRIES = 3;
+import { providerStatus, withHostedProviderRequest, HOSTED_PROVIDER_REQUEST_TIMEOUT_MS } from "./request-policy.js";
 
 function toGeminiTools(tools: ToolDefinition[]) {
   return [
@@ -41,7 +38,7 @@ export class GeminiProvider implements LlmProvider {
   constructor(apiKey: string, model: string, logger = new Logger("quiet")) {
     this.client = new GoogleGenAI({
       apiKey,
-      httpOptions: { retryOptions: { attempts: 1 } },
+      httpOptions: { timeout: HOSTED_PROVIDER_REQUEST_TIMEOUT_MS, retryOptions: { attempts: 1 } },
     });
     this.model = model;
     this.logger = logger;
@@ -53,6 +50,7 @@ export class GeminiProvider implements LlmProvider {
     initialInput: string;
     screenshot?: string;
     maxOutputTokens?: number;
+    signal?: AbortSignal;
   }): Promise<ProviderTurn> {
     this.systemPrompt = params.systemPrompt;
     this.tools = toGeminiTools(params.tools);
@@ -61,10 +59,10 @@ export class GeminiProvider implements LlmProvider {
       parts.push({ inlineData: { mimeType: "image/jpeg", data: params.screenshot } });
     }
     this.contents = [{ role: "user", parts }];
-    return this.send(params.maxOutputTokens);
+    return this.send(params.maxOutputTokens, params.signal);
   }
 
-  async continue(toolResult: ToolResult): Promise<ProviderTurn> {
+  async continue(toolResult: ToolResult, options?: ProviderCallOptions): Promise<ProviderTurn> {
     const parts: Part[] = [
       {
         functionResponse: {
@@ -77,10 +75,10 @@ export class GeminiProvider implements LlmProvider {
       parts.push({ inlineData: { mimeType: "image/jpeg", data: toolResult.screenshot } });
     }
     this.contents.push({ role: "user", parts });
-    return this.send();
+    return this.send(undefined, options?.signal);
   }
 
-  private async send(maxOutputTokens = AGENT_MAX_OUTPUT_TOKENS): Promise<ProviderTurn> {
+  private async send(maxOutputTokens = AGENT_MAX_OUTPUT_TOKENS, signal?: AbortSignal): Promise<ProviderTurn> {
     const requestIndex = ++this.requestIndex;
     this.logger.debug("provider.request_started", "Gemini request started", { provider: "gemini", model: this.model, requestIndex });
     const startedAt = Date.now();
@@ -94,34 +92,29 @@ export class GeminiProvider implements LlmProvider {
         maxOutputTokens,
       },
     };
-    await sharedRateLimitCoordinator.beforeRequest(
-      `gemini:${this.model}`,
-      estimateRequestTokens(request, maxOutputTokens),
-      this.logger,
+    const result = await withHostedProviderRequest<Awaited<ReturnType<typeof this.client.models.generateContent>>>(
+      async (attemptSignal) => this.client.models.generateContent({
+        ...request,
+        config: { ...request.config, abortSignal: attemptSignal },
+      }),
+      {
+        provider: "Gemini",
+        model: this.model,
+        requestIndex,
+        signal,
+        logger: this.logger,
+        beforeAttempt: (attemptSignal) => sharedRateLimitCoordinator.beforeRequest(
+          `gemini:${this.model}`,
+          estimateRequestTokens(request, maxOutputTokens),
+          this.logger,
+          attemptSignal,
+        ),
+        retryDelayMs: (error) => providerStatus(error) === 429
+          ? sharedRateLimitCoordinator.retryDelayMs(`gemini:${this.model}`)
+          : undefined,
+      },
     );
-    let response: Awaited<ReturnType<typeof this.client.models.generateContent>>;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        response = await this.client.models.generateContent(request);
-        break;
-      } catch (error) {
-        const status = (error as { status?: number }).status;
-        if (status !== 429) throw error;
-
-        // Gemini's ApiError doesn't expose the response headers, so we fall back to the
-        // coordinator's own last-observed reset time for this model rather than a bare guess.
-        if (attempt < MAX_RATE_LIMIT_RETRIES) {
-          const waitMs = sharedRateLimitCoordinator.retryDelayMs(`gemini:${this.model}`);
-          this.logger.warn(`Gemini rate limit hit; retrying in ${Math.ceil(waitMs / 1000)}s (attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES}).`);
-          this.logger.debug("provider.rate_limited", "Gemini request was rate limited; retrying", { provider: "gemini", model: this.model, requestIndex, attempt, waitMs, error: (error as Error).message });
-          await sleep(waitMs);
-          continue;
-        }
-        this.logger.debug("provider.rate_limited", "Gemini request was rate limited; retries exhausted", { provider: "gemini", model: this.model, requestIndex, error: (error as Error).message });
-        throw new Error(`Gemini rate limit reached; retried ${MAX_RATE_LIMIT_RETRIES} times without success.`);
-      }
-    }
-
+    const response = result;
     const responseHeaders = response.sdkHttpResponse?.responseInternal.headers;
     if (responseHeaders) sharedRateLimitCoordinator.observe(`gemini:${this.model}`, responseHeaders, response.usageMetadata?.promptTokenCount);
 

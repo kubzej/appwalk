@@ -1,19 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type {
   LlmProvider,
+  ProviderCallOptions,
   ProviderTurn,
   ToolDefinition,
   ToolResult,
 } from "./provider.js";
 import { AGENT_MAX_OUTPUT_TOKENS } from "./provider.js";
-import { estimateRequestTokens, rateLimitHeadersSummary, rateLimitRetryDelayMs, sharedRateLimitCoordinator, sleep } from "./rate-limit.js";
+import { estimateRequestTokens, rateLimitHeadersSummary, rateLimitRetryDelayMs, sharedRateLimitCoordinator } from "./rate-limit.js";
 import { Logger } from "../logging/logger.js";
+import { providerHttpError, ProviderRequestError, withHostedProviderRequest } from "./request-policy.js";
 
 const API_URL = "https://api.x.ai/v1/responses";
-/** Retries a 429 this many times before giving up — each attempt waits for the window the
- * response itself reported, so this only helps a request that got caught behind another
- * request's usage, not one whose own size will never fit in a single window (see rate-limit.ts). */
-const MAX_RATE_LIMIT_RETRIES = 3;
 
 interface GrokOutputItem {
   type: string;
@@ -69,6 +67,7 @@ export class GrokProvider implements LlmProvider {
     initialInput: string;
     screenshot?: string;
     maxOutputTokens?: number;
+    signal?: AbortSignal;
   }): Promise<ProviderTurn> {
     this.lastResponseId = null;
     this.convId = randomUUID();
@@ -80,10 +79,10 @@ export class GrokProvider implements LlmProvider {
     return this.send([
       { role: "system", content: params.systemPrompt },
       { role: "user", content: userContent },
-    ], params.maxOutputTokens);
+    ], params.maxOutputTokens, params.signal);
   }
 
-  async continue(toolResult: ToolResult): Promise<ProviderTurn> {
+  async continue(toolResult: ToolResult, options?: ProviderCallOptions): Promise<ProviderTurn> {
     const input: unknown[] = [
       {
         type: "function_call_output",
@@ -97,10 +96,10 @@ export class GrokProvider implements LlmProvider {
         content: [{ type: "input_image", image_url: `data:image/jpeg;base64,${toolResult.screenshot}` }],
       });
     }
-    return this.send(input);
+    return this.send(input, undefined, options?.signal);
   }
 
-  private async send(input: unknown[], maxOutputTokens = AGENT_MAX_OUTPUT_TOKENS): Promise<ProviderTurn> {
+  private async send(input: unknown[], maxOutputTokens = AGENT_MAX_OUTPUT_TOKENS, signal?: AbortSignal): Promise<ProviderTurn> {
     const requestIndex = ++this.requestIndex;
     this.logger.debug("provider.request_started", "Grok request started", { provider: "grok", model: this.model, requestIndex });
     const startedAt = Date.now();
@@ -116,14 +115,8 @@ export class GrokProvider implements LlmProvider {
 
     const requestBody = JSON.stringify(body);
 
-    let response: Response;
-    for (let attempt = 0; ; attempt++) {
-      await sharedRateLimitCoordinator.beforeRequest(
-        `grok:${this.model}`,
-        estimateRequestTokens(body, maxOutputTokens),
-        this.logger,
-      );
-      response = await fetch(API_URL, {
+    const result = await withHostedProviderRequest<{ data: GrokResponse; headers: Headers }>(async (attemptSignal) => {
+      const response = await fetch(API_URL, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -131,36 +124,38 @@ export class GrokProvider implements LlmProvider {
           "x-grok-conv-id": this.convId,
         },
         body: requestBody,
+        signal: attemptSignal,
       });
-      if (response.ok) break;
-
-      const errorBody = await response.text();
-      if (response.status === 429) {
-        const limitHint = rateLimitHeadersSummary(response.headers);
-        if (attempt < MAX_RATE_LIMIT_RETRIES) {
-          const waitMs = rateLimitRetryDelayMs(response.headers);
-          this.logger.warn(`Grok rate limit hit; retrying in ${Math.ceil(waitMs / 1000)}s (attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES}).${limitHint}`);
-          this.logger.debug("provider.rate_limited", "Grok request was rate limited; retrying", { provider: "grok", model: this.model, requestIndex, status: response.status, attempt, waitMs, hint: limitHint, body: errorBody });
-          await sleep(waitMs);
-          continue;
-        }
-        this.logger.debug("provider.rate_limited", "Grok request was rate limited; retries exhausted", { provider: "grok", model: this.model, requestIndex, status: response.status, hint: limitHint, body: errorBody });
-        throw new Error(`Grok rate limit reached; retried ${MAX_RATE_LIMIT_RETRIES} times without success.${limitHint}`);
+      if (!response.ok) {
+        throw providerHttpError("Grok", this.model, requestIndex, response.status, await response.text(), response.headers);
       }
-      this.logger.debug("provider.request_failed", "Grok request failed", { provider: "grok", model: this.model, requestIndex, status: response.status, body: errorBody });
-      throw new Error(`Grok request failed: ${response.status}`);
-    }
-
-    const data = (await response.json()) as GrokResponse;
+      return { data: (await response.json()) as GrokResponse, headers: response.headers };
+    }, {
+      provider: "Grok",
+      model: this.model,
+      requestIndex,
+      signal,
+      logger: this.logger,
+      beforeAttempt: (attemptSignal) => sharedRateLimitCoordinator.beforeRequest(
+        `grok:${this.model}`,
+        estimateRequestTokens(body, maxOutputTokens),
+        this.logger,
+        attemptSignal,
+      ),
+      retryDelayMs: (error) => error instanceof ProviderRequestError && error.failure.status === 429 && error.failure.headers
+        ? rateLimitRetryDelayMs(error.failure.headers)
+        : undefined,
+    });
+    const { data } = result;
     const usage = data.usage;
-    sharedRateLimitCoordinator.observe(`grok:${this.model}`, response.headers, usage?.input_tokens);
+    sharedRateLimitCoordinator.observe(`grok:${this.model}`, result.headers, usage?.input_tokens);
     this.logger.debug("provider.response_received", "Grok response received", {
       provider: "grok", model: this.model, requestIndex, durationMs: Date.now() - startedAt,
       inputTokens: usage?.input_tokens ?? 0, cachedTokens: usage?.input_tokens_details?.cached_tokens ?? 0,
       outputTokens: usage?.output_tokens ?? 0, totalTokens: usage?.total_tokens ?? 0,
       responseStatus: data.status,
       incompleteReason: data.incomplete_details?.reason,
-      rateLimit: rateLimitHeadersSummary(response.headers).trim() || undefined,
+      rateLimit: rateLimitHeadersSummary(result.headers).trim() || undefined,
     });
 
     this.lastResponseId = data.id;
