@@ -92,6 +92,14 @@ export function validateNonNegativeInteger(value: unknown, label: string, path: 
   }
 }
 
+export function validateCredentialPair(email: unknown, password: unknown, path: string): void {
+  const hasEmail = email !== undefined;
+  const hasPassword = password !== undefined;
+  if (hasEmail !== hasPassword) {
+    throw new Error(`email and password must be provided together in ${path}.`);
+  }
+}
+
 /** Validates the flattened options after CLI values and YAML values have been merged. */
 export function validateResolvedOptions(options: Record<string, unknown>, path = "options"): void {
   if (!isNonEmptyString(options.url)) throw new Error(`url must be a non-empty string in ${path}.`);
@@ -113,6 +121,7 @@ export function validateResolvedOptions(options: Record<string, unknown>, path =
       throw new Error(`${key} must be a non-empty string in ${path}.`);
     }
   }
+  validateCredentialPair(options.email, options.password, path);
   if (options.responseVariantMax !== undefined) {
     validateNonNegativeInteger(options.responseVariantMax, "responseVariantMax", path);
   }
@@ -170,6 +179,7 @@ function validateConfig(value: unknown, path: string): AppwalkConfig {
         throw new Error(`auth.${key} must be a non-empty string in ${path}.`);
       }
     }
+    validateCredentialPair(auth.email, auth.password, `${path} auth`);
   }
   if (config.safety !== undefined) {
     const safety = validateObject(config.safety, "safety", path);

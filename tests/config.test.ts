@@ -55,6 +55,34 @@ test("rejects invalid shared option values", () => {
   assert.throws(() => validateResolvedOptions({ ...validOptions, browserEngine: "safari" }), /browser must be one of chromium, firefox, or webkit/);
 });
 
+test("rejects partial credential login configuration", () => {
+  assert.throws(
+    () => validateResolvedOptions({ ...validOptions, email: "user@example.test" }),
+    /email and password must be provided together/,
+  );
+  assert.throws(
+    () => validateResolvedOptions({ ...validOptions, password: "secret" }),
+    /email and password must be provided together/,
+  );
+});
+
+test("rejects partial credentials in YAML auth configuration", () => {
+  const directory = mkdtempSync(join(tmpdir(), "appwalk-config-"));
+  const path = join(directory, "config.yaml");
+  try {
+    writeFileSync(path, [
+      "version: 1",
+      "provider: openai",
+      "model: test-model",
+      "auth:",
+      "  email: user@example.test",
+    ].join("\n"));
+    assert.throws(() => loadAppwalkConfig(path), /email and password must be provided together/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("defaults to chromium and maps a YAML browser engine override", () => {
   assert.equal(applyConfig(parseArgs(["run", "https://example.test", "--provider", "openai", "--model", "test-model"])).browserEngine, "chromium");
 
