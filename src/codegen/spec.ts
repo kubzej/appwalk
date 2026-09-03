@@ -3,6 +3,7 @@ import { assertValidBurstCount } from "../limits.js";
 import { type ResponseFixture, type ResponseVariant } from "../response/variants.js";
 import { escapeJsString, toLocatorExpression } from "./locator.js";
 import { assertValidWebUrl } from "../url.js";
+import { LOGIN_CONTRACT } from "../browser/login-contract.js";
 
 export interface CodegenOptions {
   url: string;
@@ -88,9 +89,10 @@ export function formatTestTitle(name: string): string {
   return shortened || "Verified user flow";
 }
 
-// Mirrors src/browser/login.ts exactly — keep the two in sync. English label text only works
-// on English-language UIs; HTML input types (type="password", type="email", type="submit") are
-// language-independent, so structural signals are tried first, English text as a fallback.
+// Generated login stays standalone for the user's test project. Its selectors and route rules
+// come from LOGIN_CONTRACT, so the runtime and generated helper share the same login assumptions.
+// English label text only works on English-language UIs; HTML input types are language-independent,
+// so structural signals are tried first, with English text as a fallback.
 export const GENERATED_CREDENTIALS_FILE = ".secrets.json";
 export const GENERATED_STORAGE_STATE_FILE = ".storage-state.json";
 
@@ -139,10 +141,10 @@ async function findLoginField(root: Page | Locator, ...patterns: RegExp[]): Prom
 }
 
 export async function loginWithCredentials(page: Page, username: string, password: string): Promise<void> {
-  let passwordField = page.locator('input[type="password"]').first();
+  let passwordField = page.locator('${LOGIN_CONTRACT.passwordSelector}').first();
   if ((await passwordField.count()) === 0) {
-    const loginTrigger = page.getByRole('button', { name: /log ?in|sign ?in/i })
-      .or(page.getByRole('link', { name: /log ?in|sign ?in/i })).first();
+    const loginTrigger = page.getByRole('button', { name: /${LOGIN_CONTRACT.triggerPattern}/i })
+      .or(page.getByRole('link', { name: /${LOGIN_CONTRACT.triggerPattern}/i })).first();
     if ((await loginTrigger.count()) > 0) {
       await loginTrigger.click();
       await passwordField.waitFor({ state: 'visible' });
@@ -155,33 +157,34 @@ export async function loginWithCredentials(page: Page, username: string, passwor
     passwordField = byLabel;
   }
 
-  const form = page.locator('form:has(input[type="password"])').first();
+  const form = page.locator('${LOGIN_CONTRACT.formSelector}').first();
   const loginScope = (await form.count()) > 0
     ? form
     : passwordField.locator("xpath=ancestor::*[.//button or .//input[@type='submit']][1]");
 
-  let usernameField = loginScope.locator('input[type="email"], input[autocomplete="username"], input[name="username"]').first();
+  let usernameField = loginScope.locator('${LOGIN_CONTRACT.usernameSelector}').first();
   if ((await usernameField.count()) === 0) {
     const byLabel = await findLoginField(loginScope, /username/i, /e-?mail/i);
     if (byLabel) {
       usernameField = byLabel;
     } else {
-      usernameField = loginScope.locator('input[type="text"], input:not([type])').first();
+      usernameField = loginScope.locator('${LOGIN_CONTRACT.usernameFallbackSelector}').first();
     }
   }
 
   await usernameField.fill(username);
   await passwordField.fill(password);
 
-  const localLoginButtons = loginScope.getByRole('button', { name: /log ?in|sign ?in/i });
+  const loginPattern = /${LOGIN_CONTRACT.triggerPattern}/i;
+  const localLoginButtons = loginScope.getByRole('button', { name: loginPattern });
   if ((await localLoginButtons.count()) > 0) {
     await localLoginButtons.last().click();
   } else {
-    const formSubmit = loginScope.locator('button[type="submit"], input[type="submit"]').first();
+    const formSubmit = loginScope.locator('${LOGIN_CONTRACT.submitSelector}').first();
     if ((await formSubmit.count()) > 0) {
       await formSubmit.click();
     } else {
-      const pageLoginButtons = page.getByRole('button', { name: /log ?in|sign ?in/i });
+      const pageLoginButtons = page.getByRole('button', { name: loginPattern });
       if ((await pageLoginButtons.count()) === 0) {
         throw new Error('Login submit control not found. Use --storage-state if the site uses a custom login flow.');
       }
@@ -195,20 +198,20 @@ export async function loginWithCredentials(page: Page, username: string, passwor
   ]).catch(() => undefined);
 
   let stillOnPasswordField = await page
-    .locator('input[type="password"]')
+    .locator('${LOGIN_CONTRACT.passwordSelector}')
     .first()
     .isVisible()
     .catch(() => false);
   if (stillOnPasswordField && page.url() !== loginPageUrl) {
-    await page.locator('input[type="password"]').first().waitFor({ state: 'hidden', timeout: 10000 }).catch(() => undefined);
+    await page.locator('${LOGIN_CONTRACT.passwordSelector}').first().waitFor({ state: 'hidden', timeout: 10000 }).catch(() => undefined);
     stillOnPasswordField = await page
-      .locator('input[type="password"]')
+      .locator('${LOGIN_CONTRACT.passwordSelector}')
       .first()
       .isVisible()
       .catch(() => false);
   }
   const finalPath = new URL(page.url()).pathname.toLowerCase();
-  const remainsOnLoginRoute = /(^|\\/)login(?:\\/|$)/.test(finalPath);
+  const remainsOnLoginRoute = /${LOGIN_CONTRACT.loginRoutePattern}/.test(finalPath);
   if (stillOnPasswordField || page.url() === loginPageUrl || remainsOnLoginRoute) {
     const message = stillOnPasswordField
       ? 'Login did not complete. Check credentials or use --storage-state for 2FA, SSO, or CAPTCHA.'

@@ -2,6 +2,7 @@ import type { Locator, Page } from "playwright";
 import { toStepResult } from "./snapshot.js";
 import type { StepResult } from "../types.js";
 import type { Logger } from "../logging/logger.js";
+import { LOGIN_CONTRACT } from "./login-contract.js";
 
 async function findByLabelOrRole(root: Page | Locator, ...patterns: RegExp[]): Promise<Locator | null> {
   for (const pattern of patterns) {
@@ -31,11 +32,11 @@ export async function login(
   await page.goto(url);
   const initialUrl = page.url();
 
-  let passwordField = page.locator('input[type="password"]').first();
+  let passwordField = page.locator(LOGIN_CONTRACT.passwordSelector).first();
   if ((await passwordField.count()) === 0) {
     const loginTrigger = page
-      .getByRole("button", { name: /log ?in|sign ?in/i })
-      .or(page.getByRole("link", { name: /log ?in|sign ?in/i }))
+      .getByRole("button", { name: new RegExp(LOGIN_CONTRACT.triggerPattern, "i") })
+      .or(page.getByRole("link", { name: new RegExp(LOGIN_CONTRACT.triggerPattern, "i") }))
       .first();
     if ((await loginTrigger.count()) > 0) {
       await loginTrigger.click();
@@ -52,12 +53,12 @@ export async function login(
     passwordField = byLabel;
   }
 
-  const form = page.locator('form:has(input[type="password"])').first();
+  const form = page.locator(LOGIN_CONTRACT.formSelector).first();
   const loginScope = (await form.count()) > 0
     ? form
     : passwordField.locator("xpath=ancestor::*[.//button or .//input[@type='submit']][1]");
 
-  let usernameField = loginScope.locator('input[type="email"], input[autocomplete="username"], input[name="username"]').first();
+  let usernameField = loginScope.locator(LOGIN_CONTRACT.usernameSelector).first();
   if ((await usernameField.count()) === 0) {
     const byLabel = await findByLabelOrRole(loginScope, /username/i, /e-?mail/i);
     if (byLabel) {
@@ -65,24 +66,25 @@ export async function login(
     } else {
       // Positional fallback: the username field is virtually always the text input
       // immediately preceding the password field in the same form, regardless of language.
-      usernameField = loginScope.locator('input[type="text"], input:not([type])').first();
+      usernameField = loginScope.locator(LOGIN_CONTRACT.usernameFallbackSelector).first();
     }
   }
 
   await usernameField.fill(username);
   await passwordField.fill(password);
 
-  const localLoginButtons = loginScope.getByRole("button", { name: /log ?in|sign ?in/i });
+  const loginPattern = new RegExp(LOGIN_CONTRACT.triggerPattern, "i");
+  const localLoginButtons = loginScope.getByRole("button", { name: loginPattern });
   if ((await localLoginButtons.count()) > 0) {
     // Prefer the visible semantic control. Some SPA forms expose a submit button but
     // handle its click separately from native form submission.
     await localLoginButtons.last().click();
   } else {
-    const formSubmit = loginScope.locator('button[type="submit"], input[type="submit"]').first();
+    const formSubmit = loginScope.locator(LOGIN_CONTRACT.submitSelector).first();
     if ((await formSubmit.count()) > 0) {
       await formSubmit.click();
     } else {
-      const pageLoginButtons = page.getByRole("button", { name: /log ?in|sign ?in/i });
+      const pageLoginButtons = page.getByRole("button", { name: loginPattern });
       if ((await pageLoginButtons.count()) === 0) {
         throw new Error("Login submit control not found. Use --storage-state if the site uses a custom login flow.");
       }
@@ -98,22 +100,22 @@ export async function login(
   ]).catch(() => undefined);
 
   let stillOnPasswordField = await page
-    .locator('input[type="password"]')
+    .locator(LOGIN_CONTRACT.passwordSelector)
     .first()
     .isVisible()
     .catch(() => false);
   if (stillOnPasswordField && page.url() !== loginPageUrl) {
     // A successful SPA redirect can commit the new route before React removes the old
     // login panel. Give that stale panel a moment to unmount before judging the result.
-    await page.locator('input[type="password"]').first().waitFor({ state: "hidden", timeout: 10000 }).catch(() => undefined);
+    await page.locator(LOGIN_CONTRACT.passwordSelector).first().waitFor({ state: "hidden", timeout: 10000 }).catch(() => undefined);
     stillOnPasswordField = await page
-      .locator('input[type="password"]')
+      .locator(LOGIN_CONTRACT.passwordSelector)
       .first()
       .isVisible()
       .catch(() => false);
   }
   const finalPath = new URL(page.url()).pathname.toLowerCase();
-  const remainsOnLoginRoute = /(^|\/)login(?:\/|$)/.test(finalPath);
+  const remainsOnLoginRoute = new RegExp(LOGIN_CONTRACT.loginRoutePattern).test(finalPath);
   // A changed URL is not proof of authentication: some apps route failed submits to /login.
   // Do not start exploration until the login has at least left the login route and hidden the
   // password field. Otherwise the caller would explore a session whose auth state is unknown.
