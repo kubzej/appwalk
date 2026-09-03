@@ -22,7 +22,6 @@ export interface DiscoveryManifestFlow {
   startIndex: number;
   endIndex: number;
   startUrl: string;
-  startStorageState?: string;
   responseFixtures?: ResponseFixture[];
   origin?: "discovered" | "derived";
   sourceFlowId?: number;
@@ -110,9 +109,8 @@ export function generateFromManifest(args: CliArgs): void {
   const entries = evidence.entries;
   const selected = selectManifestFlows(manifest, args.flowSelection);
   const storageStatePath = args.storageStatePath ?? manifest.setup.storageStatePath;
-  const useCapturedState = manifest.setup.requiresLogin && !storageStatePath && !(args.email && args.password);
-  if (useCapturedState) {
-    throw new Error("This discovery used login. Pass -e/-p or --storage-state when generating from it; captured session state is not stored in discovery artifacts.");
+  if (manifest.setup.requiresLogin && !storageStatePath && !(args.email && args.password)) {
+    throw new Error("This discovery used login. Pass -e/-p or --storage-state when generating from it.");
   }
 
   const runNames = new Map((manifest.runs ?? []).map((run) => [run.id, run.name]));
@@ -122,13 +120,11 @@ export function generateFromManifest(args: CliArgs): void {
       : flow.runId
         ? entry.runId === flow.runId && entry.scenarioId === undefined && entry.flowIndex === (flow.runFlowIndex ?? 0)
         : entry.flowIndex === flow.id - 1);
-    const useFlowState = manifest.version === 2 || useCapturedState;
     return {
       name: flow.runId && runNames.has(flow.runId) ? `${runNames.get(flow.runId)}: ${flow.name}` : flow.name,
       title: flow.title,
       entries: flowEntries,
-      startUrl: useFlowState ? flow.startUrl : flow.id === 1 ? undefined : flow.startUrl,
-      startStorageState: useFlowState ? flow.startStorageState : flow.id === 1 ? undefined : flow.startStorageState,
+      startUrl: flow.id === 1 ? undefined : flow.startUrl,
       responseFixtures: flow.responseFixtures,
       origin: flow.origin,
       fixtureBaseId: flow.sourceFlowId !== undefined ? `flow-${flow.sourceFlowId}` : `flow-${flow.id}`,
@@ -153,5 +149,6 @@ export function generateFromManifest(args: CliArgs): void {
   logCodegenCompleted(appLogger, "generate", flows);
   appLogger.result("done:\n  execution:                           " + execution.path + "\n  test suite (" + flows.length + " test(s)): " + generatedSuite.specPath +
     (generatedSuite.fixtureHelperPath ? "\n  fixtures:                             " + generatedSuite.fixtureHelperPath : "") +
-    (generatedSuite.credentialsPath ? "\n  local credentials:                    " + generatedSuite.credentialsPath : ""));
+    (generatedSuite.credentialsPath ? "\n  local credentials:                    " + generatedSuite.credentialsPath : "") +
+    (generatedSuite.storageStatePath ? "\n  local storage state:                 " + generatedSuite.storageStatePath : ""));
 }

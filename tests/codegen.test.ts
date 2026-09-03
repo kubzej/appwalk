@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,7 +38,7 @@ test("generated login helpers are typed and duplicate flow titles are unique", (
     url: "https://example.test",
     username: "tester",
     password: "secret",
-  }).artifacts.find((artifact) => artifact.relativePath === ".appwalk.secrets.json");
+  }).artifacts.find((artifact) => artifact.relativePath === ".secrets.json");
   assert.ok(credentials);
   assert.match(credentials.content, /"username": "tester"/);
   assert.match(credentials.content, /"password": "secret"/);
@@ -117,15 +117,28 @@ test("generated credential sidecar is immediately usable and owner-readable only
   }
 });
 
-test("storage-state generated suites do not create a credential sidecar", () => {
-  const bundle = generateSpecBundle([{ name: "Returning user", entries: [] }], {
-    url: "https://example.test",
-    storageStatePath: "./auth/storage-state.json",
-    username: "ignored",
-    password: "ignored",
-  });
+test("generated suites copy supplied storage state beside the spec", () => {
+  const sourceDirectory = mkdtempSync(join(tmpdir(), "appwalk-storage-source-"));
+  const outputDirectory = mkdtempSync(join(tmpdir(), "appwalk-storage-output-"));
+  const sourcePath = join(sourceDirectory, "state.json");
+  writeFileSync(sourcePath, JSON.stringify({ cookies: [{ name: "session", value: "secret-token" }], origins: [] }));
+  try {
+    const output = writeGeneratedSuite(outputDirectory, [{ name: "Returning user", entries: [] }], {
+      url: "https://example.test",
+      storageStatePath: sourcePath,
+    });
 
-  assert.equal(bundle.artifacts.some((artifact) => artifact.relativePath === ".appwalk.secrets.json"), false);
+    assert.ok(output.storageStatePath);
+    const spec = readFileSync(join(outputDirectory, "discovered.spec.ts"), "utf8");
+    assert.match(spec, /test\.use\(\{ storageState: join\(generatedSuiteDirectory, '\.storage-state\.json'\) \}\);/);
+    assert.doesNotMatch(spec, /secret-token/);
+    assert.equal(JSON.parse(readFileSync(output.storageStatePath, "utf8")).cookies[0].value, "secret-token");
+    assert.equal(statSync(output.storageStatePath).mode & 0o777, 0o600);
+    assert.equal(output.credentialsPath, undefined);
+  } finally {
+    rmSync(sourceDirectory, { recursive: true, force: true });
+    rmSync(outputDirectory, { recursive: true, force: true });
+  }
 });
 
 test("generates iframe locators and expanded actions as Playwright APIs", () => {
@@ -184,9 +197,9 @@ test("a flow with a device preset gets its own context with the device spread in
   assert.match(spec, /await flowContext\.close\(\);/);
 });
 
-test("a device preset combines with the flow's own storageState in one newContext() call", () => {
+test("a device preset does not inline captured storage state", () => {
   const storageState = JSON.stringify({ cookies: [], origins: [] });
-  const spec = generateSpec([
+  const bundle = generateSpecBundle([
     {
       name: "Mobile returning user",
       devicePreset: "iPhone 17",
@@ -195,8 +208,11 @@ test("a device preset combines with the flow's own storageState in one newContex
       entries: [],
     },
   ], { url: "https://example.test" });
+  const spec = bundle.spec;
 
-  assert.match(spec, /const flowContext = await browser\.newContext\(\{ \.\.\.devices\['iPhone 17'\], storageState: \{"cookies":\[\],"origins":\[\]\} \}\);/);
+  assert.match(spec, /const flowContext = await browser\.newContext\(\{ \.\.\.devices\['iPhone 17'\] \}\);/);
+  assert.doesNotMatch(spec, /loadStorageState/);
+  assert.doesNotMatch(spec, /"cookies"|"origins"/);
   assert.match(spec, /await page\.goto\('https:\/\/example\.test\/account'\);/);
 });
 

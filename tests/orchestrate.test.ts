@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { chromium, devices } from "playwright";
-import { attachCrashDetection, attachPopupDetection, attachWebSocketCapture, deviceContextOptions, startTracing, stopTracing } from "../src/cli/orchestrate.js";
+import { attachCrashDetection, attachPopupDetection, attachWebSocketCapture, deviceContextOptions, startTracing, stopTracing, writeDiscoveryArtifacts, type ExplorationBatch } from "../src/cli/orchestrate.js";
 import type { Persona } from "../src/agent/personas.js";
 import { executeToolCall, type TabRegistryHandle } from "../src/agent/tools.js";
 import { EvidenceRecorder } from "../src/evidence/recorder.js";
 import { Logger } from "../src/logging/logger.js";
+import { Redactor } from "../src/security/redaction.js";
+import type { CliArgs } from "../src/cli/args.js";
 
 const WEBSOCKET_ACCEPT_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -78,6 +80,69 @@ function spyLogger(): { logger: Logger; verboseMessages: string[] } {
   logger.debug = () => {};
   return { logger, verboseMessages };
 }
+
+test("discovery manifest does not persist captured flow state", () => {
+  const directory = mkdtempSync(join(tmpdir(), "appwalk-discovery-state-"));
+  const state = JSON.stringify({
+    cookies: [{ name: "session", value: "secret-token", domain: "example.test", path: "/" }],
+    origins: [],
+  });
+  const args = {
+    url: "https://example.test",
+    maxSteps: 25,
+    expectations: [],
+    output: directory,
+  } as unknown as CliArgs;
+
+  try {
+    const manifestPath = writeDiscoveryArtifacts({
+      executionId: "execution-1",
+      args,
+      evidencePath: join(directory, "evidence.jsonl"),
+      allEntries: [],
+      evidenceIssues: [],
+      redactor: new Redactor(["secret-token"]),
+      confirmedFlows: [{
+        name: "Account flow",
+        title: "Account flow",
+        entries: [],
+        startUrl: "https://example.test/account",
+        startStorageState: state,
+        origin: "discovered",
+        sourceFlowIndex: 0,
+      }],
+      runs: [{
+        runId: "run-1",
+        runName: "baseline",
+        args,
+        evidencePath: join(directory, "evidence.jsonl"),
+        allEntries: [],
+        confirmedFlows: [],
+        replayConfirmedIds: [1],
+        findings: [],
+        responseVariantAudits: [],
+        safety: { blockedRequests: 0, explorationBlocked: 0, replayBlocked: 0, byMethod: {}, samples: [], safetyRelatedRuntimeErrors: 0 },
+        runtimeErrors: [],
+        replayFailures: {},
+        discovery: {
+          history: [],
+          flows: [{ startIndex: 0, endIndex: 0, finalText: "Account flow", title: "Account flow", verified: true, startUrl: "https://example.test/account", startStorageState: state }],
+          exhausted: false,
+          stopReason: "completed",
+          expectationResults: [],
+        },
+      }],
+    } as unknown as ExplorationBatch);
+
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { flows: Array<Record<string, unknown>> };
+    assert.equal("startStorageState" in manifest.flows[0]!, false);
+    assert.equal("startStorageStatePath" in manifest.flows[0]!, false);
+    assert.doesNotMatch(readFileSync(manifestPath, "utf8"), /secret-token/);
+    assert.equal(existsSync(join(directory, "storage-state")), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 async function routedPage(browser: import("playwright").Browser) {
   const context = await browser.newContext();

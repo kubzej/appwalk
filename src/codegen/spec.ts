@@ -7,6 +7,8 @@ export interface CodegenOptions {
   username?: string;
   password?: string;
   storageStatePath?: string;
+  /** Set by writeGeneratedSuite when storage state has been copied beside the generated spec. */
+  storageStateArtifactPath?: string;
 }
 
 export interface FlowEntries {
@@ -87,7 +89,8 @@ export function formatTestTitle(name: string): string {
 // Mirrors src/browser/login.ts exactly — keep the two in sync. English label text only works
 // on English-language UIs; HTML input types (type="password", type="email", type="submit") are
 // language-independent, so structural signals are tried first, English text as a fallback.
-export const GENERATED_CREDENTIALS_FILE = ".appwalk.secrets.json";
+export const GENERATED_CREDENTIALS_FILE = ".secrets.json";
+export const GENERATED_STORAGE_STATE_FILE = ".storage-state.json";
 
 const GENERATED_AUTH_HELPER = `import type { Locator, Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
@@ -560,18 +563,26 @@ function flowToTest(
   const needsBrowserFixture = toolCalls.some(
     (entry) => entry.toolCall!.name === "openInNewTab" || entry.toolCall!.name === "reopenBrowser",
   );
-  // Explicit credentials are an intentional override for a captured flow state. This matters when
-  // discovery started on a login screen or captured an unauthenticated state after a failed login.
-  const hasFlowStorageState = Boolean(flow.startStorageState) && !(options.username && options.password);
   // A device profile is a newContext()-time-only option (viewport alone can change mid-session,
   // but user agent/touch/scale factor cannot) — a flow discovered under one needs its own explicit
   // context too, exactly like storageState, even when it has no storageState of its own.
-  const needsOwnContext = hasFlowStorageState || Boolean(flow.devicePreset);
+  const needsOwnContext = Boolean(flow.devicePreset);
   const fixtureParams = needsOwnContext || needsBrowserFixture ? (needsOwnContext ? "{ browser }" : "{ page, browser }") : "{ page }";
+  const setupNavigationLines = options.username && options.password
+    ? [
+      `await page.goto('${escapeJsString(options.url)}');`,
+      "await loginWithConfiguredCredentials(page);",
+      ...(flow.startUrl && flow.startUrl !== options.url ? [`await page.goto('${escapeJsString(flow.startUrl)}');`] : []),
+    ]
+    : [`await page.goto('${escapeJsString(flow.startUrl ?? options.url)}');`];
   if (needsOwnContext) {
     const contextOptionEntries = [
       ...(flow.devicePreset ? [`...devices['${escapeJsString(flow.devicePreset)}']`] : []),
-      ...(hasFlowStorageState ? [`storageState: ${JSON.stringify(JSON.parse(flow.startStorageState!))}`] : []),
+      ...(options.storageStatePath
+        ? [options.storageStateArtifactPath
+          ? `storageState: join(generatedSuiteDirectory, '${escapeJsString(options.storageStateArtifactPath)}')`
+          : `storageState: '${escapeJsString(options.storageStatePath)}'`]
+        : []),
     ];
     const contextOptions = contextOptionEntries.length ? `{ ${contextOptionEntries.join(", ")} }` : "";
     const indentedBody = body
@@ -580,12 +591,7 @@ function flowToTest(
       .join("\n");
     const setupLines = [
       ...(fixtureScenario ? [`await installFixtures(page.context(), loadScenario('${escapeJsString(fixtureScenario)}'));`] : []),
-      hasFlowStorageState
-        ? `await page.goto('${escapeJsString(flow.startUrl!)}');`
-        : `await page.goto('${escapeJsString(options.url)}');`,
-      ...(!hasFlowStorageState && options.username && options.password
-        ? ["await loginWithConfiguredCredentials(page);"]
-        : []),
+      ...setupNavigationLines,
     ].map((line) => `  ${line}`).join("\n");
   return `test('${escapeJsString(testTitle)}', async (${fixtureParams}) => {
   const flowContext = await browser.newContext(${contextOptions});
@@ -604,10 +610,7 @@ ${indentedBody}
       `const responseFixtures = loadScenario('${escapeJsString(fixtureScenario)}');`,
       "await installFixtures(page.context(), responseFixtures);",
     ] : []),
-    `await page.goto('${escapeJsString(options.url)}');`,
-    ...(options.username && options.password
-      ? ["await loginWithConfiguredCredentials(page);"]
-      : []),
+    ...setupNavigationLines,
   ].map((line) => `  ${line}`).join("\n");
   return `test('${escapeJsString(testTitle)}', async (${fixtureParams}) => {\n${setup}\n${body}\n});`;
 }
@@ -694,7 +697,14 @@ export function generateSpecBundle(flows: FlowEntries[], options: CodegenOptions
   if (hasFixtures) parts.push("import { installFixtures, loadScenario } from './fixtures.js';");
 
   if (hasStorageState) {
-    parts.push(`test.use({ storageState: '${escapeJsString(options.storageStatePath!)}' });`);
+    if (options.storageStateArtifactPath) {
+      parts.push("import { dirname, join } from 'node:path';");
+      parts.push("import { fileURLToPath } from 'node:url';");
+      parts.push("const generatedSuiteDirectory = dirname(fileURLToPath(import.meta.url));");
+      parts.push(`test.use({ storageState: join(generatedSuiteDirectory, '${escapeJsString(options.storageStateArtifactPath)}') });`);
+    } else {
+      parts.push(`test.use({ storageState: '${escapeJsString(options.storageStatePath!)}' });`);
+    }
   }
   const baseTitleCounts = new Map<string, number>();
   for (const flow of flows) {

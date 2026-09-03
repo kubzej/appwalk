@@ -11,7 +11,8 @@ appwalk-output/
     evidence.jsonl
     discovered.spec.ts       # only when run generated confirmed flows
     auth.ts                   # shared credential login helper, when credentials are used
-    .appwalk.secrets.json     # local credentials sidecar, when credential login is used
+    .secrets.json             # local credentials sidecar, when credential login is used
+    .storage-state.json       # copied pre-authenticated browser state, when --storage-state is used
     fixtures.ts               # shared response fixture loader, when response mocking is used
     fixtures/                 # baseline JSON and compact variant patch descriptors
 ```
@@ -24,11 +25,12 @@ The execution ID combines an ISO timestamp and a short random suffix. This keeps
 | --- | --- | --- |
 | `report.html` | Tester, developer, reviewer | Human-facing execution result: personas, flows, replay state, findings, response scenarios, warnings, and recorded steps. |
 | `report.json` | CI, dashboards, integrations | Stable structured execution contract with summary, runs, flow results, findings, and artifact paths. |
-| `discovery.json` | `generate`, tooling | Manifest of discovered flows, run metadata, replay state, and response fixtures. It does not contain captured auth tokens. |
+| `discovery.json` | `generate`, tooling | Manifest of discovered flows, run metadata, replay state, and response fixtures. It does not contain captured auth state. |
 | `evidence.jsonl` | Debugging and forensic review | Append-only per-step browser evidence, tool calls, results, network entries, console entries, and errors. |
 | `discovered.spec.ts` | Playwright users | Generated tests for confirmed base and derived flows. |
 | `auth.ts` | Playwright users | Shared credential login helper used by generated tests when email/password login is configured. |
-| `.appwalk.secrets.json` | Local generated suite | Credentials used by `auth.ts`; ignored by Git and should never be committed. |
+| `.storage-state.json` | Local generated suite | Copy of the pre-authenticated state supplied with `--storage-state`; sensitive, ignored by Git, and should never be committed. |
+| `.secrets.json` | Local generated suite | Credentials used by `auth.ts`; ignored by Git and should never be committed. |
 | `fixtures.ts` and `fixtures/` | Playwright users | Shared response replay helper, captured baseline JSON, and response-variant patch descriptors. |
 
 ## Data handling
