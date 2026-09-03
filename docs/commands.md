@@ -38,6 +38,8 @@ The model can combine these actions into one flow. `click`, `doubleClick`, `drag
 
 Locators use Appwalk syntax such as `role=button[name="Submit"]`, `text="Continue"`, or a raw CSS selector. For iframe content, use `frame=<iframe CSS selector> >> <inner locator>`.
 
+`uploadFile` accepts only relative paths to project-provided agent-run inputs below `agent-inputs/uploads/`. The runtime rejects absolute paths, traversal segments, missing or non-regular files, symbolic links, and paths outside that directory. It resolves the approved file paths before passing them to Playwright, so the model cannot upload arbitrary local files.
+
 ## Shared options
 
 Requirements below are evaluated after command-line values and the explicitly passed YAML config are merged. A value can therefore be supplied in either place, and a CLI value overrides the config value. `generate` reads an existing discovery bundle and does not need a provider or model.

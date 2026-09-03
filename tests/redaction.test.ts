@@ -32,7 +32,7 @@ test("keeps non-sensitive replay input while masking password-like targets", () 
       name: "fill",
       locator: "input[type=password]",
       value: "secret-value",
-      filePaths: ["test-fixtures/example.txt"],
+      filePaths: ["agent-inputs/uploads/uma/valid.png"],
     },
   };
 
@@ -41,7 +41,7 @@ test("keeps non-sensitive replay input while masking password-like targets", () 
       name: "fill",
       locator: "input[type=password]",
       value: REDACTED_VALUE,
-      filePaths: ["test-fixtures/example.txt"],
+      filePaths: ["agent-inputs/uploads/uma/valid.png"],
     },
   });
   assert.deepEqual(redactor.redact(input), {

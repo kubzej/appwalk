@@ -5,6 +5,5 @@ test-results/
 dev-check-*.ts
 *.log
 .env
-test-fixtures/uma/large.bin
 .DS_Store
 appwalk-live/

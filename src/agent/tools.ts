@@ -176,12 +176,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: "uploadFile",
-    description: "Set one or more file paths on a file input element.",
+    description: "Upload one or more approved agent-run input files from the project's agent-inputs/uploads directory. Use relative paths such as agent-inputs/uploads/uma/valid.png; absolute, arbitrary, and outside-root paths are rejected.",
     inputSchema: {
       type: "object",
       properties: {
         ...locatorProp,
-        filePaths: { type: "array", items: { type: "string" } },
+        filePaths: { type: "array", minItems: 1, maxItems: 10, items: { type: "string" } },
       },
       required: ["locator", "filePaths"],
     },

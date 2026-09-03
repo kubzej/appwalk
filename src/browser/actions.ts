@@ -3,6 +3,7 @@ import type { Page, Route } from 'playwright';
 import { toStepResult } from './snapshot.js';
 import { resolveLocator } from './locator.js';
 import type { StepResult } from '../types.js';
+import { defaultUploadInputPolicy, type UploadInputPolicy } from '../security/upload-inputs.js';
 
 const CLICK_SETTLE_MS = 500;
 export const ACTION_TIMEOUT_MS = 5000;
@@ -316,9 +317,11 @@ export async function setViewportSize(
 export async function uploadFile(
   page: Page,
   locator: string,
-  filePaths: string[],
+  filePaths: readonly unknown[],
+  inputPolicy: UploadInputPolicy = defaultUploadInputPolicy,
 ): Promise<StepResult> {
-  await resolveLocator(page, locator).setInputFiles(filePaths);
+  const approvedPaths = inputPolicy.resolvePaths(filePaths);
+  await resolveLocator(page, locator).setInputFiles(approvedPaths);
   return toStepResult(page);
 }
 

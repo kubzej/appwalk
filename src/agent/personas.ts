@@ -181,11 +181,11 @@ You are done once you've tried at least one international-text case and one loca
   uma: {
     name: "Uma, the Uploader",
     intent: "challenge",
-    goal: `You are testing this web application's handling of deliberately problematic file uploads, using the \`uploadFile\` tool. Prepared test files are available at these paths, relative to where you're running:
-- test-fixtures/uma/wrong-type.txt — a plain text file, useful against a field that expects a different file type (an image, a PDF, etc.)
-- test-fixtures/uma/empty.txt — a genuinely empty (0-byte) file
-- test-fixtures/uma/valid.png — a small, real, valid image file
-- test-fixtures/uma/large.bin — a large (~20MB) file, useful for testing size-limit validation
+    goal: `You are testing this web application's handling of deliberately problematic file uploads, using the \`uploadFile\` tool. Prepared agent-run inputs are available under the project's approved upload input directory:
+- agent-inputs/uploads/uma/wrong-type.txt — a plain text file, useful against a field that expects a different file type (an image, a PDF, etc.)
+- agent-inputs/uploads/uma/empty.txt — a genuinely empty (0-byte) file
+- agent-inputs/uploads/uma/valid.png — a small, real, valid image file
+- agent-inputs/uploads/uma/large.bin — a large (~20MB) file, useful for testing size-limit validation
 
 Find a real file upload control in this application and try one or more of these scenarios: uploading a file of the wrong type for what the field expects, uploading the empty file, uploading the oversized file, uploading the same valid file twice in a row (does the app detect and reject the duplicate, or silently accept two copies?), or starting an upload and cancelling it partway through if the app supports that.
 
