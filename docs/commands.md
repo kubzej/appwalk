@@ -18,6 +18,8 @@ appwalk explore <url> [options]
 
 Runs discovery, evidence collection, and replay verification. It writes the same report and discovery artifacts as `run`, but does not generate `discovered.spec.ts`.
 
+The target URL must be an absolute `http` or `https` URL. Agent navigation may use another origin as well, which keeps OAuth and local development setups possible; non-web schemes such as `file:`, `javascript:`, and `ftp:` are rejected.
+
 ## `generate`
 
 ```text

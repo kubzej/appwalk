@@ -106,3 +106,23 @@ test("accepts a structurally valid manifest", () => {
     assert.equal(loadManifest(path).flows[0]?.name, "A real flow");
   });
 });
+
+test("rejects a manifest with a non-web target URL", () => {
+  withTempDirectory((directory) => {
+    const path = join(directory, "discovery.json");
+    writeFileSync(path, JSON.stringify({
+      version: 2,
+      url: "file:///tmp/app.html",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      exhausted: false,
+      setup: { requiresLogin: false },
+      intent: { expectations: [] },
+      flows: [],
+    }) + "\n");
+
+    assert.throws(
+      () => loadManifest(path),
+      /manifest\.url: must be a valid absolute http or https URL/,
+    );
+  });
+});

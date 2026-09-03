@@ -28,7 +28,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description: "Navigate the browser to a URL.",
     inputSchema: {
       type: "object",
-      properties: { url: { type: "string" } },
+      properties: { url: { type: "string", minLength: 1, maxLength: 8_000, description: "Absolute http or https URL; cross-origin navigation is allowed." } },
       required: ["url"],
     },
   },

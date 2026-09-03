@@ -4,6 +4,7 @@ import { toStepResult } from './snapshot.js';
 import { resolveLocator } from './locator.js';
 import type { StepResult } from '../types.js';
 import { assertValidBurstCount } from '../limits.js';
+import { assertValidWebUrl } from '../url.js';
 import { defaultUploadInputPolicy, type UploadInputPolicy } from '../security/upload-inputs.js';
 import { evaluateSafetyRequest, safePath, type SafetyRequestOptions } from '../safety/guard.js';
 
@@ -113,6 +114,7 @@ async function stepResultWithStorage(page: Page): Promise<StepResult> {
 }
 
 export async function navigate(page: Page, url: string): Promise<StepResult> {
+  assertValidWebUrl(url, "navigate URL");
   await page.goto(url);
   return toStepResult(page);
 }

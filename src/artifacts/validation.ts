@@ -1,5 +1,7 @@
 /** Shared runtime validation for persisted discovery artifacts. */
 
+import { isValidWebUrl } from "../url.js";
+
 export interface ArtifactValidationIssue {
   path: string;
   message: string;
@@ -47,6 +49,10 @@ function arrayAt(value: unknown, path: string, issues: ArtifactValidationIssue[]
 
 function requiredString(value: Record<string, unknown>, key: string, path: string, issues: ArtifactValidationIssue[]): void {
   if (typeof value[key] !== "string" || value[key].length === 0) issue(issues, `${path}.${key}`, "must be a non-empty string");
+}
+
+function requiredWebUrl(value: Record<string, unknown>, key: string, path: string, issues: ArtifactValidationIssue[]): void {
+  if (!isValidWebUrl(value[key])) issue(issues, `${path}.${key}`, "must be a valid absolute http or https URL");
 }
 
 function optionalString(value: Record<string, unknown>, key: string, path: string, issues: ArtifactValidationIssue[]): void {
@@ -269,7 +275,7 @@ export function validateDiscoveryManifest(value: unknown): ArtifactValidationIss
   knownKeys(manifest, new Set(["version", "executionId", "url", "createdAt", "exhausted", "setup", "intent", "runs", "flows"]), path, issues);
   if (manifest.version !== 1 && manifest.version !== 2) issue(issues, `${path}.version`, "must be 1 or 2");
   optionalString(manifest, "executionId", path, issues);
-  requiredString(manifest, "url", path, issues);
+  requiredWebUrl(manifest, "url", path, issues);
   requiredString(manifest, "createdAt", path, issues);
   requiredBoolean(manifest, "exhausted", path, issues);
 
@@ -334,7 +340,7 @@ export function validateDiscoveryManifest(value: unknown): ArtifactValidationIss
     requiredInteger(item, "startIndex", flowPath, issues, 0);
     requiredInteger(item, "endIndex", flowPath, issues, 0);
     if (typeof item.startIndex === "number" && typeof item.endIndex === "number" && item.endIndex < item.startIndex) issue(issues, flowPath, "endIndex must be >= startIndex");
-    requiredString(item, "startUrl", flowPath, issues);
+    requiredWebUrl(item, "startUrl", flowPath, issues);
     enumValue(item, "origin", flowPath, new Set(["discovered", "derived"]), issues);
     optionalInteger(item, "sourceFlowId", flowPath, issues, 1);
     optionalString(item, "scenarioId", flowPath, issues);

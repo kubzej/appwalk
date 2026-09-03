@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { parse } from "yaml";
+import { isValidWebUrl } from "./url.js";
 
 export type ProviderName = "anthropic" | "gemini" | "ollama" | "grok" | "openai";
 export type BrowserEngine = "chromium" | "firefox" | "webkit";
@@ -102,7 +103,7 @@ export function validateCredentialPair(email: unknown, password: unknown, path: 
 
 /** Validates the flattened options after CLI values and YAML values have been merged. */
 export function validateResolvedOptions(options: Record<string, unknown>, path = "options"): void {
-  if (!isNonEmptyString(options.url)) throw new Error(`url must be a non-empty string in ${path}.`);
+  if (!isValidWebUrl(options.url)) throw new Error(`url must be a valid absolute http or https URL in ${path}.`);
   if (!isNonEmptyString(options.output)) throw new Error(`output must be a non-empty string in ${path}.`);
   if (!isProvider(options.provider)) throw new Error(`provider must be one of anthropic, gemini, ollama, grok, or openai in ${path}.`);
   if (!isNonEmptyString(options.model)) throw new Error(`model must be a non-empty string in ${path}.`);
@@ -157,7 +158,7 @@ function validateConfig(value: unknown, path: string): AppwalkConfig {
     throw new Error(`browser must be one of chromium, firefox, or webkit in ${path}.`);
   }
   if (config.persona !== undefined && !isNonEmptyString(config.persona)) throw new Error(`persona must be a non-empty string in ${path}.`);
-  if (config.url !== undefined && !isNonEmptyString(config.url)) throw new Error(`url must be a non-empty string in ${path}.`);
+  if (config.url !== undefined && !isValidWebUrl(config.url)) throw new Error(`url must be a valid absolute http or https URL in ${path}.`);
   if (config.output !== undefined && !isNonEmptyString(config.output)) throw new Error(`output must be a non-empty string in ${path}.`);
   if (config.maxSteps !== undefined) validateMaxSteps(config.maxSteps, "maxSteps", path);
   if (config.screenshots !== undefined && typeof config.screenshots !== "boolean") {

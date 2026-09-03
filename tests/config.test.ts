@@ -55,6 +55,19 @@ test("rejects invalid shared option values", () => {
   assert.throws(() => validateResolvedOptions({ ...validOptions, browserEngine: "safari" }), /browser must be one of chromium, firefox, or webkit/);
 });
 
+test("rejects malformed and non-web target URLs", () => {
+  assert.throws(
+    () => validateResolvedOptions({ ...validOptions, url: "not a URL" }),
+    /url must be a valid absolute http or https URL in options\./,
+  );
+  assert.throws(
+    () => validateResolvedOptions({ ...validOptions, url: "file:///tmp/app.html" }),
+    /url must be a valid absolute http or https URL in options\./,
+  );
+  assert.doesNotThrow(() => validateResolvedOptions({ ...validOptions, url: "http://localhost:4173" }));
+  assert.doesNotThrow(() => validateResolvedOptions({ ...validOptions, url: "https://login.example.test/oauth/start" }));
+});
+
 test("rejects partial credential login configuration", () => {
   assert.throws(
     () => validateResolvedOptions({ ...validOptions, email: "user@example.test" }),

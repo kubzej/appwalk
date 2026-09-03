@@ -2,6 +2,7 @@ import type { EvidenceEntry } from "../evidence/log.js";
 import { assertValidBurstCount } from "../limits.js";
 import { type ResponseFixture, type ResponseVariant } from "../response/variants.js";
 import { escapeJsString, toLocatorExpression } from "./locator.js";
+import { assertValidWebUrl } from "../url.js";
 
 export interface CodegenOptions {
   url: string;
@@ -366,6 +367,7 @@ function actionToStatement(
 
   switch (name) {
     case "navigate":
+      assertValidWebUrl(input.url, "Generated navigate URL");
       return `await page.goto('${escapeJsString(input.url as string)}');`;
     case "click":
       return `await ${locatorExpr()}.click(${clickOptionsStatement()});`;
@@ -730,6 +732,10 @@ function planFixtureScenarios(flows: FlowEntries[]): FixtureScenarioPlan {
 
 /** One session can discover several distinct flows — each becomes its own independent `test()` with its own setup and response fixtures. */
 export function generateSpecBundle(flows: FlowEntries[], options: CodegenOptions): GeneratedSpecBundle {
+  assertValidWebUrl(options.url, "Codegen target URL");
+  for (const [index, flow] of flows.entries()) {
+    if (flow.startUrl !== undefined) assertValidWebUrl(flow.startUrl, `Codegen flow ${index + 1} start URL`);
+  }
   const fixturePlan = planFixtureScenarios(flows);
   const hasStorageState = Boolean(options.storageStatePath);
   const hasLogin = !hasStorageState && Boolean(options.username && options.password);

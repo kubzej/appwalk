@@ -194,6 +194,23 @@ test("generated burst actions use the bounded count without coercing invalid inp
   );
 });
 
+test("generated navigation rejects non-web URLs", () => {
+  assert.throws(
+    () => generateSpec([{
+      name: "Invalid navigation",
+      entries: [{
+        index: 0,
+        flowIndex: 0,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        toolCall: { name: "navigate", input: { url: "javascript:alert(1)" } },
+        network: [],
+        console: [],
+      }],
+    }], { url: "https://example.test" }),
+    /Generated navigate URL must be a valid absolute http or https URL\./,
+  );
+});
+
 test("generated tab flows register popups opened by the application", () => {
   const spec = generateSpec([
     {

@@ -15,6 +15,19 @@ test("burst enforces its count limit even when called outside tool dispatch", as
   }
 });
 
+test("navigate rejects non-web URLs before calling Playwright", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await assert.rejects(
+      executeToolCall(page, { id: "1", name: "navigate", input: { url: "file:///tmp/secret.txt" } }),
+      /navigate URL must be a valid absolute http or https URL\./,
+    );
+  } finally {
+    await browser.close();
+  }
+});
+
 test("executes expanded pointer, drag, download, and state assertion actions", async () => {
   const browser = await chromium.launch({ headless: true });
   try {
