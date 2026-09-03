@@ -172,6 +172,28 @@ test("generates iframe locators and expanded actions as Playwright APIs", () => 
   assert.match(spec, /page\.locator\('#tags'\)\.selectOption\(\['one', 'three'\]\);/);
 });
 
+test("generated burst actions use the bounded count without coercing invalid input", () => {
+  const entry = (count: unknown) => ({
+    index: 0,
+    flowIndex: 0,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    toolCall: { name: "burst", input: { action: "click", locator: "#submit", count } },
+    network: [],
+    console: [],
+  });
+
+  const spec = generateSpec([{ name: "Rapid submit", entries: [entry(3)] }], { url: "https://example.test" });
+  assert.match(spec, /for \(let i = 0; i < 3; i\+\+\)/);
+  assert.throws(
+    () => generateSpec([{ name: "Invalid burst", entries: [entry(21)] }], { url: "https://example.test" }),
+    /Cannot generate burst: count must be a safe integer between 1 and 20\./,
+  );
+  assert.throws(
+    () => generateSpec([{ name: "Invalid burst", entries: [entry("3")] }], { url: "https://example.test" }),
+    /Cannot generate burst: count must be a safe integer between 1 and 20\./,
+  );
+});
+
 test("generated tab flows register popups opened by the application", () => {
   const spec = generateSpec([
     {

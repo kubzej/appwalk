@@ -43,6 +43,28 @@ test("stops on plain provider text without inventing a flow", async () => {
   }
 });
 
+test("charges every burst repetition against the agent action budget", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<button id="target" onclick="this.dataset.clicks = String(Number(this.dataset.clicks || 0) + 1)">Submit</button>`);
+    const provider = new ScriptedProvider([
+      { type: "tool_call", toolCall: { id: "1", name: "burst", input: { action: "click", locator: "#target", count: 3 } } },
+      { type: "tool_call", toolCall: { id: "2", name: "flowComplete", input: { summary: "Rapid submit" } } },
+    ]);
+
+    const result = await runAgentLoop(page, provider, { maxSteps: 3 });
+
+    assert.equal(await page.locator("#target").getAttribute("data-clicks"), "3");
+    assert.equal(result.flows.length, 1);
+    assert.equal(result.history.length, 2, "the completed flow must not start another flow with leftover burst budget");
+    assert.equal(result.stopReason, "completed");
+    assert.equal(result.exhausted, false);
+  } finally {
+    await browser.close();
+  }
+});
+
 test("a popup discovered mid-flow is reachable via switchTab inside the real agent loop", async () => {
   // A target="_blank" link to a data: URI never actually opens (Chromium blocks top-level
   // navigation to data: URLs), so this needs a real same-origin destination to pop up at all.

@@ -6,6 +6,7 @@ import { resolveLocator } from "../browser/locator.js";
 import type { ToolCall, ToolDefinition } from "../providers/provider.js";
 import type { ExpectationAssertion, ExpectationObservation, StepResult } from "../types.js";
 import type { SafetyRequestOptions } from "../safety/guard.js";
+import { BURST_MAX_COUNT, BURST_MIN_COUNT } from "../limits.js";
 import { validateToolInput } from "./validation.js";
 
 const clickOptions = {
@@ -213,7 +214,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         action: { type: "string", enum: ["click", "pressKey", "check", "uncheck"] },
         ...locatorProp,
-        count: { type: "integer", minimum: 1, maximum: 20, description: "How many times to repeat, e.g. 5." },
+        count: { type: "integer", minimum: BURST_MIN_COUNT, maximum: BURST_MAX_COUNT, description: "How many times to repeat, e.g. 5. Each repetition consumes one action-budget unit." },
         key: { type: "string", minLength: 1, maxLength: 100, description: "Required when action is pressKey — the key to press each time." },
       },
       required: ["action", "locator", "count"],

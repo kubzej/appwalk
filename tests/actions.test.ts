@@ -2,7 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { chromium } from "playwright";
 import { executeToolCall } from "../src/agent/tools.js";
+import { burst } from "../src/browser/actions.js";
 import type { TabRegistry } from "../src/agent/tools.js";
+
+test("burst enforces its count limit even when called outside tool dispatch", async () => {
+  const page = {} as import("playwright").Page;
+  for (const count of [0, 2.5, 21]) {
+    await assert.rejects(
+      burst(page, "click", "#target", count),
+      /burst: count must be a safe integer between 1 and 20\./,
+    );
+  }
+});
 
 test("executes expanded pointer, drag, download, and state assertion actions", async () => {
   const browser = await chromium.launch({ headless: true });

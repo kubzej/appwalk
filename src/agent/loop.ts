@@ -13,6 +13,13 @@ import type { VerificationMode } from "./verification.js";
 import { verifyFlow } from "./verification.js";
 import { defaultRedactor, type Redactor } from "../security/redaction.js";
 import type { SafetyRequestOptions } from "../safety/guard.js";
+import { isValidBurstCount } from "../limits.js";
+
+function actionBudgetCost(toolCall: { name: string; input: Record<string, unknown> }): number {
+  if (toolCall.name !== "burst") return 1;
+  const count = toolCall.input.count;
+  return isValidBurstCount(count) ? count : 1;
+}
 
 const DEFAULT_CONTEXT_CHECKPOINT_ACTIONS = 8;
 const MODEL_SNAPSHOT_MAX_CHARS = 18_000;
@@ -510,7 +517,15 @@ export async function runAgentLoop(
       flowIndex, stepIndex: actionCount, tool: toolCall.name, input: toolCall.input,
     });
 
+    const plannedCost = actionBudgetCost(toolCall);
+    let consumedCost = 1;
     try {
+      if (toolCall.name === "burst" && plannedCost > options.maxSteps - actionCount) {
+        throw new Error(`burst: count ${plannedCost} exceeds the remaining action budget of ${options.maxSteps - actionCount}.`);
+      }
+      // Reserve the full requested count. A burst may stop part-way through after an individual
+      // repetition fails, so charging the requested count is the conservative budget contract.
+      consumedCost = plannedCost;
       const toolResult = await executeToolCall(page, toolCall, tabRegistryHandle.tabs, options.safety, options.browserRestartHooks);
       result = {
         ...toolResult,
@@ -561,7 +576,7 @@ export async function runAgentLoop(
     }
     options.onStep?.(step, history.length - 1, flowIndex);
 
-    actionCount += 1;
+    actionCount += consumedCost;
     const screenshot = options.captureScreenshots ? await captureScreenshot(page, { maskInputs: true }) : undefined;
     if (actionCount >= options.maxSteps) {
       options.logger?.debug("agent.finalization_requested", "Requesting a flow classification after the final allowed browser action", {

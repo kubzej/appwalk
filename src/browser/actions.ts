@@ -3,6 +3,7 @@ import type { Page, Route } from 'playwright';
 import { toStepResult } from './snapshot.js';
 import { resolveLocator } from './locator.js';
 import type { StepResult } from '../types.js';
+import { assertValidBurstCount } from '../limits.js';
 import { defaultUploadInputPolicy, type UploadInputPolicy } from '../security/upload-inputs.js';
 import { evaluateSafetyRequest, safePath, type SafetyRequestOptions } from '../safety/guard.js';
 
@@ -406,6 +407,7 @@ export async function burst(
   if (!BURSTABLE_ACTIONS.has(action)) {
     throw new Error(`burst: "${action}" can't be repeated this way — only ${[...BURSTABLE_ACTIONS].join(', ')} are supported.`);
   }
+  assertValidBurstCount(count);
   const target = resolveLocator(page, locator);
   let completed = 0;
   let stoppedReason: string | null = null;

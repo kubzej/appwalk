@@ -1,4 +1,5 @@
 import type { EvidenceEntry } from "../evidence/log.js";
+import { assertValidBurstCount } from "../limits.js";
 import { type ResponseFixture, type ResponseVariant } from "../response/variants.js";
 import { escapeJsString, toLocatorExpression } from "./locator.js";
 
@@ -434,6 +435,8 @@ function actionToStatement(
     case "burst": {
       // Short on purpose, matching the real `burst()` — a repetition whose target is already gone
       // (an earlier one navigated away) should fail fast, not wait out Playwright's much longer default.
+      const count = input.count;
+      assertValidBurstCount(count, "Cannot generate burst");
       const innerAction = input.action as string;
       const innerStatement =
         innerAction === "click"
@@ -449,7 +452,7 @@ function actionToStatement(
       // A repetition failing to find its target (typically because an earlier one already navigated
       // away) is the expected, informative case for a burst-tested flow, not a broken test — stopping
       // early here instead of letting the exception fail the whole test mirrors the real `burst()`.
-      return `for (let i = 0; i < ${Number(input.count)}; i++) { try { ${innerStatement} } catch { break; } }`;
+      return `for (let i = 0; i < ${count}; i++) { try { ${innerStatement} } catch { break; } }`;
     }
     case "simulateFailure": {
       const pattern = escapeJsString(input.urlPattern as string);

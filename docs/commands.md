@@ -40,6 +40,8 @@ Locators use Appwalk syntax such as `role=button[name="Submit"]`, `text="Continu
 
 `uploadFile` accepts only relative paths to project-provided agent-run inputs below `agent-inputs/uploads/`. The runtime rejects absolute paths, traversal segments, missing or non-regular files, symbolic links, and paths outside that directory. It resolves the approved file paths before passing them to Playwright, so the model cannot upload arbitrary local files.
 
+`burst` accepts a count from 1 to 20. Every repetition consumes one action-budget unit, so it cannot bypass the run's `--max-steps` limit.
+
 ## Shared options
 
 Requirements below are evaluated after command-line values and the explicitly passed YAML config are merged. A value can therefore be supplied in either place, and a CLI value overrides the config value. `generate` reads an existing discovery bundle and does not need a provider or model.
