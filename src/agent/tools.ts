@@ -6,15 +6,17 @@ import { resolveLocator } from "../browser/locator.js";
 import type { ToolCall, ToolDefinition } from "../providers/provider.js";
 import type { ExpectationAssertion, ExpectationObservation, StepResult } from "../types.js";
 import type { SafetyRequestOptions } from "../safety/guard.js";
+import { validateToolInput } from "./validation.js";
 
 const clickOptions = {
   button: { type: "string", enum: ["left", "right", "middle"] },
-  modifiers: { type: "array", items: { type: "string", enum: ["Alt", "Control", "Meta", "Shift"] } },
+  modifiers: { type: "array", maxItems: 4, items: { type: "string", enum: ["Alt", "Control", "Meta", "Shift"] } },
 };
 
 const locatorProp = {
   locator: {
     type: "string",
+    maxLength: 2_000,
     description: "A Playwright locator string — prefer the stable locator hint from the page observation; see the locator syntax rules in the system prompt.",
   },
 };
@@ -118,7 +120,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       "Delete one named cookie, or all cookies when name is omitted. Follow it with a request or reload to test how the app handles the missing session or token.",
     inputSchema: {
       type: "object",
-      properties: { name: { type: "string", description: "Cookie name to delete; omit to delete all cookies." } },
+      properties: { name: { type: "string", minLength: 1, maxLength: 256, description: "Cookie name to delete; omit to delete all cookies." } },
     },
   },
   {
@@ -169,8 +171,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     inputSchema: {
       type: "object",
       properties: {
-        width: { type: "number" },
-        height: { type: "number" },
+        width: { type: "integer", minimum: 1, maximum: 10_000 },
+        height: { type: "integer", minimum: 1, maximum: 10_000 },
       },
       required: ["width", "height"],
     },
@@ -216,8 +218,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         action: { type: "string", enum: ["click", "pressKey", "check", "uncheck"] },
         ...locatorProp,
-        count: { type: "number", description: "How many times to repeat, e.g. 5." },
-        key: { type: "string", description: "Required when action is pressKey — the key to press each time." },
+        count: { type: "integer", minimum: 1, maximum: 20, description: "How many times to repeat, e.g. 5." },
+        key: { type: "string", minLength: 1, maxLength: 100, description: "Required when action is pressKey — the key to press each time." },
       },
       required: ["action", "locator", "count"],
     },
@@ -229,7 +231,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     inputSchema: {
       type: "object",
       properties: {
-        urlPattern: { type: "string", description: "A glob pattern matching the request URL, e.g. '**/api/order' or '**checkout**'." },
+        urlPattern: { type: "string", minLength: 1, maxLength: 2_000, description: "A glob pattern matching the request URL, e.g. '**/api/order' or '**checkout**'." },
         mode: { type: "string", enum: ["500", "503", "404", "malformed", "offline", "connectionReset", "timeout"] },
       },
       required: ["urlPattern", "mode"],
@@ -242,8 +244,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     inputSchema: {
       type: "object",
       properties: {
-        urlPattern: { type: "string", description: "A glob pattern matching the request URL, e.g. '**/api/**' or '**checkout**'." },
-        delayMs: { type: "number", description: "How long to delay the matching request in milliseconds, typically 2000-5000." },
+        urlPattern: { type: "string", minLength: 1, maxLength: 2_000, description: "A glob pattern matching the request URL, e.g. '**/api/**' or '**checkout**'." },
+        delayMs: { type: "number", minimum: 0, maximum: 60_000, description: "How long to delay the matching request in milliseconds, typically 2000-5000." },
       },
       required: ["urlPattern", "delayMs"],
     },
@@ -266,7 +268,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       type: "object",
       properties: {
         method: { type: "string", enum: ["GET", "HEAD"] },
-        url: { type: "string", description: "Absolute URL to request." },
+        url: { type: "string", minLength: 1, maxLength: 8_000, description: "Absolute URL to request." },
         headers: {
           type: "object",
           description: "Optional extra request headers, e.g. { \"Accept\": \"application/json\" }.",
@@ -283,11 +285,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     inputSchema: {
       type: "object",
       properties: {
-        expectationIndex: { type: "number", description: "1-based expectation number from the system prompt." },
+        expectationIndex: { type: "integer", minimum: 1, maximum: 100, description: "1-based expectation number from the system prompt." },
         assertion: { type: "string", enum: ["visible", "hidden", "containsText", "urlContains", "urlEquals", "value", "checked", "unchecked", "disabled", "enabled", "count", "unknown"] },
         locator: { ...locatorProp.locator },
         value: { type: "string", description: "Expected text, URL, or input value; required for containsText, urlContains, urlEquals, and value." },
-        expectedCount: { type: "number", description: "Expected locator count; required for count." },
+        expectedCount: { type: "integer", minimum: 0, maximum: 10_000, description: "Expected locator count; required for count." },
       },
       required: ["expectationIndex", "assertion"],
     },
@@ -301,15 +303,19 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         title: {
           type: "string",
+          minLength: 1,
+          maxLength: 200,
           description: "A short stable title for the behavior, ideally 3-8 words. Omit persona names, concrete data, and IDs.",
         },
         summary: {
           type: "string",
           description:
             "What you did and what outcome was reached, in one short stable sentence. Describe the behavior at a high level; omit persona names, concrete product names, order IDs, timestamps, and other run-specific values.",
+          minLength: 1,
+          maxLength: 2_000,
         },
       },
-      required: ["title", "summary"],
+      required: ["summary"],
     },
   },
 ];
@@ -487,8 +493,11 @@ export async function executeToolCall(
   tabs?: TabRegistry,
   safety?: SafetyRequestOptions,
 ): Promise<ToolCallResult> {
+  const definition = TOOL_DEFINITIONS.find((tool) => tool.name === call.name);
+  if (!definition) throw new Error(`Unknown tool: ${call.name}`);
+  const validatedInput = validateToolInput(definition, call.input);
   const tabsBefore = tabs ? new Set(tabs.keys()) : undefined;
-  const result = await dispatchToolCall(page, call, tabs, safety);
+  const result = await dispatchToolCall(page, { ...call, input: validatedInput }, tabs, safety);
   if (tabs && tabsBefore && call.name !== "openTab") {
     const newTabIds = [...tabs.keys()].filter((id) => !tabsBefore.has(id));
     if (newTabIds.length > 0) {

@@ -114,7 +114,7 @@ test("apiRequest rejects a non-GET/HEAD method at runtime, not just via the tool
     // before any request is attempted, not just that *some* rejection occurred.
     await assert.rejects(
       executeToolCall(page, { id: "1", name: "apiRequest", input: { method: "DELETE", url: "https://this-domain-does-not-exist.invalid/api/thing" } }),
-      /apiRequest: method must be GET or HEAD/,
+      /Invalid input for tool "apiRequest": \$\.method must be one of GET, HEAD\./,
     );
   } finally {
     await browser.close();

@@ -7,6 +7,7 @@ import type { ExpectationObservation, ExpectationStatus, StepResult } from "../t
 import type { Logger } from "../logging/logger.js";
 import type { Persona } from "./personas.js";
 import { executeToolCall, TOOL_DEFINITIONS } from "./tools.js";
+import { validateToolInput } from "./validation.js";
 import type { TabRegistryHandle } from "./tools.js";
 import type { VerificationMode } from "./verification.js";
 import { verifyFlow } from "./verification.js";
@@ -363,15 +364,27 @@ export async function runAgentLoop(
     }
 
     if (isFlowCompleteTool) {
-      const finalText = (turn.toolCall.input.summary as string) ?? "(no summary provided)";
-      const title = isFlowCompleteTool && turn.type === "tool_call" && typeof turn.toolCall.input.title === "string"
-        ? turn.toolCall.input.title
-        : undefined;
+      const definition = TOOL_DEFINITIONS.find((tool) => tool.name === "flowComplete")!;
+      let completionInput: Record<string, unknown>;
+      try {
+        completionInput = validateToolInput(definition, turn.toolCall.input);
+      } catch (error) {
+        const message = (error as Error).message;
+        options.logger?.debug("agent.tool_call_invalid", "Agent returned invalid flow completion input", { error: message });
+        turn = await provider.continue({
+          toolCallId: turn.toolCall.id,
+          toolName: turn.toolCall.name,
+          result: `Error: ${message}`,
+        });
+        continue;
+      }
+      const finalText = completionInput.summary as string;
+      const title = typeof completionInput.title === "string" ? completionInput.title : undefined;
       const currentState = await toStepResult(page, redactor);
 
       const step: LoopStep = { finalText, result: currentState };
       if (isFlowCompleteTool && turn.type === "tool_call") {
-        step.toolCall = { name: turn.toolCall.name, input: turn.toolCall.input };
+        step.toolCall = { name: turn.toolCall.name, input: completionInput };
       }
       history.push(step);
       options.onStep?.(step, history.length - 1, flowIndex);
