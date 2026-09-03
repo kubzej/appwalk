@@ -162,6 +162,9 @@ test("generates iframe locators and expanded actions as Playwright APIs", () => 
   assert.match(spec, /page\.waitForEvent\('download'\)/);
   assert.match(spec, /expect\(await download\.failure\(\)\)\.toBeNull\(\);/);
   assert.match(spec, /expect\(downloadPath\)\.toBeTruthy\(\);/);
+  assert.match(spec, /import \{ stat \} from 'node:fs\/promises';/);
+  assert.match(spec, /const downloadStats = await stat\(downloadPath\);/);
+  assert.match(spec, /expect\(downloadStats\.size\)\.toBeGreaterThan\(0\);/);
   assert.match(spec, /page\.locator\('#tags'\)\.selectOption\(\['one', 'three'\]\);/);
 });
 

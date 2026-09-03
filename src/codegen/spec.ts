@@ -432,7 +432,7 @@ function actionToStatement(name: string, input: Record<string, unknown>, fixture
       // A real, non-empty saved file, not just the event having fired — the same distinction the
       // live download() action checks (suggestedFilename() alone can't tell a real file from a
       // broken/empty one).
-      return `{ const downloadPromise = page.waitForEvent('download'); await ${locatorExpr()}.click(); const download = await downloadPromise; expect(await download.failure()).toBeNull(); const downloadPath = await download.path(); expect(downloadPath).toBeTruthy(); }`;
+      return `{ const downloadPromise = page.waitForEvent('download'); await ${locatorExpr()}.click(); const download = await downloadPromise; expect(await download.failure()).toBeNull(); const downloadPath = await download.path(); expect(downloadPath).toBeTruthy(); if (downloadPath) { const downloadStats = await stat(downloadPath); expect(downloadStats.size).toBeGreaterThan(0); } }`;
     case "handleDialog":
       return `page.once('dialog', (dialog) => dialog.${input.behavior as string}());`;
     case "burst": {
@@ -721,6 +721,7 @@ export function generateSpecBundle(flows: FlowEntries[], options: CodegenOptions
   const hasLogin = !hasStorageState && Boolean(options.username && options.password);
   const hasFixtures = fixturePlan.artifacts.length > 0;
   const hasDeviceProfile = flows.some((flow) => Boolean(flow.devicePreset));
+  const hasDownload = flows.some((flow) => flow.entries.some((entry) => entry.toolCall?.name === "download"));
 
   const parts: string[] = [
     hasDeviceProfile
@@ -729,6 +730,7 @@ export function generateSpecBundle(flows: FlowEntries[], options: CodegenOptions
   ];
   if (hasLogin) parts.push("import { loginWithConfiguredCredentials } from './auth.js';");
   if (hasFixtures) parts.push("import { installFixtures, loadScenario } from './fixtures.js';");
+  if (hasDownload) parts.push("import { stat } from 'node:fs/promises';");
 
   if (hasStorageState) {
     if (options.storageStateArtifactPath) {
