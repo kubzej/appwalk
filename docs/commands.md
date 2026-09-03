@@ -20,6 +20,8 @@ Runs discovery, evidence collection, and replay verification. It writes the same
 
 The target URL must be an absolute `http` or `https` URL. Agent navigation may use another origin as well, which keeps OAuth and local development setups possible; non-web schemes such as `file:`, `javascript:`, and `ftp:` are rejected.
 
+Unknown options, extra positional arguments, and duplicate non-repeatable options are rejected. `--expect` is intentionally repeatable.
+
 ## `generate`
 
 ```text

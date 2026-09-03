@@ -14,6 +14,21 @@ const validOptions = {
   maxSteps: 15,
 };
 
+function assertCliUsageError(argv: string[], expected: RegExp): void {
+  const originalExit = process.exit;
+  const originalError = console.error;
+  let output = "";
+  process.exit = (() => { throw new Error("CLI usage exit"); }) as typeof process.exit;
+  console.error = (...messages: unknown[]) => { output += messages.join(" ") + "\n"; };
+  try {
+    assert.throws(() => parseArgs(argv), /CLI usage exit/);
+    assert.match(output, expected);
+  } finally {
+    process.exit = originalExit;
+    console.error = originalError;
+  }
+}
+
 test("accepts a complete resolved configuration", () => {
   assert.doesNotThrow(() => validateResolvedOptions({ ...validOptions, personaName: "noah" }));
 });
@@ -68,6 +83,44 @@ test("rejects malformed and non-web target URLs", () => {
   assert.doesNotThrow(() => validateResolvedOptions({ ...validOptions, url: "https://login.example.test/oauth/start" }));
 });
 
+test("rejects unknown, extra, and duplicate CLI arguments", () => {
+  assertCliUsageError(
+    ["run", "https://example.test", "--max-step", "50"],
+    /Unknown option "--max-step"\./,
+  );
+  assertCliUsageError(
+    ["run", "https://example.test", "another-value"],
+    /Unexpected positional argument "another-value"\./,
+  );
+  assertCliUsageError(
+    ["run", "https://example.test", "--verbose", "--quiet"],
+    /Option "--quiet" was specified more than once\./,
+  );
+  assert.doesNotThrow(() => parseArgs(["run", "https://example.test", "--expect", "first", "--expect", "second"]));
+});
+
+test("rejects unknown YAML keys at every supported config level", () => {
+  const cases = [
+    ["maxstep: 25", /Unknown config key .*\.maxstep\./],
+    ["responses:\n  screenshotss: true", /Unknown config key .*\.responses\.screenshotss\./],
+    ["auth:\n  token: secret", /Unknown config key .*\.auth\.token\./],
+    ["safety:\n  allowAll: true", /Unknown config key .*\.safety\.allowAll\./],
+    ["coverage:\n  unexpected: true", /Unknown config key .*\.coverage\.unexpected\./],
+    ["coverage:\n  runs:\n    - name: smoke\n      maxstep: 10", /Unknown config key .*\.coverage\.runs\[0\]\.maxstep\./],
+  ] as const;
+
+  for (const [unknownConfig, expected] of cases) {
+    const directory = mkdtempSync(join(tmpdir(), "appwalk-config-"));
+    const path = join(directory, "config.yaml");
+    try {
+      writeFileSync(path, ["version: 1", "provider: openai", "model: test-model", unknownConfig].join("\n"));
+      assert.throws(() => loadAppwalkConfig(path), expected);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 test("rejects partial credential login configuration", () => {
   assert.throws(
     () => validateResolvedOptions({ ...validOptions, email: "user@example.test" }),
@@ -77,6 +130,25 @@ test("rejects partial credential login configuration", () => {
     () => validateResolvedOptions({ ...validOptions, password: "secret" }),
     /email and password must be provided together/,
   );
+});
+
+test("normalizes block methods consistently from YAML", () => {
+  const directory = mkdtempSync(join(tmpdir(), "appwalk-config-"));
+  const path = join(directory, "config.yaml");
+  try {
+    writeFileSync(path, [
+      "version: 1",
+      "url: https://example.test",
+      "provider: openai",
+      "model: test-model",
+      "safety:",
+      "  blockMethods: [\" POST \", \"delete\"]",
+    ].join("\n"));
+    const resolved = applyConfig(parseArgs(["run", "--config", path]));
+    assert.deepEqual(resolved.blockMethods, ["POST", "DELETE"]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("rejects partial credentials in YAML auth configuration", () => {

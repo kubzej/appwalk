@@ -1,7 +1,6 @@
 import type { BrowserContext } from "playwright";
 import type { Logger } from "../logging/logger.js";
-
-const DEFAULT_BLOCK_METHODS = ["POST", "DELETE", "PUT", "PATCH"];
+import { DEFAULT_BLOCK_METHODS, normalizeBlockMethods } from "./methods.js";
 
 export interface SafetyConfig {
   block?: string[];
@@ -66,7 +65,7 @@ export function evaluateSafetyRequest(
   if (options.allowDestructive) {
     return { blocked: false, matchedAllowRule, matchedBlockRule };
   }
-  const blockedByMethod = new Set(options.blockMethods ?? DEFAULT_BLOCK_METHODS).has(method);
+  const blockedByMethod = new Set(normalizeBlockMethods(options.blockMethods ?? DEFAULT_BLOCK_METHODS)).has(method.toUpperCase());
   return {
     blocked: blockedByMethod,
     ...(blockedByMethod ? { reason: "method" as const } : {}),

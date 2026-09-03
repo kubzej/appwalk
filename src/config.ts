@@ -148,9 +148,20 @@ function validateObject(value: unknown, label: string, path: string): Record<str
   return value as Record<string, unknown>;
 }
 
+function validateKnownKeys(value: Record<string, unknown>, allowed: readonly string[], path: string): void {
+  const allowedKeys = new Set(allowed);
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) throw new Error(`Unknown config key ${path}.${key}.`);
+  }
+}
+
 function validateConfig(value: unknown, path: string): AppwalkConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Config must contain an object: ${path}`);
   const config = value as Record<string, unknown>;
+  validateKnownKeys(config, [
+    "version", "url", "output", "provider", "model", "browser", "persona", "maxSteps", "screenshots", "trace",
+    "responses", "auth", "safety", "scope", "expect", "coverage",
+  ], path);
   if (config.version !== 1) throw new Error(`Unsupported config version in ${path}. Expected version: 1.`);
   if (config.provider !== undefined && !isProvider(config.provider)) throw new Error(`Invalid provider in ${path}.`);
   if (config.model !== undefined && !isNonEmptyString(config.model)) throw new Error(`model must be a non-empty string in ${path}.`);
@@ -169,12 +180,14 @@ function validateConfig(value: unknown, path: string): AppwalkConfig {
   }
   if (config.responses !== undefined) {
     const responses = validateObject(config.responses, "responses", path);
+    validateKnownKeys(responses, ["maxVariants", "maxFixtureBytes"], `${path}.responses`);
     if (responses.maxVariants !== undefined) validateNonNegativeInteger(responses.maxVariants, "responses.maxVariants", path);
     if (responses.maxFixtureBytes !== undefined) validateNonNegativeInteger(responses.maxFixtureBytes, "responses.maxFixtureBytes", path);
   }
   if (config.scope !== undefined && !isNonEmptyString(config.scope)) throw new Error(`scope must be a non-empty string in ${path}.`);
   if (config.auth !== undefined) {
     const auth = validateObject(config.auth, "auth", path);
+    validateKnownKeys(auth, ["email", "password", "storageState"], `${path}.auth`);
     for (const key of ["email", "password", "storageState"]) {
       if (auth[key] !== undefined && !isNonEmptyString(auth[key])) {
         throw new Error(`auth.${key} must be a non-empty string in ${path}.`);
@@ -184,6 +197,7 @@ function validateConfig(value: unknown, path: string): AppwalkConfig {
   }
   if (config.safety !== undefined) {
     const safety = validateObject(config.safety, "safety", path);
+    validateKnownKeys(safety, ["allowDestructive", "blockMethods", "config"], `${path}.safety`);
     if (safety.allowDestructive !== undefined && typeof safety.allowDestructive !== "boolean") {
       throw new Error(`safety.allowDestructive must be a boolean in ${path}.`);
     }
@@ -193,15 +207,15 @@ function validateConfig(value: unknown, path: string): AppwalkConfig {
     }
   }
   if (config.coverage !== undefined) {
-    if (!config.coverage || typeof config.coverage !== "object" || Array.isArray(config.coverage)) {
-      throw new Error(`coverage must be an object in ${path}.`);
-    }
-    const runs = (config.coverage as Record<string, unknown>).runs;
+    const coverage = validateObject(config.coverage, "coverage", path);
+    validateKnownKeys(coverage, ["runs"], `${path}.coverage`);
+    const runs = coverage.runs;
     if (runs !== undefined && (!Array.isArray(runs) || runs.some((run) => !run || typeof run !== "object" || Array.isArray(run)))) {
       throw new Error(`coverage.runs must be a list of run objects in ${path}.`);
     }
     for (const [index, run] of ((runs as unknown[] | undefined) ?? []).entries()) {
       const runConfig = run as Record<string, unknown>;
+      validateKnownKeys(runConfig, ["name", "persona", "maxSteps", "scope", "expect"], `${path}.coverage.runs[${index}]`);
       if (!isNonEmptyString(runConfig.name)) throw new Error(`coverage.runs[${index}].name is required in ${path}.`);
       if (runConfig.persona !== undefined && !isNonEmptyString(runConfig.persona)) {
         throw new Error(`coverage.runs[${index}].persona must be a non-empty string in ${path}.`);

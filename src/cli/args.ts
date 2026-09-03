@@ -1,9 +1,9 @@
 import { loadAppwalkConfig, validateResolvedOptions, type BrowserEngine, type CoverageRunConfig, type ProviderName } from "../config.js";
 import type { LogLevel } from "../logging/logger.js";
+import { DEFAULT_BLOCK_METHODS, normalizeBlockMethods } from "../safety/methods.js";
 
 const DEFAULT_OUTPUT_DIR = "./appwalk-output";
 const DEFAULT_MAX_STEPS = 25;
-const DEFAULT_BLOCK_METHODS = ["POST", "DELETE", "PUT", "PATCH"];
 
 type Command = "explore" | "generate" | "run";
 
@@ -99,7 +99,7 @@ export function parseArgs(argv: string[]): CliArgs {
     maxSteps: DEFAULT_MAX_STEPS,
     browserEngine: "chromium",
     allowDestructive: false,
-    blockMethods: DEFAULT_BLOCK_METHODS,
+    blockMethods: [...DEFAULT_BLOCK_METHODS],
     screenshots: false,
     trace: false,
     expectations: [],
@@ -107,14 +107,42 @@ export function parseArgs(argv: string[]): CliArgs {
     logLevel: "normal",
   };
   if (url) args.cliSpecified.add("url");
+  const flagKeys = new Map([
+    ["--flows", "flowSelection"],
+    ["-e", "email"], ["--email", "email"],
+    ["-p", "password"], ["--password", "password"],
+    ["-o", "output"], ["--output", "output"],
+    ["-n", "maxSteps"], ["--max-steps", "maxSteps"],
+    ["--response-variant-max", "responseVariantMax"],
+    ["--response-fixture-max-bytes", "responseFixtureMaxBytes"],
+    ["-m", "model"], ["--model", "model"],
+    ["--provider", "provider"], ["--browser", "browserEngine"],
+    ["--block-methods", "blockMethods"], ["--safety-config", "safetyConfigPath"],
+    ["--storage-state", "storageStatePath"], ["--persona", "personaName"],
+    ["--scope", "scope"], ["--expect", "expectations"], ["--config", "configPath"],
+    ["--allow-destructive", "allowDestructive"], ["--screenshots", "screenshots"],
+    ["--trace", "trace"], ["--quiet", "logLevel"], ["--verbose", "logLevel"], ["--debug", "logLevel"],
+  ]);
   const valueFlags = new Set([
     "--flows", "-e", "--email", "-p", "--password", "-o", "--output", "-n", "--max-steps",
     "--response-variant-max", "--response-fixture-max-bytes", "-m", "--model", "--provider", "--browser",
     "--block-methods", "--safety-config", "--storage-state", "--persona", "--scope", "--expect", "--config",
   ]);
+  const repeatableFlags = new Set(["expectations"]);
+  const seenFlags = new Set<string>();
 
   for (let i = 0; i < rest.length; i += 1) {
     const flag = rest[i]!;
+    const flagKey = flagKeys.get(flag);
+    if (flagKey === undefined) {
+      return printUsage(flag.startsWith("-")
+        ? `Unknown option "${flag}".`
+        : `Unexpected positional argument "${flag}".`);
+    }
+    if (!repeatableFlags.has(flagKey)) {
+      if (seenFlags.has(flagKey)) return printUsage(`Option "${flag}" was specified more than once.`);
+      seenFlags.add(flagKey);
+    }
     if (flag === "--allow-destructive") {
       args.allowDestructive = true;
       args.cliSpecified.add("allowDestructive");
@@ -174,7 +202,7 @@ export function parseArgs(argv: string[]): CliArgs {
       args.cliSpecified.add("browserEngine");
     }
     else if (flag === "--block-methods" && value) {
-      args.blockMethods = value.split(",").map((method) => method.trim().toUpperCase());
+      args.blockMethods = normalizeBlockMethods(value.split(","));
       args.cliSpecified.add("blockMethods");
     }
     else if (flag === "--safety-config" && value) {
@@ -233,7 +261,7 @@ export function applyConfig(args: CliArgs): CliArgs {
   if (!args.cliSpecified.has("password") && config.auth?.password) args.password = config.auth.password;
   if (!args.cliSpecified.has("storageStatePath") && config.auth?.storageState) args.storageStatePath = config.auth.storageState;
   if (!args.cliSpecified.has("allowDestructive") && config.safety?.allowDestructive !== undefined) args.allowDestructive = config.safety.allowDestructive;
-  if (!args.cliSpecified.has("blockMethods") && config.safety?.blockMethods) args.blockMethods = config.safety.blockMethods.map((method) => method.toUpperCase());
+  if (!args.cliSpecified.has("blockMethods") && config.safety?.blockMethods) args.blockMethods = normalizeBlockMethods(config.safety.blockMethods);
   if (!args.cliSpecified.has("safetyConfigPath") && config.safety?.config) args.safetyConfigPath = config.safety.config;
   if (!args.cliSpecified.has("scope") && config.scope) args.scope = config.scope;
   if (!args.cliSpecified.has("expectations") && config.expect) args.expectations = config.expect;
