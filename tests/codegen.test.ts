@@ -28,8 +28,10 @@ test("generated login helpers are typed and duplicate flow titles are unique", (
     password: "secret",
   }).artifacts.find((artifact) => artifact.relativePath === "auth.ts");
   assert.ok(auth);
-  assert.match(auth.content, /findLoginField\(page: Page, \.\.\.patterns: RegExp\[\]\): Promise<Locator \| null>/);
+  assert.match(auth.content, /findLoginField\(root: Page \| Locator, \.\.\.patterns: RegExp\[\]\): Promise<Locator \| null>/);
   assert.match(auth.content, /loginWithCredentials\(page: Page, username: string, password: string\): Promise<void>/);
+  assert.match(auth.content, /remainsOnLoginRoute/);
+  assert.match(auth.content, /Login did not complete/);
   assert.match(auth.content, /APPWALK_USERNAME/);
   assert.match(auth.content, /APPWALK_PASSWORD/);
   const credentials = generateSpecBundle([

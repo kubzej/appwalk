@@ -124,13 +124,13 @@ function readCredentials(): Credentials {
   throw new Error('Credentials not found. Keep ${GENERATED_CREDENTIALS_FILE} next to auth.ts or set APPWALK_USERNAME and APPWALK_PASSWORD.');
 }
 
-async function findLoginField(page: Page, ...patterns: RegExp[]): Promise<Locator | null> {
+async function findLoginField(root: Page | Locator, ...patterns: RegExp[]): Promise<Locator | null> {
   for (const pattern of patterns) {
-    const byLabel = page.getByLabel(pattern);
+    const byLabel = root.getByLabel(pattern);
     if ((await byLabel.count()) > 0) return byLabel.first();
   }
   for (const pattern of patterns) {
-    const byRole = page.getByRole('textbox', { name: pattern });
+    const byRole = root.getByRole('textbox', { name: pattern });
     if ((await byRole.count()) > 0) return byRole.first();
   }
   return null;
@@ -138,7 +138,6 @@ async function findLoginField(page: Page, ...patterns: RegExp[]): Promise<Locato
 
 export async function loginWithCredentials(page: Page, username: string, password: string): Promise<void> {
   let passwordField = page.locator('input[type="password"]').first();
-  const loginUrl = page.url();
   if ((await passwordField.count()) === 0) {
     const loginTrigger = page.getByRole('button', { name: /log ?in|sign ?in/i })
       .or(page.getByRole('link', { name: /log ?in|sign ?in/i })).first();
@@ -147,38 +146,73 @@ export async function loginWithCredentials(page: Page, username: string, passwor
       await passwordField.waitFor({ state: 'visible' });
     }
   }
+  const loginPageUrl = page.url();
   if ((await passwordField.count()) === 0) {
     const byLabel = await findLoginField(page, /password/i);
-    if (!byLabel) throw new Error('No password field found');
+    if (!byLabel) throw new Error('Login form not found. Use --storage-state if the site uses SSO, 2FA, or has no password login.');
     passwordField = byLabel;
   }
 
-  let usernameField = page.locator('input[type="email"]').first();
+  const form = page.locator('form:has(input[type="password"])').first();
+  const loginScope = (await form.count()) > 0
+    ? form
+    : passwordField.locator("xpath=ancestor::*[.//button or .//input[@type='submit']][1]");
+
+  let usernameField = loginScope.locator('input[type="email"], input[autocomplete="username"], input[name="username"]').first();
   if ((await usernameField.count()) === 0) {
-    const byLabel = await findLoginField(page, /username/i, /e-?mail/i);
+    const byLabel = await findLoginField(loginScope, /username/i, /e-?mail/i);
     if (byLabel) {
       usernameField = byLabel;
     } else {
-      const form = page.locator('form:has(input[type="password"])').first();
-      usernameField = form.locator('input[type="text"], input:not([type])').first();
+      usernameField = loginScope.locator('input[type="text"], input:not([type])').first();
     }
   }
 
   await usernameField.fill(username);
   await passwordField.fill(password);
 
-  const form = page.locator('form:has(input[type="password"])').first();
-  const formSubmit = form.locator('button[type="submit"], input[type="submit"]').first();
-  if ((await formSubmit.count()) > 0) {
-    await formSubmit.click();
+  const localLoginButtons = loginScope.getByRole('button', { name: /log ?in|sign ?in/i });
+  if ((await localLoginButtons.count()) > 0) {
+    await localLoginButtons.last().click();
   } else {
-    await page.getByRole('button', { name: /log ?in|sign ?in/i }).click();
+    const formSubmit = loginScope.locator('button[type="submit"], input[type="submit"]').first();
+    if ((await formSubmit.count()) > 0) {
+      await formSubmit.click();
+    } else {
+      const pageLoginButtons = page.getByRole('button', { name: /log ?in|sign ?in/i });
+      if ((await pageLoginButtons.count()) === 0) {
+        throw new Error('Login submit control not found. Use --storage-state if the site uses a custom login flow.');
+      }
+      await pageLoginButtons.last().click();
+    }
   }
 
   await Promise.race([
-    page.waitForURL((nextUrl: URL) => nextUrl.toString() !== loginUrl, { timeout: 10000 }),
+    page.waitForURL((nextUrl: URL) => nextUrl.toString() !== loginPageUrl, { timeout: 10000 }),
     passwordField.waitFor({ state: 'hidden', timeout: 10000 }),
   ]).catch(() => undefined);
+
+  let stillOnPasswordField = await page
+    .locator('input[type="password"]')
+    .first()
+    .isVisible()
+    .catch(() => false);
+  if (stillOnPasswordField && page.url() !== loginPageUrl) {
+    await page.locator('input[type="password"]').first().waitFor({ state: 'hidden', timeout: 10000 }).catch(() => undefined);
+    stillOnPasswordField = await page
+      .locator('input[type="password"]')
+      .first()
+      .isVisible()
+      .catch(() => false);
+  }
+  const finalPath = new URL(page.url()).pathname.toLowerCase();
+  const remainsOnLoginRoute = /(^|\\/)login(?:\\/|$)/.test(finalPath);
+  if (stillOnPasswordField || page.url() === loginPageUrl || remainsOnLoginRoute) {
+    const message = stillOnPasswordField
+      ? 'Login did not complete. Check credentials or use --storage-state for 2FA, SSO, or CAPTCHA.'
+      : 'Login outcome could not be verified. Use --storage-state if the app keeps the login route after authentication.';
+    throw new Error(message);
+  }
 }
 
 export async function loginWithConfiguredCredentials(page: Page): Promise<void> {
