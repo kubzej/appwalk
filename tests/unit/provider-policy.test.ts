@@ -48,7 +48,11 @@ test('hosted provider policy turns cancellation into a structured provider error
 
 test('OpenAI adapter rejects malformed successful responses instead of silently producing a flow', async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response('not-json', { status: 200 });
+  // Real OpenAI responses are always application/json; without that header the SDK treats
+  // the body as opaque text instead of attempting to parse it, so the fixture wouldn't
+  // exercise the malformed-JSON path it's named for.
+  globalThis.fetch = async () =>
+    new Response('not-json', { status: 200, headers: { 'content-type': 'application/json' } });
   try {
     await assert.rejects(
       new OpenAIProvider('test-key', 'malformed-response-model').start({

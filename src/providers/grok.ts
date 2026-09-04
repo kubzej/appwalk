@@ -10,6 +10,10 @@ import {
 import { Logger } from '../logging/logger.js';
 import { providerHttpError, ProviderRequestError, withHostedProviderRequest } from './request-policy.js';
 
+// xAI has no official Node/TypeScript SDK (only a Python one) — the community options are
+// third-party wrappers (e.g. Vercel's AI SDK) that don't expose raw response headers, which
+// this file needs to read rate-limit headers for backoff. Raw fetch against xAI's own
+// OpenAI-compatible Responses API wire format is the most direct option until that changes.
 const API_URL = 'https://api.x.ai/v1/responses';
 
 interface GrokOutputItem {

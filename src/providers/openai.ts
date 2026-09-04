@@ -1,3 +1,4 @@
+import OpenAI from 'openai';
 import type { LlmProvider, ProviderCallOptions, ProviderTurn, ToolDefinition, ToolResult } from './provider.js';
 import { AGENT_MAX_OUTPUT_TOKENS } from './provider.js';
 import {
@@ -7,49 +8,35 @@ import {
   sharedRateLimitCoordinator,
 } from './rate-limit.js';
 import { Logger } from '../logging/logger.js';
-import { providerHttpError, ProviderRequestError, withHostedProviderRequest } from './request-policy.js';
+import {
+  providerHeaders,
+  providerStatus,
+  withHostedProviderRequest,
+  HOSTED_PROVIDER_REQUEST_TIMEOUT_MS,
+} from './request-policy.js';
 
-const API_URL = 'https://api.openai.com/v1/responses';
-interface OpenAiOutputItem {
-  type: string;
-  call_id?: string;
-  name?: string;
-  arguments?: string;
-  content?: Array<{ type: string; text?: string }>;
-}
-
-interface OpenAiResponse {
-  id: string;
-  status?: string;
-  incomplete_details?: { reason?: string };
-  output?: OpenAiOutputItem[];
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    total_tokens?: number;
-    input_tokens_details?: { cached_tokens?: number };
-  };
-}
-
-function toOpenAiTools(tools: ToolDefinition[]) {
+function toOpenAiTools(tools: ToolDefinition[]): OpenAI.Responses.FunctionTool[] {
   return tools.map((tool) => ({
-    type: 'function' as const,
+    type: 'function',
     name: tool.name,
     description: tool.description,
     parameters: tool.inputSchema,
+    strict: null,
   }));
 }
 
 export class OpenAIProvider implements LlmProvider {
-  private readonly apiKey: string;
+  private readonly client: OpenAI;
   private readonly model: string;
-  private tools: ReturnType<typeof toOpenAiTools> = [];
+  private tools: OpenAI.Responses.FunctionTool[] = [];
   private lastResponseId: string | null = null;
   private requestIndex = 0;
   private readonly logger: Logger;
 
   constructor(apiKey: string, model: string, logger = new Logger('quiet')) {
-    this.apiKey = apiKey;
+    // Same reasoning as AnthropicProvider: the SDK's own retry loop is blind to the reset
+    // time in rate-limit headers, so we disable it and retry ourselves in send() instead.
+    this.client = new OpenAI({ apiKey, maxRetries: 0, timeout: HOSTED_PROVIDER_REQUEST_TIMEOUT_MS });
     this.model = model;
     this.logger = logger;
   }
@@ -64,9 +51,13 @@ export class OpenAIProvider implements LlmProvider {
   }): Promise<ProviderTurn> {
     this.lastResponseId = null;
     this.tools = toOpenAiTools(params.tools);
-    const userContent: unknown[] = [{ type: 'input_text', text: params.initialInput }];
+    const userContent: OpenAI.Responses.ResponseInputContent[] = [{ type: 'input_text', text: params.initialInput }];
     if (params.screenshot) {
-      userContent.push({ type: 'input_image', image_url: `data:image/jpeg;base64,${params.screenshot}` });
+      userContent.push({
+        type: 'input_image',
+        image_url: `data:image/jpeg;base64,${params.screenshot}`,
+        detail: 'auto',
+      });
     }
     return this.send(
       [
@@ -79,7 +70,7 @@ export class OpenAIProvider implements LlmProvider {
   }
 
   async continue(toolResult: ToolResult, options?: ProviderCallOptions): Promise<ProviderTurn> {
-    const input: unknown[] = [
+    const input: OpenAI.Responses.ResponseInput = [
       {
         type: 'function_call_output',
         call_id: toolResult.toolCallId,
@@ -89,14 +80,16 @@ export class OpenAIProvider implements LlmProvider {
     if (toolResult.screenshot) {
       input.push({
         role: 'user',
-        content: [{ type: 'input_image', image_url: `data:image/jpeg;base64,${toolResult.screenshot}` }],
+        content: [
+          { type: 'input_image', image_url: `data:image/jpeg;base64,${toolResult.screenshot}`, detail: 'auto' },
+        ],
       });
     }
     return this.send(input, undefined, options?.signal);
   }
 
   private async send(
-    input: unknown[],
+    input: OpenAI.Responses.ResponseInput,
     maxOutputTokens = AGENT_MAX_OUTPUT_TOKENS,
     signal?: AbortSignal,
   ): Promise<ProviderTurn> {
@@ -108,7 +101,7 @@ export class OpenAIProvider implements LlmProvider {
     });
     const startedAt = Date.now();
 
-    const body: Record<string, unknown> = {
+    const body: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
       model: this.model,
       input,
       tools: this.tools,
@@ -117,31 +110,8 @@ export class OpenAIProvider implements LlmProvider {
     };
     if (this.lastResponseId) body.previous_response_id = this.lastResponseId;
 
-    const requestBody = JSON.stringify(body);
-
-    const result = await withHostedProviderRequest<{ data: OpenAiResponse; headers: Headers }>(
-      async (attemptSignal) => {
-        const response = await fetch(API_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.apiKey}`,
-          },
-          body: requestBody,
-          signal: attemptSignal,
-        });
-        if (!response.ok) {
-          throw providerHttpError(
-            'OpenAI',
-            this.model,
-            requestIndex,
-            response.status,
-            await response.text(),
-            response.headers,
-          );
-        }
-        return { data: (await response.json()) as OpenAiResponse, headers: response.headers };
-      },
+    const result = await withHostedProviderRequest<{ data: OpenAI.Responses.Response; response: { headers: Headers } }>(
+      async (attemptSignal) => this.client.responses.create(body, { signal: attemptSignal }).withResponse(),
       {
         provider: 'OpenAI',
         model: this.model,
@@ -156,14 +126,14 @@ export class OpenAIProvider implements LlmProvider {
             attemptSignal,
           ),
         retryDelayMs: (error) =>
-          error instanceof ProviderRequestError && error.failure.status === 429 && error.failure.headers
-            ? rateLimitRetryDelayMs(error.failure.headers)
+          providerStatus(error) === 429 && providerHeaders(error)
+            ? rateLimitRetryDelayMs(providerHeaders(error) as Headers)
             : undefined,
       },
     );
-    const { data } = result;
+    const data = result.data;
     const usage = data.usage;
-    sharedRateLimitCoordinator.observe(`openai:${this.model}`, result.headers, usage?.input_tokens);
+    sharedRateLimitCoordinator.observe(`openai:${this.model}`, result.response.headers, usage?.input_tokens);
     this.logger.debug('provider.response_received', 'OpenAI response received', {
       provider: 'openai',
       model: this.model,
@@ -175,13 +145,15 @@ export class OpenAIProvider implements LlmProvider {
       totalTokens: usage?.total_tokens ?? 0,
       responseStatus: data.status,
       incompleteReason: data.incomplete_details?.reason,
-      rateLimit: rateLimitHeadersSummary(result.headers).trim() || undefined,
+      rateLimit: rateLimitHeadersSummary(result.response.headers).trim() || undefined,
     });
 
     this.lastResponseId = data.id;
 
     const output = data.output ?? [];
-    const functionCalls = output.filter((item) => item.type === 'function_call');
+    const functionCalls = output.filter(
+      (item): item is OpenAI.Responses.ResponseFunctionToolCall => item.type === 'function_call',
+    );
     if (functionCalls.length > 1) {
       this.logger.debug(
         'provider.multiple_tool_calls',
@@ -208,14 +180,15 @@ export class OpenAIProvider implements LlmProvider {
     }
 
     const text = output
-      .flatMap((item) => item.content ?? [])
-      .filter((part) => part.type === 'output_text' || part.type === 'text')
-      .map((part) => part.text ?? '')
+      .filter((item): item is OpenAI.Responses.ResponseOutputMessage => item.type === 'message')
+      .flatMap((item) => item.content)
+      .filter((part) => part.type === 'output_text')
+      .map((part) => (part.type === 'output_text' ? part.text : ''))
       .join('');
     return {
       type: 'text',
       text,
-      incompleteReason: data.incomplete_details?.reason,
+      incompleteReason: data.incomplete_details?.reason ?? undefined,
     };
   }
 }
