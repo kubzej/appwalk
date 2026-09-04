@@ -205,6 +205,10 @@ function renderFlow(flow: ReportFlow, children: ReportFlow[] = [], audit?: Repor
   const originTag = flow.origin === 'derived' ? `<span class="chip muted">derived scenario</span>` : '';
   const similarOrdinal = flow.similarTo ? flowOrdinal(flow.similarTo) : undefined;
   const similarTag = similarOrdinal ? `<span class="chip muted">similar to Flow ${similarOrdinal}</span>` : '';
+  const summary =
+    flow.summary && flow.summary !== 'No flow summary provided.'
+      ? `<p class="flow-summary">${escapeHtml(flow.summary)}</p>`
+      : '';
   const steps =
     flow.steps.length > 0
       ? `<ol class="steps">${flow.steps.map(renderStep).join('')}</ol>`
@@ -226,6 +230,7 @@ function renderFlow(flow: ReportFlow, children: ReportFlow[] = [], audit?: Repor
       : '';
   return `<div class="flow">
     <div class="flow-head"><h3>${escapeHtml(flow.title)}</h3><span class="chip-group">${originTag}${similarTag}<span class="chip ${chip.tone}">${escapeHtml(chip.label)}</span></span></div>
+    ${summary}
     ${steps}
     ${failure}${finding}${runtimeNotes}${variantAudit}${variants}
   </div>`;
@@ -426,6 +431,7 @@ const REPORT_CSS = `
   .flow{ background:var(--surface); border:1px solid var(--border); border-radius:6px; overflow:hidden; }
   .flow-head{ display:flex; justify-content:space-between; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid var(--border); }
   .flow-head h3{ font-size:16.5px; margin:0; }
+  .flow-summary{ margin:12px 18px; color:var(--muted); font-size:13.5px; }
   .chip-group{ display:flex; gap:6px; }
   .chip{ font-size:11.5px; font-weight:600; padding:3px 10px; border-radius:99px; white-space:nowrap; }
   .chip.success{ background:var(--success-soft); color:var(--success); }
