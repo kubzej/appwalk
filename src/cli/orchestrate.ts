@@ -6,7 +6,7 @@ import { PERSONAS, type PersonaIntent } from '../agent/personas.js';
 import type { TabRegistryHandle } from '../agent/tools.js';
 import { login } from '../browser/login.js';
 import { EvidenceLog, readEvidenceLog, type EvidenceEntry, type EvidenceReadIssue } from '../evidence/log.js';
-import { EvidenceRecorder, type RuntimeErrorEntry } from '../evidence/recorder.js';
+import { EvidenceRecorder, type NetworkEntry, type RuntimeErrorEntry } from '../evidence/recorder.js';
 import { extractResponseFixtures } from '../response/variants.js';
 import type { ExpectationObservation } from '../types.js';
 import type { SafetyConfig } from '../safety/guard.js';
@@ -166,6 +166,25 @@ function classifyReplayFailure(
   if (result.failedAt) return 'action';
   if (!result.expectationsReproduced) return 'expectation';
   return 'verification';
+}
+
+/**
+ * A challenge-mode "confirmed" finding must be backed by some positive evidence — an explicit
+ * expectation check, a failed (4xx/5xx) request, or a recorded runtime error — not just silence.
+ * Without this, a flow that never observed anything at all (e.g. two bare navigates with no
+ * `waitFor`/`verifyExpectation`) trivially "passes" on every replay, since replaying the same
+ * non-observation reproduces the same non-observation. See FINDINGS-round2.md point 6.
+ */
+export function hasMinimumChallengeEvidence(
+  expectedExpectationsCount: number,
+  network: NetworkEntry[],
+  runtimeErrors: RuntimeErrorEntry[],
+): boolean {
+  return (
+    expectedExpectationsCount > 0 ||
+    network.some((entry) => entry.status !== undefined && entry.status >= 400) ||
+    runtimeErrors.length > 0
+  );
 }
 
 function loadSafetyConfig(path: string | undefined): SafetyConfig | undefined {
@@ -467,11 +486,17 @@ async function exploreAndVerifyInBrowser(
               };
             }
             if (findingCandidate) {
+              const hasEvidence = hasMinimumChallengeEvidence(
+                expectedExpectations.length,
+                replayRecorder.network,
+                replayRecorder.runtimeErrors,
+              );
               const confirmedFinding =
                 !replayResult.failedAt &&
                 replayResult.safetyBlocked === 0 &&
                 replayResult.expectationsReproduced &&
-                !replayResult.verificationPassed;
+                !replayResult.verificationPassed &&
+                hasEvidence;
               const finding: FlowFinding = {
                 flowIndex: index,
                 status: confirmedFinding ? 'confirmed' : 'inconclusive',
@@ -484,7 +509,9 @@ async function exploreAndVerifyInBrowser(
                       ? 'The replay did not reproduce one or more expectation signals.'
                       : replayResult.verificationPassed
                         ? 'The replay defended the application on the clean session.'
-                        : undefined,
+                        : !hasEvidence
+                          ? 'The flow recorded no explicit expectation, failed request, or runtime error — not enough evidence to confirm either way.'
+                          : undefined,
               };
               findings.push(finding);
               flowLogger.warn(

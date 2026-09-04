@@ -6,7 +6,7 @@ import { verifyFlow } from '../agent/verification.js';
 import { type BrowserLifecycle, type BrowserRestartHooks } from '../browser/actions.js';
 import { captureSnapshot } from '../browser/snapshot.js';
 import type { EvidenceEntry } from '../evidence/log.js';
-import type { EvidenceRecorder } from '../evidence/recorder.js';
+import type { EvidenceRecorder, NetworkEntry } from '../evidence/recorder.js';
 import type { ToolCall } from '../providers/provider.js';
 import type { ResponseExpectation, ResponseFixtureSelector } from '../response/variants.js';
 import type { ExpectationObservation, StepResult } from '../types.js';
@@ -82,6 +82,9 @@ export async function replay(
   const replayRuntimeErrorStart = recorder?.runtimeErrors.length ?? 0;
   tabRegistryHandle.tabs = new Map([['tab-0', page]]);
   const steps: StepResult[] = [];
+  // Same scope `stability` mode uses during discovery (see `looksLikeStability` in verification.ts):
+  // only the burst step(s)' own network, not the whole flow's.
+  let burstNetwork: NetworkEntry[] = [];
   let variantExpectationResult: import('../agent/tools.js').ToolCallResult | undefined;
   let variantExpectationStep: number | undefined;
   let finalUrl = flowStartUrl;
@@ -121,6 +124,7 @@ export async function replay(
       action: action.name,
       input: action.input,
     });
+    const networkBeforeStep = recorder?.network.length ?? 0;
     try {
       const result = await executeToolCall(
         page,
@@ -135,6 +139,9 @@ export async function replay(
       if (result.activePage) {
         page = result.activePage;
         await onActivePageChange?.(page);
+      }
+      if (action.name === 'burst') {
+        burstNetwork = burstNetwork.concat(recorder?.network.slice(networkBeforeStep) ?? []);
       }
       await checkVariantExpectation(index);
       logger?.debug('replay.step_completed', 'Replay action completed', {
@@ -184,6 +191,7 @@ export async function replay(
     finalUrl,
     finalSnapshot,
     network: recorder?.network.slice(replayNetworkStart) ?? [],
+    burstNetwork,
     snapshots: steps.map((step) => step.snapshot),
     runtimeErrors: recorder?.runtimeErrors.slice(replayRuntimeErrorStart) ?? [],
     expectations: [

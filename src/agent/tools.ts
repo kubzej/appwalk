@@ -19,7 +19,7 @@ const locatorProp = {
     type: 'string',
     maxLength: 2_000,
     description:
-      'A Playwright locator string — prefer the stable locator hint from the page observation; see the locator syntax rules in the system prompt.',
+      'A Playwright locator string — prefer the stable locator hint from the page observation; see the locator syntax rules in the system prompt. In an interactive-elements line like link "View products" | locator: [data-testid="navbar-products-link"], use only the value after "locator:" — not the human-readable link "View products" part before it, which is not valid locator syntax.',
   },
 };
 

@@ -7,6 +7,7 @@ import { captureSnapshot } from '../../src/browser/snapshot.js';
 import { attachPopupDetection } from '../../src/cli/orchestrate.js';
 import type { TabRegistryHandle } from '../../src/agent/tools.js';
 import { Logger } from '../../src/logging/logger.js';
+import { Redactor } from '../../src/security/redaction.js';
 import type { LlmProvider, ProviderTurn, ToolDefinition, ToolResult } from '../../src/providers/provider.js';
 
 class TextOnlyProvider implements LlmProvider {
@@ -128,6 +129,15 @@ test('a popup discovered mid-flow is reachable via switchTab inside the real age
     assert.equal(switchStep?.error, undefined, "switchTab must not fail to find the popup's tab id");
     assert.match(switchStep!.result!.snapshot, /popped/);
     assert.equal(result.flows.length, 1);
+
+    // switchTab (like openTab/openInNewTab/reopenBrowser) returns a raw Playwright Page under
+    // `activePage` so the loop can retarget itself — it must never survive into the step's
+    // persisted result. A raw Page has circular internal references, and both this history entry
+    // and the evidence log run it through Redactor.redact(), which used to recurse into whatever
+    // it was given with no cycle guard — leaking a live Page here crashed the whole run with
+    // "Maximum call stack size exceeded" (see FINDINGS-round2.md point 4).
+    assert.ok(!('activePage' in switchStep!.result!), 'a step result must never carry the raw Page it switched to');
+    assert.doesNotThrow(() => new Redactor().redact(result.history));
   } finally {
     await browser.close();
     server.close();

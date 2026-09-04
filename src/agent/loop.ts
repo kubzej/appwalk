@@ -1,7 +1,7 @@
 import type { Page } from 'playwright';
 import { type BrowserLifecycle, type BrowserRestartHooks } from '../browser/actions.js';
 import { captureScreenshot, toStepResult } from '../browser/snapshot.js';
-import type { EvidenceRecorder } from '../evidence/recorder.js';
+import type { EvidenceRecorder, NetworkEntry } from '../evidence/recorder.js';
 import type { LlmProvider } from '../providers/provider.js';
 import type { ExpectationObservation, ExpectationStatus, StepResult } from '../types.js';
 import type { Logger } from '../logging/logger.js';
@@ -109,7 +109,7 @@ If a cookie/consent banner, promotional overlay, or modal is blocking the page, 
 
 You have a budget of ${maxSteps} actions for this run — use as much of it as you genuinely can. You're not trying to find one happy path and stop; the goal is to exercise the application thoroughly, all the way through, so use the full budget probing it. Prioritize finishing the flow you're already on over starting a new one, and don't spend more than 2 attempts on the same stuck approach. After completing a flow, always look for another one to attempt next — vary the details: a different product or item, a different input value, a different setting or configuration option, a different path through similar functionality. Don't literally repeat a flow you already ran with the exact same inputs — that adds nothing. If you're truly out of new variations to try, a near-identical repeat is still better than stopping with budget left over, but treat that as a last resort, not the default. Don't stop just because you've covered the obvious cases.
 
-You see the page as an accessibility tree snapshot after every action. Choose exactly one tool call per turn based on the current snapshot.
+You see the page as an accessibility tree snapshot after every action. Choose exactly one tool call per turn based on the current snapshot. If that snapshot shows a loading state (a spinner, "Loading...", a skeleton placeholder) rather than the page's real content, that is not yet the answer to whatever you just tried — use \`waitFor\` on real content (or its absence) before drawing any conclusion or calling \`flowComplete\`; a conclusion based on a still-loading page is not evidence of anything.
 
 Locator syntax — this is a Playwright locator string, not a plain CSS selector:
 - To target by accessibility role and name, you MUST prefix with "role=", e.g. role=button[name="Submit"] or role=textbox[name="Email"]. A bare "textbox[name=...]" or "button[name=...]" without the "role=" prefix is invalid — "textbox" and "button" are not HTML tags, so it will never match anything and will just time out.
@@ -119,7 +119,7 @@ Locator syntax — this is a Playwright locator string, not a plain CSS selector
 - Prefer the actual interactive element (the button or link) over a decorative child inside it (an icon or image) — clicking an <img> inside a <button> can fail because the button intercepts the click. If an element has a role in the snapshot (e.g. "button \"Menu\""), target it with role=button[name="Menu"], not the icon inside it.
 - If a locator resolves to more than one element (ambiguous), make it more specific — add text, narrow the role, or use >> nth=N — rather than repeating the same locator.
 - Locator priority: prefer a stable data-testid, then a stable id or app-owned attribute, then role plus accessible name, then stable visible text, then a CSS structure selector. Use CSS when the application is built from non-semantic elements such as clickable divs, but avoid generated class names and layout-dependent selectors when a stable attribute exists.
-- The interactive-elements section is a compact DOM supplement, not a second accessibility tree. Use its locator hints for div-only controls, and use the screenshot when the element is visible but has no reliable semantic or stable DOM signal.
+- The interactive-elements section is a compact DOM supplement, not a second accessibility tree. Use its locator hints for div-only controls, and use the screenshot when the element is visible but has no reliable semantic or stable DOM signal. Each line has the shape role "name" | locator: value | href: url — the human-readable role "name" part at the start is there so you can identify the element, not something to send as a locator. Only the string after "locator:" is a valid locator; e.g. from the line link "View products" | locator: [data-testid="navbar-products-link"] | href: /catalog, the locator to use is [data-testid="navbar-products-link"], not link "View products" — that whole phrase is not Playwright syntax and will fail to parse.
 
 When something fails twice in a row, don't just retry the same idea with small tweaks — change strategy. Try a different path through the page (scroll for more content, navigate directly to a likely URL, go back and take a different link) instead of only adjusting the locator syntax.${formCorrectionGuidance}${meaningfulDefinition}
 
@@ -347,6 +347,10 @@ export async function runAgentLoop(
   let flowStartIndex = 0;
   let flowNetworkStart = options.recorder?.network.length ?? 0;
   let flowRuntimeErrorStart = options.recorder?.runtimeErrors.length ?? 0;
+  // Network activity from this flow's `burst` step(s) specifically — see `looksLikeStability`'s
+  // comment in verification.ts for why `stability` mode needs this narrower scope instead of the
+  // whole flow's network.
+  let flowBurstNetwork: NetworkEntry[] = [];
   let flowStartUrl = initialSnapshot.url;
   let flowStartSnapshot = initialSnapshot.snapshot;
   let flowStartStorageState = JSON.stringify(await page.context().storageState({ indexedDB: true }));
@@ -447,6 +451,7 @@ export async function runAgentLoop(
           finalUrl: url,
           finalSnapshot: snapshot,
           network,
+          burstNetwork: flowBurstNetwork,
           snapshots: actionHistory.flatMap((step) => (step.result?.snapshot ? [step.result.snapshot] : [])),
           runtimeErrors: options.recorder?.runtimeErrors.slice(flowRuntimeErrorStart) ?? [],
           expectations: actionHistory.flatMap((step) => (step.result?.expectation ? [step.result.expectation] : [])),
@@ -501,6 +506,7 @@ export async function runAgentLoop(
         flowStartIndex = history.length;
         flowNetworkStart = options.recorder?.network.length ?? 0;
         flowRuntimeErrorStart = options.recorder?.runtimeErrors.length ?? 0;
+        flowBurstNetwork = [];
         flowStartUrl = restartSnapshot.url;
         flowStartSnapshot = restartSnapshot.snapshot;
         flowStartStorageState = JSON.stringify(await page.context().storageState({ indexedDB: true }));
@@ -556,6 +562,7 @@ export async function runAgentLoop(
 
     const plannedCost = actionBudgetCost(toolCall);
     let consumedCost = 1;
+    const networkBeforeStep = options.recorder?.network.length ?? 0;
     try {
       if (toolCall.name === 'burst' && plannedCost > options.maxSteps - actionCount) {
         throw new Error(
@@ -573,8 +580,15 @@ export async function runAgentLoop(
         options.browserRestartHooks,
         options.browserLifecycle,
       );
+      // Deliberately excludes `activePage` (openTab/openInNewTab/switchTab/reopenBrowser only) —
+      // a raw Playwright Page has circular internal references, and both this step's history
+      // entry and the persisted evidence log run through Redactor.redact(), which has no cycle
+      // guard and recurses into whatever it's given until the stack overflows. `activePage` is
+      // consumed once, right below, purely to retarget `page` — it must never ride along into
+      // `result`, which becomes part of this step's permanent, serialized record.
+      const { activePage, ...toolResultWithoutPage } = toolResult;
       result = {
-        ...toolResult,
+        ...toolResultWithoutPage,
         url: redactor.url(toolResult.url),
         snapshot: redactor.text(toolResult.snapshot),
         ...(toolResult.expectation
@@ -585,8 +599,8 @@ export async function runAgentLoop(
       if (result.expectation) {
         resultText += `\nExpectation ${result.expectation.expectationIndex}: ${result.expectation.status} — ${result.expectation.detail}`;
       }
-      if (toolResult.activePage) {
-        page = toolResult.activePage;
+      if (activePage) {
+        page = activePage;
         await options.onActivePageChange?.(page);
       }
       options.logger?.debug('agent.tool_call_completed', 'Browser action completed', {
@@ -607,6 +621,10 @@ export async function runAgentLoop(
         tool: toolCall.name,
         error,
       });
+    }
+
+    if (toolCall.name === 'burst') {
+      flowBurstNetwork = flowBurstNetwork.concat(options.recorder?.network.slice(networkBeforeStep) ?? []);
     }
 
     safetyBlocked = Math.max(0, (options.getSafetyBlockCount?.() ?? safetyCountBefore) - safetyCountBefore);

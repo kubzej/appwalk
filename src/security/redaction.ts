@@ -1,4 +1,7 @@
 export const REDACTED_VALUE = '[REDACTED]';
+/** Distinct from REDACTED_VALUE so a truncated cycle is diagnosable as a shape problem in the
+ * input, not mistaken for an ordinary redacted secret. */
+const CIRCULAR_REFERENCE_VALUE = '[REDACTED: circular reference]';
 
 export interface RedactOptions {
   /** Keep tool inputs usable for later deterministic replay where possible. */
@@ -113,8 +116,8 @@ export class Redactor {
     return this.url(value, { stripUrlQuery: true });
   }
 
-  hasSensitiveData(value: unknown): boolean {
-    if (Array.isArray(value)) return value.some((item) => this.hasSensitiveData(item));
+  hasSensitiveData(value: unknown, ancestors: Set<unknown> = new Set()): boolean {
+    if (Array.isArray(value)) return value.some((item) => this.hasSensitiveData(item, ancestors));
     if (typeof value === 'string') {
       return (
         this.secrets.some((secret) => value.includes(secret)) ||
@@ -123,14 +126,33 @@ export class Redactor {
       );
     }
     if (!value || typeof value !== 'object') return false;
-    return Object.entries(value).some(([key, entry]) => isSensitiveKey(key) || this.hasSensitiveData(entry));
+    if (ancestors.has(value)) return false;
+    const nextAncestors = new Set(ancestors).add(value);
+    return Object.entries(value).some(
+      ([key, entry]) => isSensitiveKey(key) || this.hasSensitiveData(entry, nextAncestors),
+    );
   }
 
-  redact(value: unknown, options: RedactOptions = {}, key?: string, parentKey?: string): unknown {
+  /**
+   * `ancestors` guards against a circular or self-referential input (e.g. a raw DOM/Playwright
+   * object accidentally handed to a caller that expects plain, serializable data) recursing
+   * forever — every object on the current path is tracked, and re-encountering one short-circuits
+   * with a placeholder instead of walking it again. A caller passing genuinely plain, JSON-shaped
+   * data (the intended use) never touches this path at all.
+   */
+  redact(
+    value: unknown,
+    options: RedactOptions = {},
+    key?: string,
+    parentKey?: string,
+    ancestors: Set<unknown> = new Set(),
+  ): unknown {
     const resolved = { ...DEFAULT_OPTIONS, ...options };
     if (typeof value === 'string') return redactString(value, this.secrets, resolved);
-    if (Array.isArray(value)) return value.map((item) => this.redact(item, resolved, undefined, key));
     if (!value || typeof value !== 'object') return value;
+    if (ancestors.has(value)) return CIRCULAR_REFERENCE_VALUE;
+    const nextAncestors = new Set(ancestors).add(value);
+    if (Array.isArray(value)) return value.map((item) => this.redact(item, resolved, undefined, key, nextAncestors));
 
     const object = value as Record<string, unknown>;
     const inputSensitive = key === 'input' && isToolInputSensitive(object);
@@ -153,7 +175,7 @@ export class Redactor {
         if (isToolValue && !resolved.preserveToolInputs) return [entryKey, REDACTED_VALUE];
         if (isToolValue && inputSensitive) return [entryKey, REDACTED_VALUE];
         if (isToolFilePath && !resolved.preserveToolInputs) return [entryKey, REDACTED_VALUE];
-        return [entryKey, this.redact(entryValue, resolved, entryKey, key)];
+        return [entryKey, this.redact(entryValue, resolved, entryKey, key, nextAncestors)];
       }),
     );
   }

@@ -11,6 +11,10 @@ export interface VerificationContext {
   finalUrl: string;
   finalSnapshot: string;
   network: NetworkEntry[];
+  /** Network activity captured specifically during this flow's `burst` tool-call step(s) — the
+   * one action `stability` mode actually tests. Falls back to the full flow's `network` when
+   * unavailable (older evidence, or a caller that hasn't wired per-step attribution). */
+  burstNetwork?: NetworkEntry[];
   /** Snapshots captured after real actions in this flow, used for objective layout signals. */
   snapshots?: string[];
   /** Runtime failures observed during this flow, including transport failures without HTTP status. */
@@ -26,14 +30,34 @@ const ALERT_PATTERN = /-\s*alert:/i;
 const INVALID_FIELD_PATTERN = /\[invalid\]/i;
 const CONSISTENCY_ASSERTIONS = new Set(['containsText', 'value', 'count', 'checked', 'unchecked']);
 const VISUAL_SIGNAL_PATTERN = /(?:^|\n)Layout:|content-overflows/i;
+// Cloudflare's own reserved path, injected same-origin on every site it fronts (a RUM analytics
+// beacon, speculation-rules pings, etc.) — not something any target application defines itself,
+// so excluding it isn't specific to one site. Same-origin filtering alone (as looksLikeSuccessByNetwork
+// already does) doesn't catch this: Cloudflare serves it from the app's own origin on purpose.
+const INFRASTRUCTURE_PATH = /^\/cdn-cgi\//i;
 
+function isApplicationRequest(entry: NetworkEntry): boolean {
+  try {
+    return !INFRASTRUCTURE_PATH.test(new URL(entry.url).pathname);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * A POST/PUT/PATCH/DELETE that actually succeeded — evidence a consequential action really went
+ * through, not just that a request was attempted. Restricted to real application traffic: a
+ * same-origin infrastructure beacon (Cloudflare's `/cdn-cgi/rum`) is also a "successful POST" by
+ * HTTP status alone, but firing on every page transition, not on anything the flow itself did.
+ */
 function hasSuccessfulStateChange(network: NetworkEntry[]): boolean {
   return network.some(
     (entry) =>
       STATE_CHANGING_METHODS.has(entry.method) &&
       entry.status !== undefined &&
       entry.status >= 200 &&
-      entry.status < 300,
+      entry.status < 300 &&
+      isApplicationRequest(entry),
   );
 }
 
@@ -115,6 +139,7 @@ function hasSuspiciousDuplicateRequest(network: NetworkEntry[]): boolean {
   for (const entry of network) {
     if (!STATE_CHANGING_METHODS.has(entry.method)) continue;
     if (entry.status === undefined || entry.status < 200 || entry.status >= 300) continue;
+    if (!isApplicationRequest(entry)) continue;
     const key = `${entry.method} ${entry.url}`;
     successCounts.set(key, (successCounts.get(key) ?? 0) + 1);
   }
@@ -160,15 +185,51 @@ function looksLikeRejection(ctx: VerificationContext): boolean {
   );
 }
 
+// Deliberately not a same-URL check: a persona that backs out at the last moment (Talia's
+// two-tab conflict, Della's "abandon right before confirming") naturally lands on an
+// *intermediate* page it passed through on the way there — the cart, a listing — not the exact
+// URL the flow started on. Same-URL was also never the right question for "nothing consequential
+// happened" in the first place: leaving and returning to the start page after something *did*
+// submit in between would satisfy it despite the state change.
+//
+// `!hasSuccessfulStateChange` alone is not enough either: a flow can legitimately make *setup*
+// state changes on the way to the decision point (Della adding/removing cart items while shopping
+// around) without ever committing the one action the flow is actually about. Verified against
+// Della's real round-2 evidence — her two correctly-backed-out flows still fire successful
+// cart-mutation requests, so that check alone stayed `false` for all four of her flows, including
+// the two that should have read as preserved. `!looksLikeCompletion` adds the more targeted
+// question this mode actually needs: did the flow ever reach its own completion signal (an order
+// confirmation URL/snapshot, an explicit met expectation)? That matched Della's four flows
+// exactly — true completions on the two that placed the order, no completion signal on the two
+// that back out to the cart. OR, not replace: either signal is independently sufficient evidence
+// nothing consequential landed, and OR can only pick up cases the other check missed, never lose
+// one it already got right.
+//
+// Unverified for Talia (the other preservation-mode persona, a two-tab cart-quantity race): her
+// scenario has no "order confirmation" shape to detect either way, so `!looksLikeCompletion` may
+// end up always true for her regardless of whether the lost-update conflict was actually handled
+// — her round-2 flows crashed before producing evidence to check this against. Flagged in
+// FINDINGS-round2.md as a follow-up to verify once she produces real data.
 function looksLikePreservation(ctx: VerificationContext): boolean {
   return (
     hasMetExpectationSupportingNegativeOutcome(ctx) ||
-    (ctx.finalUrl === ctx.flowStartUrl && !hasSuccessfulStateChange(ctx.network))
+    !hasSuccessfulStateChange(ctx.network) ||
+    !looksLikeCompletion(ctx)
   );
 }
 
+// Scoped to the burst step(s) themselves, not the whole flow: `stability` mode only ever tests
+// whether one rapid repeated action produced a duplicate backend effect (riley's whole premise —
+// `coreActionTypes: ['burst']`). Real evidence showed two distinct false-positive shapes from
+// using the whole flow's network instead: a separate, deliberate earlier action against the same
+// endpoint (an explicit "add to cart" click well before the burst) miscounted as a second copy of
+// the burst's own effect; and a same-origin session-refresh call fired by an unrelated page
+// reload/navigation earlier in the flow, nothing to do with the tested click at all. Restricting
+// the check to the burst step's own network keeps the true-positive case intact — a genuinely
+// undebounced button firing 5 real backend calls from one 5x burst still shows up, since all 5
+// calls happen inside that same step.
 function looksLikeStability(ctx: VerificationContext): boolean {
-  return !hasSuspiciousDuplicateRequest(ctx.network);
+  return !hasSuspiciousDuplicateRequest(ctx.burstNetwork ?? ctx.network);
 }
 
 function looksLikeRecovery(ctx: VerificationContext): boolean {

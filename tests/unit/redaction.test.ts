@@ -113,3 +113,45 @@ test('redacting provider sanitizes every textual provider boundary', async () =>
   assert.equal((calls[0]?.value as { initialInput: string }).initialInput, `password=${REDACTED_VALUE}`);
   assert.equal((calls[1]?.value as ToolResult).result, REDACTED_VALUE);
 });
+
+test('redact() terminates on a self-referential object instead of recursing forever', () => {
+  const redactor = new Redactor();
+  const node: Record<string, unknown> = { name: 'root' };
+  node.self = node; // a direct cycle — the shape a raw Playwright Page's internals can have
+
+  const safe = redactor.redact(node) as Record<string, unknown>;
+  assert.equal(safe.name, 'root');
+  assert.equal(safe.self, '[REDACTED: circular reference]');
+});
+
+test('redact() still walks the same object reused twice as siblings, not just as an ancestor', () => {
+  const redactor = new Redactor();
+  const shared = { value: 'shared-value' };
+  const safe = redactor.redact({ a: shared, b: shared }) as Record<string, unknown>;
+  // Reused-but-not-circular data must still be redacted normally in both places, not
+  // short-circuited just because the same reference appears twice.
+  assert.deepEqual(safe.a, { value: 'shared-value' });
+  assert.deepEqual(safe.b, { value: 'shared-value' });
+});
+
+test('redact() terminates on a cycle running through an array', () => {
+  const redactor = new Redactor();
+  const arr: unknown[] = ['first'];
+  const node: Record<string, unknown> = { items: arr };
+  arr.push(node);
+
+  const safe = redactor.redact(node) as Record<string, unknown>;
+  const items = safe.items as unknown[];
+  assert.equal(items[0], 'first');
+  assert.equal(items[1], '[REDACTED: circular reference]');
+});
+
+test('hasSensitiveData() terminates on a self-referential object instead of recursing forever', () => {
+  const redactor = new Redactor(['super-secret-password']);
+  const node: Record<string, unknown> = { note: 'nothing sensitive here' };
+  node.self = node;
+  assert.equal(redactor.hasSensitiveData(node), false);
+
+  node.password = 'super-secret-password';
+  assert.equal(redactor.hasSensitiveData(node), true);
+});
