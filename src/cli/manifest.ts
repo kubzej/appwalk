@@ -1,17 +1,17 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { type FlowEntries } from "../codegen/spec.js";
-import { readEvidenceLog } from "../evidence/log.js";
-import type { ResponseFixture, ResponseVariant } from "../response/variants.js";
-import type { PersonaIntent } from "../agent/personas.js";
-import type { ReportStopReason } from "../report/contract.js";
-import type { CliArgs } from "./args.js";
-import { createExecutionDirectory } from "./execution.js";
-import { logCodegenCompleted, logCodegenPlan } from "./codegen-log.js";
-import { appLogger } from "./logger-state.js";
-import { writeGeneratedSuite } from "./generated-suite.js";
-import { formatArtifactIssues, MAX_ARTIFACT_FILE_BYTES, validateDiscoveryManifest } from "../artifacts/validation.js";
-import { renderArtifactPanel, type ArtifactRow } from "../report/terminal-summary.js";
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { type FlowEntries } from '../codegen/spec.js';
+import { readEvidenceLog } from '../evidence/log.js';
+import type { ResponseFixture, ResponseVariant } from '../response/variants.js';
+import type { PersonaIntent } from '../agent/personas.js';
+import type { ReportStopReason } from '../report/contract.js';
+import type { CliArgs } from './args.js';
+import { createExecutionDirectory } from './execution.js';
+import { logCodegenCompleted, logCodegenPlan } from './codegen-log.js';
+import { appLogger } from './logger-state.js';
+import { writeGeneratedSuite } from './generated-suite.js';
+import { formatArtifactIssues, MAX_ARTIFACT_FILE_BYTES, validateDiscoveryManifest } from '../artifacts/validation.js';
+import { renderArtifactPanel, type ArtifactRow } from '../report/terminal-summary.js';
 
 export interface DiscoveryManifestFlow {
   id: number;
@@ -25,12 +25,12 @@ export interface DiscoveryManifestFlow {
   endIndex: number;
   startUrl: string;
   responseFixtures?: ResponseFixture[];
-  origin?: "discovered" | "derived";
+  origin?: 'discovered' | 'derived';
   sourceFlowId?: number;
   scenarioId?: string;
   responseVariant?: ResponseVariant;
   finding?: {
-    status: "confirmed" | "inconclusive";
+    status: 'confirmed' | 'inconclusive';
     summary: string;
     failure?: string;
   };
@@ -69,9 +69,9 @@ export interface DiscoveryManifestRun {
 }
 
 function resolveDiscoveryInput(input: string): { manifestPath: string; inputDir: string } {
-  const manifestPath = input.endsWith(".json") ? input : join(input, "discovery.json");
+  const manifestPath = input.endsWith('.json') ? input : join(input, 'discovery.json');
   if (!existsSync(manifestPath)) {
-    throw new Error("Discovery manifest not found: " + manifestPath + ". Run 'explore <url>' first.");
+    throw new Error('Discovery manifest not found: ' + manifestPath + ". Run 'explore <url>' first.");
   }
   return { manifestPath, inputDir: dirname(manifestPath) };
 }
@@ -82,7 +82,7 @@ export function loadManifest(path: string): DiscoveryManifest {
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf-8"));
+    parsed = JSON.parse(readFileSync(path, 'utf-8'));
   } catch (error) {
     throw new Error(`Invalid discovery manifest ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -96,39 +96,46 @@ function selectManifestFlows(manifest: DiscoveryManifest, selection: number[] | 
   const knownIds = new Set(manifest.flows.map((flow) => flow.id));
   const unknownIds = selectedIds.filter((id) => !knownIds.has(id));
   if (unknownIds.length > 0) {
-    throw new Error("Unknown flow id(s): " + unknownIds.join(", ") + ". Available: 1-" + manifest.flows.length + ".");
+    throw new Error('Unknown flow id(s): ' + unknownIds.join(', ') + '. Available: 1-' + manifest.flows.length + '.');
   }
 
   const selected = selectedIds.map((id) => manifest.flows.find((flow) => flow.id === id)!);
   const unconfirmed = selected.filter((flow) => !flow.replayConfirmed).map((flow) => flow.id);
   if (unconfirmed.length > 0) {
-    throw new Error("Flow(s) " + unconfirmed.join(", ") + " were not confirmed by replay and cannot be generated.");
+    throw new Error('Flow(s) ' + unconfirmed.join(', ') + ' were not confirmed by replay and cannot be generated.');
   }
-  if (selected.length === 0) throw new Error("No replay-confirmed flows available to generate.");
+  if (selected.length === 0) throw new Error('No replay-confirmed flows available to generate.');
   return selected;
 }
 
 export function generateFromManifest(args: CliArgs): void {
   const { manifestPath, inputDir } = resolveDiscoveryInput(args.url);
   const manifest = loadManifest(manifestPath);
-  const evidence = readEvidenceLog(join(inputDir, "evidence.jsonl"));
+  const evidence = readEvidenceLog(join(inputDir, 'evidence.jsonl'));
   if (evidence.issues.length > 0) {
-    throw new Error(`Invalid evidence log ${join(inputDir, "evidence.jsonl")}: ${evidence.issues.map((issue) => `line ${issue.line}: ${issue.reason}`).slice(0, 8).join("; ")}`);
+    throw new Error(
+      `Invalid evidence log ${join(inputDir, 'evidence.jsonl')}: ${evidence.issues
+        .map((issue) => `line ${issue.line}: ${issue.reason}`)
+        .slice(0, 8)
+        .join('; ')}`,
+    );
   }
   const entries = evidence.entries;
   const selected = selectManifestFlows(manifest, args.flowSelection);
   const storageStatePath = args.storageStatePath ?? manifest.setup.storageStatePath;
   if (manifest.setup.requiresLogin && !storageStatePath && !(args.email && args.password)) {
-    throw new Error("This discovery used login. Pass -e/-p or --storage-state when generating from it.");
+    throw new Error('This discovery used login. Pass -e/-p or --storage-state when generating from it.');
   }
 
   const runNames = new Map((manifest.runs ?? []).map((run) => [run.id, run.name]));
   const flows: FlowEntries[] = selected.map((flow) => {
-    const flowEntries = entries.filter((entry) => flow.origin === "derived"
-      ? entry.runId === flow.runId && entry.scenarioId === flow.scenarioId
-      : flow.runId
-        ? entry.runId === flow.runId && entry.scenarioId === undefined && entry.flowIndex === (flow.runFlowIndex ?? 0)
-        : entry.flowIndex === flow.id - 1);
+    const flowEntries = entries.filter((entry) =>
+      flow.origin === 'derived'
+        ? entry.runId === flow.runId && entry.scenarioId === flow.scenarioId
+        : flow.runId
+          ? entry.runId === flow.runId && entry.scenarioId === undefined && entry.flowIndex === (flow.runFlowIndex ?? 0)
+          : entry.flowIndex === flow.id - 1,
+    );
     return {
       name: flow.runId && runNames.has(flow.runId) ? `${runNames.get(flow.runId)}: ${flow.name}` : flow.name,
       title: flow.title,
@@ -137,17 +144,18 @@ export function generateFromManifest(args: CliArgs): void {
       responseFixtures: flow.responseFixtures,
       origin: flow.origin,
       fixtureBaseId: flow.sourceFlowId !== undefined ? `flow-${flow.sourceFlowId}` : `flow-${flow.id}`,
-      baseResponseFixtures: flow.origin === "derived"
-        ? manifest.flows.find((candidate) => candidate.id === flow.sourceFlowId)?.responseFixtures
-        : undefined,
+      baseResponseFixtures:
+        flow.origin === 'derived'
+          ? manifest.flows.find((candidate) => candidate.id === flow.sourceFlowId)?.responseFixtures
+          : undefined,
       responseVariant: flow.responseVariant,
     };
   });
   const emptyFlows = flows.filter((flow) => flow.entries.length === 0).map((flow) => flow.name);
   if (emptyFlows.length > 0) {
-    throw new Error("Discovery evidence is missing for selected flow(s): " + emptyFlows.join(", "));
+    throw new Error('Discovery evidence is missing for selected flow(s): ' + emptyFlows.join(', '));
   }
-  logCodegenPlan(appLogger, "generate", flows);
+  logCodegenPlan(appLogger, 'generate', flows);
   const execution = createExecutionDirectory(args.output);
   const generatedSuite = writeGeneratedSuite(execution.path, flows, {
     url: manifest.url,
@@ -155,13 +163,15 @@ export function generateFromManifest(args: CliArgs): void {
     password: args.password,
     storageStatePath,
   });
-  logCodegenCompleted(appLogger, "generate", flows);
+  logCodegenCompleted(appLogger, 'generate', flows);
   const rows: ArtifactRow[] = [
-    { label: "execution", value: execution.path },
+    { label: 'execution', value: execution.path },
     { label: `test suite (${flows.length})`, value: generatedSuite.specPath },
-    ...(generatedSuite.fixtureHelperPath ? [{ label: "fixtures", value: generatedSuite.fixtureHelperPath }] : []),
-    ...(generatedSuite.credentialsPath ? [{ label: "local credentials", value: generatedSuite.credentialsPath }] : []),
-    ...(generatedSuite.storageStatePath ? [{ label: "local storage state", value: generatedSuite.storageStatePath }] : []),
+    ...(generatedSuite.fixtureHelperPath ? [{ label: 'fixtures', value: generatedSuite.fixtureHelperPath }] : []),
+    ...(generatedSuite.credentialsPath ? [{ label: 'local credentials', value: generatedSuite.credentialsPath }] : []),
+    ...(generatedSuite.storageStatePath
+      ? [{ label: 'local storage state', value: generatedSuite.storageStatePath }]
+      : []),
   ];
-  process.stdout.write(renderArtifactPanel("Generated", rows));
+  process.stdout.write(renderArtifactPanel('Generated', rows));
 }

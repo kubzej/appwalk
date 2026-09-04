@@ -46,7 +46,7 @@ export interface BrowserRestartHooks {
  */
 export interface BrowserLifecycle {
   launchBrowser(): Promise<Browser>;
-  createContext(browser: Browser, storageState?: BrowserContextOptions["storageState"]): Promise<BrowserContext>;
+  createContext(browser: Browser, storageState?: BrowserContextOptions['storageState']): Promise<BrowserContext>;
   createPage(context: BrowserContext): Promise<Page>;
   prepareContext(context: BrowserContext): Promise<void>;
   preparePage(page: Page): Promise<void>;
@@ -144,25 +144,31 @@ async function stepResultWithStorage(page: Page): Promise<StepResult> {
 }
 
 export async function navigate(page: Page, url: string): Promise<StepResult> {
-  assertValidWebUrl(url, "navigate URL");
+  assertValidWebUrl(url, 'navigate URL');
   await page.goto(url);
   return toStepResult(page);
 }
 
 export function isPointerInterceptionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /intercepts pointer events|receives pointer events|would receive (?:the )?(?:click|pointer events)/i.test(message);
+  return /intercepts pointer events|receives pointer events|would receive (?:the )?(?:click|pointer events)/i.test(
+    message,
+  );
 }
 
-export async function click(page: Page, locator: string, button?: ClickButton, modifiers?: ClickModifier[]): Promise<StepResult> {
+export async function click(
+  page: Page,
+  locator: string,
+  button?: ClickButton,
+  modifiers?: ClickModifier[],
+): Promise<StepResult> {
   const options: ClickOptions = { button, modifiers };
   try {
     await resolveLocator(page, locator).click(options);
   } catch (err) {
     // A modal/overlay from a previous action can intercept pointer events on the next
     // click. Escape closes most modal libraries — retry once before giving up.
-    if (!isPointerInterceptionError(err))
-      throw err;
+    if (!isPointerInterceptionError(err)) throw err;
     await page.keyboard.press('Escape');
     await resolveLocator(page, locator).click(options);
   }
@@ -170,35 +176,28 @@ export async function click(page: Page, locator: string, button?: ClickButton, m
   return toStepResult(page);
 }
 
-export async function doubleClick(page: Page, locator: string, button?: ClickButton, modifiers?: ClickModifier[]): Promise<StepResult> {
+export async function doubleClick(
+  page: Page,
+  locator: string,
+  button?: ClickButton,
+  modifiers?: ClickModifier[],
+): Promise<StepResult> {
   await resolveLocator(page, locator).dblclick({ button, modifiers });
   await page.waitForTimeout(CLICK_SETTLE_MS);
   return toStepResult(page);
 }
 
-export async function fill(
-  page: Page,
-  locator: string,
-  value: string,
-): Promise<StepResult> {
+export async function fill(page: Page, locator: string, value: string): Promise<StepResult> {
   await resolveLocator(page, locator).fill(value);
   return toStepResult(page);
 }
 
-export async function select(
-  page: Page,
-  locator: string,
-  value: string | string[],
-): Promise<StepResult> {
+export async function select(page: Page, locator: string, value: string | string[]): Promise<StepResult> {
   await resolveLocator(page, locator).selectOption(value);
   return toStepResult(page);
 }
 
-export async function pressKey(
-  page: Page,
-  locator: string,
-  key: string,
-): Promise<StepResult> {
+export async function pressKey(page: Page, locator: string, key: string): Promise<StepResult> {
   await resolveLocator(page, locator).press(key);
   return toStepResult(page);
 }
@@ -208,10 +207,7 @@ export async function check(page: Page, locator: string): Promise<StepResult> {
   return toStepResult(page);
 }
 
-export async function uncheck(
-  page: Page,
-  locator: string,
-): Promise<StepResult> {
+export async function uncheck(page: Page, locator: string): Promise<StepResult> {
   await resolveLocator(page, locator).uncheck();
   return toStepResult(page);
 }
@@ -277,7 +273,10 @@ async function cloneIntoNewTab(page: Page, lifecycle: BrowserLifecycle): Promise
 
 /** Opens the current URL in a new tab and switches the active page to it. The old tab is left open —
  * matches a real user, and the caller closes the whole browser at the end of a run regardless. */
-export async function openInNewTab(page: Page, lifecycle: BrowserLifecycle): Promise<StepResult & { activePage: Page }> {
+export async function openInNewTab(
+  page: Page,
+  lifecycle: BrowserLifecycle,
+): Promise<StepResult & { activePage: Page }> {
   const newPage = await cloneIntoNewTab(page, lifecycle);
   const result = await stepResultWithStorage(newPage);
   return { ...result, activePage: newPage };
@@ -307,7 +306,11 @@ export async function switchTab(target: Page): Promise<StepResult & { activePage
  * captures cookies + localStorage, but NOT sessionStorage — Playwright's storageState API doesn't
  * carry it, which matches how a real browser restart also drops sessionStorage), closes the browser,
  * launches a fresh one from that saved state, and navigates back to the same URL. */
-export async function reopenBrowser(page: Page, lifecycle: BrowserLifecycle, hooks?: BrowserRestartHooks): Promise<StepResult & { activePage: Page }> {
+export async function reopenBrowser(
+  page: Page,
+  lifecycle: BrowserLifecycle,
+  hooks?: BrowserRestartHooks,
+): Promise<StepResult & { activePage: Page }> {
   const url = page.url();
   // Without `indexedDB: true`, Playwright's storageState snapshot omits IndexedDB entirely — that
   // would make this simulation lose IndexedDB data a real browser restart/new-tab actually keeps.
@@ -335,10 +338,7 @@ export async function reopenBrowser(page: Page, lifecycle: BrowserLifecycle, hoo
 }
 
 /** Scrolls a specific element into view, or to the bottom of the page when no locator is given (infinite-scroll pages). */
-export async function scroll(
-  page: Page,
-  locator?: string,
-): Promise<StepResult> {
+export async function scroll(page: Page, locator?: string): Promise<StepResult> {
   if (locator) {
     await resolveLocator(page, locator).scrollIntoViewIfNeeded();
   } else {
@@ -347,11 +347,7 @@ export async function scroll(
   return toStepResult(page);
 }
 
-export async function setViewportSize(
-  page: Page,
-  width: unknown,
-  height: unknown,
-): Promise<StepResult> {
+export async function setViewportSize(page: Page, width: unknown, height: unknown): Promise<StepResult> {
   await page.setViewportSize({ width: viewportDimension(width, 'width'), height: viewportDimension(height, 'height') });
   return toStepResult(page);
 }
@@ -490,10 +486,7 @@ export async function clearUnusedTransientHandlers(page: Page): Promise<{ dialog
   };
 }
 
-export async function waitFor(
-  page: Page,
-  locator: string,
-): Promise<StepResult> {
+export async function waitFor(page: Page, locator: string): Promise<StepResult> {
   // Waiting means that any matching signal is enough. Using the first match avoids
   // failing on useful broad locators such as /Order confirmed|Thank you|success/.
   await resolveLocator(page, locator).first().waitFor({ state: 'visible' });
@@ -521,7 +514,9 @@ export async function burst(
   key?: string,
 ): Promise<StepResult> {
   if (!BURSTABLE_ACTIONS.has(action)) {
-    throw new Error(`burst: "${action}" can't be repeated this way — only ${[...BURSTABLE_ACTIONS].join(', ')} are supported.`);
+    throw new Error(
+      `burst: "${action}" can't be repeated this way — only ${[...BURSTABLE_ACTIONS].join(', ')} are supported.`,
+    );
   }
   assertValidBurstCount(count);
   const target = resolveLocator(page, locator);
@@ -587,7 +582,11 @@ export async function simulateFailure(page: Page, urlPattern: string, mode: Fail
         case '500':
         case '503':
         case '404':
-          await route.fulfill({ status: Number(mode), contentType: 'application/json', body: '{"error":"simulated failure"}' });
+          await route.fulfill({
+            status: Number(mode),
+            contentType: 'application/json',
+            body: '{"error":"simulated failure"}',
+          });
           break;
         case 'malformed':
           await route.fulfill({ status: 200, contentType: 'application/json', body: '{not valid json' });
@@ -665,7 +664,9 @@ export async function apiRequest(
   // that keeps this tool from bypassing the destructive-action guard has to be checked here too,
   // not just declared in JSON schema.
   if (method !== 'GET' && method !== 'HEAD') {
-    throw new Error(`apiRequest: method must be GET or HEAD, got "${method}". This tool is read-only by design — it bypasses the safety guard, so it can't be used for mutating requests.`);
+    throw new Error(
+      `apiRequest: method must be GET or HEAD, got "${method}". This tool is read-only by design — it bypasses the safety guard, so it can't be used for mutating requests.`,
+    );
   }
   if (safety) {
     const decision = evaluateSafetyRequest(method, url, safety);
@@ -680,9 +681,10 @@ export async function apiRequest(
   let bodyPreview: string;
   try {
     const text = await response.text();
-    bodyPreview = text.length > API_REQUEST_BODY_PREVIEW_MAX_CHARS
-      ? `${text.slice(0, API_REQUEST_BODY_PREVIEW_MAX_CHARS)}... [truncated, ${text.length} bytes total]`
-      : text;
+    bodyPreview =
+      text.length > API_REQUEST_BODY_PREVIEW_MAX_CHARS
+        ? `${text.slice(0, API_REQUEST_BODY_PREVIEW_MAX_CHARS)}... [truncated, ${text.length} bytes total]`
+        : text;
   } catch {
     bodyPreview = '(could not read response body)';
   }

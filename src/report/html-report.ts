@@ -4,10 +4,13 @@ import type {
   ReportResponseVariantAudit,
   ReportRun,
   ReportRuntimeError,
-  ReportSafety,
   ReportStep,
-  ReportStopReason,
-} from "./contract.js";
+} from './contract.js';
+
+/**
+ * Renders report.html — an investigation board (persona case files -> flow evidence -> findings)
+ * over the same `ExecutionReport` data that drives report.json.
+ */
 
 function escapeHtml(value: string): string {
   return value
@@ -21,564 +24,440 @@ function escapeHtml(value: string): string {
 function cleanDiagnostic(value: string): string {
   return value
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\uFFFD\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .replace(/\ufffd\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
     .replace(/\r\n?/g, '\n')
     .trim();
 }
 
-function isTechnicalDiagnostic(value: string): boolean {
-  return /(?:locator\.|timeout|call log:|waiting for locator|replay failed|\berror\b|\bHTTP \d{3}\b)/i.test(value);
+/** A Playwright error carries the human-readable reason on its first line, then a "Call log:"
+ * trace (locator resolution, retry attempts, the full outerHTML of the element) meant for a
+ * terminal or evidence.jsonl, not this report. Keep only the sentence a reader can act on. */
+function summarizeReason(value: string): string {
+  const cleaned = cleanDiagnostic(value);
+  const [firstLine] = cleaned.split(/\n\s*Call log:/i);
+  return (firstLine ?? cleaned).trim();
 }
 
-function renderScenarioReason(reason: string): string {
-  const cleaned = cleanDiagnostic(reason);
-  return isTechnicalDiagnostic(cleaned)
-    ? `<pre class="r-code-block r-scenario-code"><code>${escapeHtml(cleaned)}</code></pre>`
-    : `<p class="r-scenario-reason">${escapeHtml(cleaned)}</p>`;
+function actionLabel(name: string): string {
+  const labels: Record<string, string> = {
+    navigate: 'Navigate',
+    click: 'Click',
+    doubleClick: 'Double click',
+    fill: 'Fill',
+    select: 'Select',
+    pressKey: 'Press key',
+    check: 'Check',
+    uncheck: 'Uncheck',
+    hover: 'Hover',
+    dragAndDrop: 'Drag and drop',
+    goBack: 'Go back',
+    goForward: 'Go forward',
+    reload: 'Reload',
+    openInNewTab: 'Open new tab',
+    reopenBrowser: 'Reopen browser',
+    scroll: 'Scroll',
+    setViewportSize: 'Set viewport',
+    waitFor: 'Wait for element',
+    uploadFile: 'Upload file',
+    download: 'Download',
+    handleDialog: 'Handle dialog',
+    verifyExpectation: 'Verify expectation',
+    clearCookie: 'Clear cookie',
+    simulateFailure: 'Simulate failure',
+    simulateLatency: 'Simulate latency',
+    burst: 'Repeat action',
+  };
+  return labels[name] ?? name;
 }
 
-function formatTimestamp(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value || 'Unknown';
-  return new Intl.DateTimeFormat('en', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
+function formatDate(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return escapeHtml(iso);
+  return escapeHtml(
+    date
+      .toISOString()
+      .replace('T', ' ')
+      .replace(/\.\d+Z$/, 'Z'),
+  );
 }
 
 function formatDuration(startedAt: string, completedAt: string): string {
-  const duration =
-    new Date(completedAt).getTime() - new Date(startedAt).getTime();
-  if (!Number.isFinite(duration) || duration < 0) return 'Duration unavailable';
-  if (duration < 1000) return '<1s';
-  if (duration < 60000) return `${Math.round(duration / 1000)}s`;
-  return `${Math.floor(duration / 60000)}m ${Math.round((duration % 60000) / 1000)}s`;
+  const ms = new Date(completedAt).getTime() - new Date(startedAt).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return 'unavailable';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
 }
 
-function flowStatus(flow: ReportFlow): { label: string; tone: string } {
-  if (!flow.replayConfirmed) return { label: 'Needs review', tone: 'warning' };
-  if (flow.finding?.status === 'confirmed') return { label: 'Potential bug', tone: 'danger' };
-  if (flow.finding?.status === 'inconclusive') return { label: 'Needs review', tone: 'warning' };
-  return { label: 'Confirmed', tone: 'good' };
-}
-
-function panelId(
-  runIndex: number,
-  flowIndex?: number,
-): string {
-  return flowIndex === undefined
-    ? `panel-persona-${runIndex}`
-    : `panel-flow-${runIndex}-${flowIndex}`;
-}
-
-function capitalize(value: string): string {
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-function personaName(run: ReportRun): string | undefined {
-  return run.persona ? capitalize(run.persona) : undefined;
-}
-
-function callout(tone: string, children: string): string {
-  return `<div class="r-callout r-callout-${tone}">${children}</div>`;
-}
-
-function badge(label: string, tone: string): string {
-  return `<span class="r-badge r-badge-${tone}">${escapeHtml(label)}</span>`;
-}
-
-function similarFlowLabel(id: string): string {
-  const match = /-flow-(\d+)$/.exec(id);
-  return match ? `Similar to Flow ${match[1]}` : 'Similar baseline flow';
-}
-
-function renderIndex(report: ExecutionReport): string {
-  const personas = report.runs
-    .map((run, runIndex) => {
-      const renderFlowLink = (flow: ReportFlow, flowIndex: number, variant = false): string => {
-        const status = flowStatus(flow);
-        const similar = !variant && flow.similarTo
-          ? `<span class="r-flow-secondary">${escapeHtml(similarFlowLabel(flow.similarTo))}</span>`
-          : '';
-        return `<a class="r-link r-link-flow${variant ? ' r-link-variant' : ''}" href="#${panelId(runIndex, flowIndex)}" data-target="${panelId(runIndex, flowIndex)}"><span class="r-link-title">${variant ? '<span class="r-variant-label">Variant</span>' : ''}<span>${escapeHtml(flow.title)}</span>${similar}</span>${badge(status.label, status.tone)}</a>`;
-      };
-      const variantsByParent = new Map<string, Array<{ flow: ReportFlow; index: number }>>();
-      run.flows.forEach((flow, flowIndex) => {
-        if (!flow.parentFlowId) return;
-        const variants = variantsByParent.get(flow.parentFlowId) ?? [];
-        variants.push({ flow, index: flowIndex });
-        variantsByParent.set(flow.parentFlowId, variants);
-      });
-      const renderedFlowIndexes = new Set<number>();
-      const flows = run.flows.map((flow, flowIndex) => {
-        if (flow.origin === 'derived' || renderedFlowIndexes.has(flowIndex)) return '';
-        renderedFlowIndexes.add(flowIndex);
-        const variants = variantsByParent.get(flow.id) ?? [];
-        variants.forEach((variant) => renderedFlowIndexes.add(variant.index));
-        return `${renderFlowLink(flow, flowIndex)}${variants.length ? `<div class="r-index-variants"><span class="r-variant-group-label">Variants</span>${variants.map((variant) => renderFlowLink(variant.flow, variant.index, true)).join('')}</div>` : ''}`;
-      }).join('') + run.flows.map((flow, flowIndex) =>
-        flow.origin === 'derived' && !renderedFlowIndexes.has(flowIndex)
-          ? renderFlowLink(flow, flowIndex, true)
-          : '',
-      ).join('');
-      const name = personaName(run);
-      const primary = name
-        ? `${escapeHtml(name)}${run.personaIntent ? `, ${escapeHtml(run.personaIntent)}` : ''}`
-        : escapeHtml(run.name);
-      const secondary = name
-        ? `<span class="r-persona-secondary">${escapeHtml(run.name)}</span>`
-        : '';
-      return `<div class="r-index-group">
-      <a class="r-link r-link-persona" href="#${panelId(runIndex)}" data-target="${panelId(runIndex)}"><span class="r-link-title"><span class="r-persona-primary">${primary}</span>${secondary}</span></a>
-      <div class="r-index-flows">${flows}</div>
-    </div>`;
-    })
-    .join('');
-  return `<nav class="r-index r-card">
-    <a class="r-link r-link-overview" href="#panel-overview" data-target="panel-overview"><span class="r-link-title">Overview</span></a>
-    <div class="r-index-personas">${personas}</div>
-  </nav>`;
-}
-
-function renderStepsCard(steps: ReportStep[]): string {
-  const body = steps.length
-    ? `<div class="r-steps">${steps
-        .map((step) => {
-          const target = step.target
-            ? ` <span class="r-code">${escapeHtml(step.target)}</span>`
-            : '';
-          const value =
-            step.value !== undefined
-              ? ` <span class="r-muted">${escapeHtml(step.value)}</span>`
-              : '';
-          const error = step.error
-            ? `<div class="r-step-error"><p class="r-label">${escapeHtml(step.errorLabel ?? 'Action failed')}</p><pre class="r-code-block"><code>${escapeHtml(cleanDiagnostic(step.error))}</code></pre></div>`
-            : '';
-          const safety = step.safetyBlocked
-            ? `<div class="r-tone-warning">Safety policy blocked ${step.safetyBlocked} request${step.safetyBlocked === 1 ? '' : 's'}; the request was not sent.</div>`
-            : '';
-          return `<div class="r-step"><span class="r-muted">${String(step.number).padStart(2, '0')}</span><div><span class="r-step-action">${escapeHtml(step.action)}</span>${target}${value}${error}${safety}</div></div>`;
-        })
-        .join('')}</div>`
-    : `<p class="r-muted">No action evidence recorded.</p>`;
-  return `<div class="r-card"><p class="r-label">Steps</p>${body}</div>`;
-}
-
-function renderResponseScenariosCard(
-  audit: ReportResponseVariantAudit,
-): string {
-  if (!audit.enabled) {
-    return `<div class="r-card"><p class="r-label">Response scenarios</p><p class="r-muted">Variant exploration was not enabled. The flow uses baseline response fixtures only.</p></div>`;
+function outcomeStamp(report: ExecutionReport): { tone: string; label: string } {
+  const { summary } = report;
+  if (summary.errors > 0) return { tone: 'critical', label: 'failed — an execution error stopped one or more runs' };
+  if (summary.confirmedFindings > 0)
+    return {
+      tone: 'warning',
+      label: `${summary.confirmedFindings} finding${summary.confirmedFindings === 1 ? '' : 's'} confirmed`,
+    };
+  if (summary.inconclusiveFindings > 0 || summary.coverageIncomplete || summary.replayConfirmed === 0) {
+    return { tone: 'warning', label: 'inconclusive — coverage incomplete or nothing replay-confirmed' };
   }
-  const plannerStatus = audit.planningStatus === 'completed'
-    ? `Returned ${audit.plannerCandidates} proposal${audit.plannerCandidates === 1 ? '' : 's'}`
-    : audit.planningStatus === 'failed'
-      ? 'Failed'
-      : audit.planningStatus === 'incomplete'
-        ? 'Incomplete'
-        : 'Not run';
-  const variantSummary = [
-    `${audit.proposed} accepted`,
-    ...(audit.plannerRejected > 0 ? [`${audit.plannerRejected} rejected`] : []),
-    `${audit.confirmed} replay confirmed`,
-    `${audit.skipped.length} skipped`,
-  ].join(' · ');
-  const summary = `<div class="r-meta-list r-response-meta">
-    <div class="r-meta-row"><strong class="r-meta-label">Fixtures:</strong><span class="r-meta-value">${audit.fixturesFound} captured</span></div>
-    <div class="r-meta-row"><strong class="r-meta-label">Variants:</strong><span class="r-meta-value">${variantSummary}</span></div>
-    <div class="r-meta-row"><strong class="r-meta-label">Planner:</strong><span class="r-meta-value">${escapeHtml(plannerStatus)}</span></div>
-  </div>`;
-  const fixtures = audit.fixtures.length
-    ? `<div class="r-response-section"><p class="r-label">Captured fixtures</p><div class="r-fixtures">${audit.fixtures.map((fixture) => `<div class="r-row"><span class="r-code">${escapeHtml(fixture.method)}</span><code class="r-code r-fixture-url">${escapeHtml(fixture.url)}</code><span class="r-muted">${fixture.bytes.toLocaleString()} B</span></div>`).join('')}</div></div>`
-    : `<div class="r-response-section"><p class="r-label">Captured fixtures</p><p class="r-muted">No replayable JSON responses were captured.</p></div>`;
-  const confirmed = audit.confirmedScenarios.length
-    ? `<div class="r-response-section"><p class="r-label">Replay-confirmed variants</p><div class="r-scenario-list">${audit.confirmedScenarios.map((name) => `<p><strong>${escapeHtml(name)}</strong></p>`).join('')}</div></div>`
-    : `<div class="r-response-section"><p class="r-label">Replay-confirmed variants</p><p class="r-muted">No response variant was confirmed by replay.</p></div>`;
-  const skipped = audit.skipped.length
-    ? `<div class="r-response-section"><p class="r-label">Skipped variants</p><div class="r-scenario-list">${audit.skipped.map((item) => `<div class="r-scenario"><p><strong>${escapeHtml(item.name)}</strong></p>${renderScenarioReason(item.reason)}</div>`).join('')}</div></div>`
+  return { tone: 'success', label: 'passed — every confirmed flow verified cleanly' };
+}
+
+function flowStatusChip(flow: ReportFlow): { tone: string; label: string } {
+  if (flow.finding?.status === 'confirmed') return { tone: 'critical', label: 'finding confirmed' };
+  if (flow.finding?.status === 'inconclusive') return { tone: 'warning', label: 'finding inconclusive' };
+  if (flow.replayConfirmed) return { tone: 'success', label: 'replay confirmed' };
+  if (flow.replayFailure) return { tone: 'warning', label: 'not confirmed' };
+  return { tone: 'muted', label: flow.discoveryVerified ? 'discovered' : 'unverified' };
+}
+
+/** `flow.id` for a discovered flow is always `<runId>-flow-<n>`; pull the ordinal back out to
+ * label a similar-shaped flow ("similar to Flow N") without threading a lookup table around. */
+function flowOrdinal(flowId: string): string | undefined {
+  return flowId.match(/-flow-(\d+)$/)?.[1];
+}
+
+/** One shared way to place two or more related facts side by side, everywhere in this report. */
+function metaRow(items: string[]): string {
+  return `<div class="meta-row">${items.map((item) => `<span>${item}</span>`).join('')}</div>`;
+}
+
+function renderStep(step: ReportStep): string {
+  const parts = [`<span class="verb">${escapeHtml(actionLabel(step.action))}</span>`];
+  if (step.target) parts.push(`<span class="target mono">${escapeHtml(step.target)}</span>`);
+  if (step.value !== undefined) parts.push(`<span class="target mono">= ${escapeHtml(step.value)}</span>`);
+  const errorNote = step.error
+    ? `<div class="step-error">${escapeHtml(step.errorLabel ?? 'Action failed')}: ${escapeHtml(summarizeReason(step.error))}</div>`
     : '';
-  const planner = audit.planningStatus === 'failed'
-    ? `<p class="r-response-note r-tone-danger">Variant planning failed${audit.plannerReason ? `: ${escapeHtml(cleanDiagnostic(audit.plannerReason))}` : '.'}</p>`
-    : audit.planningStatus === 'incomplete'
-      ? `<p class="r-response-note r-tone-danger">Variant planning was incomplete${audit.plannerReason ? `: ${escapeHtml(cleanDiagnostic(audit.plannerReason))}` : '.'}</p>`
-    : audit.plannerReason && audit.plannerRejected === 0
-      ? `<p class="r-response-note r-muted">${escapeHtml(cleanDiagnostic(audit.plannerReason))}</p>`
+  const safetyNote = step.safetyBlocked
+    ? `<div class="step-note">Safety policy blocked ${step.safetyBlocked} request${step.safetyBlocked === 1 ? '' : 's'}</div>`
+    : '';
+  return `<li class="step"><span class="idx mono">${step.number}</span><span>${parts.join(' ')}${errorNote}${safetyNote}</span></li>`;
+}
+
+const RUNTIME_KIND_LABEL: Record<ReportRuntimeError['kind'], string> = {
+  console_error: 'Console error',
+  page_error: 'Page error',
+  request_failed: 'Request failed',
+  http_error: 'HTTP error',
+  page_crash: 'Page crash',
+};
+
+/** Renders the actual error content (message, and method/url/status when it's a request), not
+ * just the category label — a bare "console error ×2" with no message is not diagnosable. */
+function renderRuntimeIssue(issue: ReportRuntimeError): string {
+  const label = RUNTIME_KIND_LABEL[issue.kind] ?? issue.kind.replace(/_/g, ' ');
+  const count = issue.occurrences > 1 ? ` ×${issue.occurrences}` : '';
+  const request =
+    issue.method || issue.url
+      ? `<span class="mono">${escapeHtml([issue.method, issue.status !== undefined ? String(issue.status) : undefined, issue.url].filter(Boolean).join(' '))}</span> `
       : '';
-  const rejected = audit.plannerRejected > 0
-    ? `<div class="r-response-section"><p class="r-label">Rejected proposals</p><p><strong>${audit.plannerRejected} planner proposal${audit.plannerRejected === 1 ? '' : 's'}</strong> rejected by Appwalk validation.</p>${audit.plannerRejectionReasons.length ? `<p class="r-scenario-reason">Reason: ${escapeHtml(audit.plannerRejectionReasons.map(cleanDiagnostic).join('; '))}</p>` : ''}</div>`
-    : '';
-  return `<div class="r-card">
-    <p class="r-label">Response scenarios</p>
-    ${summary}
-    ${planner}
-    ${rejected}
-    ${fixtures}
-    ${confirmed}
-    ${skipped}
-  </div>`;
+  // For http_error, `message` is always the fixed template "HTTP <status> response" — the status
+  // is already in the request span above, so repeating it here would just say the same thing twice.
+  const message = issue.kind === 'http_error' ? '' : escapeHtml(summarizeReason(issue.message));
+  return `<div class="runtime-issue"><strong>${escapeHtml(label)}${count}</strong> ${request}${message}</div>`;
 }
 
-function renderFlowRuntimeIssues(errors: ReportRuntimeError[]): string {
-  if (errors.length === 0) return '';
-  const rows = errors.slice(0, 8).map((error) => {
-    const phase = capitalize(error.phase);
-    const request = [error.method, error.url].filter(Boolean).join(' ');
-    const count = error.occurrences > 1 ? ` (${error.occurrences} occurrences)` : '';
-    return `<div class="r-runtime-item">
-      <p class="r-runtime-message"><strong>${escapeHtml(error.message)}</strong>${escapeHtml(count)}</p>
-      <p class="r-runtime-line"><strong>Phase:</strong> ${escapeHtml(phase)}</p>
-      ${request ? `<p class="r-runtime-line"><strong>Request:</strong> <code>${escapeHtml(request)}</code></p>` : ''}
-      <p class="r-muted">Observed during replay; this event is not linked to a recorded action.</p>
-    </div>`;
-  }).join('');
-  const more = errors.length > 8
-    ? `<p class="r-muted">${errors.length - 8} more application error${errors.length - 8 === 1 ? '' : 's'} recorded for this flow.</p>`
-    : '';
-  return callout('warning', `<p class="r-callout-title">APPLICATION ERROR OBSERVED</p>${rows}${more}`);
-}
+const VARIANT_STATUS_LABEL: Record<ReportResponseVariantAudit['planningStatus'], string> = {
+  not_enabled: 'response variants disabled',
+  not_run: 'no baseline response captured to plan from',
+  completed: 'planning completed',
+  incomplete: 'planning stopped early',
+  failed: 'planning failed',
+};
 
-function renderReplayFailure(failure: ReportFlow['replayFailure']): string {
-  if (!failure) return '';
-  const diagnostic = failure.error ? cleanDiagnostic(failure.error) : '';
-  const causeLabels: Record<NonNullable<ReportFlow['replayFailure']>['cause'] & string, string> = {
-    action: 'The recorded action could not be completed.',
-    authentication: 'The replay session was not authenticated when the flow expected an application page.',
-    loading: 'The application was still loading when the recorded action was replayed.',
-    request: 'A request failed while the replay was restoring the flow state.',
-    safety: 'The safety policy blocked a request needed by the flow.',
-    expectation: 'The replay did not reproduce the recorded expectation.',
-    verification: 'The replay reached a different final state than the recorded flow.',
-  };
-  const cause = failure.cause ? `<p class="r-failure-cause"><strong>Likely cause:</strong> ${causeLabels[failure.cause]}</p>` : '';
-  const step = failure.step !== undefined
-    ? `<p class="r-failure-line"><strong>Step:</strong> <code>${failure.step}</code>${failure.action ? ` <span class="r-muted">(${escapeHtml(failure.action)})</span>` : ''}</p>`
-    : '';
-  const technicalError = diagnostic
-    ? `<pre class="r-code-block"><code>${escapeHtml(diagnostic)}</code></pre>`
-    : '';
-  return callout('warning', `<p class="r-callout-title">REPLAY NOT CONFIRMED</p><p class="r-failure-description">${escapeHtml(failure.reason)}</p>${cause}<p class="r-failure-line"><strong>Last URL:</strong> <code>${escapeHtml(failure.lastUrl)}</code></p>${step}${technicalError}<details><summary>Last captured page state</summary><pre class="r-code-block"><code>${escapeHtml(failure.lastSnapshot || '(empty)')}</code></pre></details>`);
-}
-
-function renderSafetyCard(safety: ReportSafety): string {
-  if (safety.blockedRequests === 0) return '';
-  const methods = Object.entries(safety.byMethod)
-    .map(([method, count]) => `${method} ${count}`)
-    .join(', ');
-  const samples = safety.samples.slice(0, 3).map((sample) => `${sample.method} ${sample.url}`).join(', ');
-  const related = safety.safetyRelatedRuntimeErrors > 0
-    ? `<p class="r-muted">${safety.safetyRelatedRuntimeErrors} browser runtime issue${safety.safetyRelatedRuntimeErrors === 1 ? '' : 's'} were caused by these blocked requests and are excluded from potential bug review.</p>`
-    : '';
-  return callout('warning', `<p class="r-label">Safety limited coverage</p><p>${safety.blockedRequests} destructive request${safety.blockedRequests === 1 ? '' : 's'} blocked during this persona.</p><p class="r-muted">Exploration: ${safety.explorationBlocked}; replay: ${safety.replayBlocked}${methods ? `; methods: ${escapeHtml(methods)}` : ''}.</p>${related}${samples ? `<p class="r-muted">Examples: ${escapeHtml(samples)}</p>` : ''}`);
-}
-
-function renderStopReason(stopReason: ReportStopReason): string {
-  if (stopReason === 'completed') return '';
-  const message = stopReason === 'budget_exhausted'
-    ? 'The action budget was reached before the next flow was completed.'
-    : stopReason === 'agent_stopped'
-      ? 'Exploration ended before the next flow was completed.'
-      : stopReason === 'no_progress'
-        ? 'Exploration stopped after repeated attempts made no progress.'
-        : 'The persona did not complete its exploration.';
-  return callout('warning', `<p class="r-label">Exploration incomplete</p><p>${message}</p>`);
-}
-
-function renderPersonaContext(run: ReportRun): string {
-  const scope = run.scope
-    ? `<div class="r-run-context-row"><strong>Scope:</strong><span>${escapeHtml(run.scope)}</span></div>`
-    : '';
-  const expectations = run.expectations.length
-    ? `<div class="r-run-context-row"><strong>Expectations:</strong><ol class="r-expectations">${run.expectations.map((expectation) => `<li>${escapeHtml(expectation)}</li>`).join('')}</ol></div>`
-    : '';
-  return `<div class="r-run-context">
-    <div class="r-run-context-row"><strong>Max steps:</strong><code>${run.maxSteps}</code></div>
-    ${scope}
-    ${expectations}
-  </div>`;
-}
-
-function renderOverviewPanel(report: ExecutionReport): string {
-  const caveats =
-    report.runs.filter((run) => run.error).length +
-    report.runs.filter((run) => run.exhausted).length;
-  const intentBody =
-    report.intent.scope || report.intent.expectations.length
-      ? `${report.intent.scope ? `<p class="r-label">Scope</p><p>${escapeHtml(report.intent.scope)}</p>` : ''}
-      ${report.intent.expectations.length ? `<p class="r-label">Expectations</p><ol class="r-expectations">${report.intent.expectations.map((expectation) => `<li>${escapeHtml(expectation)}</li>`).join('')}</ol>` : ''}`
+/** Response-scenario planning is a whole extra pipeline (capture a real JSON response, propose a
+ * patch, replay it, confirm it changed the UI) — worth surfacing even when it produced nothing,
+ * since "0 confirmed, 3 rejected" explains why a flow has no variants instead of leaving it silent. */
+function renderVariantAudit(audit: ReportResponseVariantAudit): string {
+  if (!audit.enabled) return '';
+  const statusLabel = VARIANT_STATUS_LABEL[audit.planningStatus];
+  const counts = metaRow([
+    `${audit.fixturesFound} fixture${audit.fixturesFound === 1 ? '' : 's'} captured`,
+    `${audit.proposed} proposed`,
+    `${audit.confirmed} confirmed`,
+    `${audit.plannerRejected} rejected`,
+  ]);
+  const rejectionReasons =
+    audit.plannerRejectionReasons.length > 0
+      ? `<div class="runtime-issue">Rejected: ${audit.plannerRejectionReasons.map((reason) => escapeHtml(reason)).join('; ')}</div>`
       : '';
-  const artifacts = Object.entries(report.artifacts)
-    .map(
-      ([key, path]) => `<a href="${escapeHtml(path)}">${escapeHtml(key)}</a>`,
-    )
-    .join('');
-  const evidenceIssues = report.issues.filter((issue) => issue.source === 'evidence');
-  const evidenceWarning = evidenceIssues.length
-    ? callout('warning', `<p><strong>Evidence is incomplete.</strong> ${evidenceIssues.length} malformed record${evidenceIssues.length === 1 ? '' : 's'} skipped while reading evidence.</p><p class="r-muted">${evidenceIssues.map((issue) => `Line ${issue.line}: ${escapeHtml(issue.message)}`).join('<br>')}</p>`)
-    : '';
-  return `<section id="panel-overview" class="r-panel">
-    <div class="r-panel-head"><p class="r-label">Report</p><h1 class="r-h1">Execution overview</h1></div>
-    <div class="r-card">
-      <div class="r-meta-list">
-        <div class="r-meta-row"><strong class="r-meta-label">URL:</strong><span class="r-meta-value"><a href="${escapeHtml(report.url)}">${escapeHtml(report.url)}</a></span></div>
-        <div class="r-meta-row"><strong class="r-meta-label">Command:</strong><span class="r-meta-value">${escapeHtml(report.command)}</span></div>
-        <div class="r-meta-row"><strong class="r-meta-label">Execution:</strong><span class="r-meta-value">${escapeHtml(report.executionId)}</span></div>
-        <div class="r-meta-row"><strong class="r-meta-label">Completed:</strong><span class="r-meta-value">${escapeHtml(formatTimestamp(report.completedAt))}</span></div>
-        <div class="r-meta-row"><strong class="r-meta-label">Duration:</strong><span class="r-meta-value">${escapeHtml(formatDuration(report.startedAt, report.completedAt))}</span></div>
-        <div class="r-meta-row"><strong class="r-meta-label">Exit code:</strong><span class="r-meta-value">${report.exitCode}</span></div>
-      </div>
-      ${report.summary.coverageIncomplete ? callout('warning', `<p><strong>Coverage incomplete.</strong> At least one persona exhausted its action budget, encountered a runtime issue, or was limited by safety policy.</p>`) : ''}
-      ${caveats && !report.summary.coverageIncomplete ? callout('warning', `<p>${caveats} persona${caveats === 1 ? '' : 's'} needed attention during this execution.</p>`) : ''}
-      ${evidenceWarning}
-      <div class="r-stat-grid">
-        <div><p class="r-label">Personas</p><p class="r-stat">${report.summary.runs}</p></div>
-        <div><p class="r-label">Flows found</p><p class="r-stat">${report.summary.flowsFound}</p></div>
-        <div><p class="r-label">Baseline replay confirmed</p><p class="r-stat">${report.summary.replayConfirmed}</p></div>
-        <div><p class="r-label">Generated tests</p><p class="r-stat">${report.summary.generatedTests}</p></div>
-        <div><p class="r-label">Potential bugs</p><p class="r-stat">${report.summary.confirmedFindings}</p></div>
-        <div><p class="r-label">Needs review</p><p class="r-stat">${report.summary.inconclusiveFindings}</p></div>
-        <div><p class="r-label">Runtime issues</p><p class="r-stat">${report.summary.runtimeErrors}</p></div>
-        <div><p class="r-label">Safety blocks</p><p class="r-stat">${report.summary.safetyBlockedRequests}</p></div>
-      </div>
-    </div>
-    ${intentBody ? `<div class="r-card">${intentBody}</div>` : ''}
-    <div class="r-card"><p class="r-label">Execution artifacts</p><nav class="r-artifacts">${artifacts}</nav></div>
-  </section>`;
-}
-
-function renderPersonaPanel(run: ReportRun, runIndex: number): string {
-  const name = personaName(run);
-  const intentLabel = run.personaIntent
-    ? `${capitalize(run.personaIntent)} persona`
-    : 'Persona';
-  const meta = `<div class="r-persona-stat-grid">
-    <div><p class="r-label">Flows found</p><p class="r-stat">${run.flowsFound}</p></div>
-    <div><p class="r-label">Baseline replay confirmed</p><p class="r-stat">${run.replayConfirmed}</p></div>
-    <div><p class="r-label">Generated tests</p><p class="r-stat">${run.generatedTests}</p></div>
-  </div>`;
-  const head = name
-    ? `<p class="r-label">${escapeHtml(intentLabel)}</p><h1 class="r-h1">${escapeHtml(name)}</h1><p class="r-muted">${escapeHtml(run.name)}</p>`
-    : `<p class="r-label">Run</p><h1 class="r-h1">${escapeHtml(run.name)}</h1>`;
-  return `<section id="${panelId(runIndex)}" class="r-panel" hidden>
-    <div class="r-panel-head">${head}</div>
-    ${renderPersonaContext(run)}
-    <div class="r-card">
-      ${meta}
-      ${run.error ? callout('danger', `<p>Persona failed: ${escapeHtml(run.error)}</p>`) : ''}
-      ${renderStopReason(run.stopReason)}
-      ${renderSafetyCard(run.safety)}
-    </div>
-  </section>`;
-}
-
-function renderFlowPanel(
-  flow: ReportFlow,
-  run: ReportRun,
-  runIndex: number,
-  flowIndex: number,
-  audit: ReportResponseVariantAudit | undefined,
-): string {
-  const status = flowStatus(flow);
-  const finding = flow.finding
-    ? callout(
-        flow.finding.status === 'confirmed' ? 'danger' : 'warning',
-        `<p class="r-label">${flow.finding.status === 'confirmed' ? 'Potential bug' : 'Potential bug · review'}</p><p>${escapeHtml(flow.finding.summary)}</p>${flow.finding.failure ? `<p class="r-muted">${escapeHtml(flow.finding.failure)}</p>` : ''}`,
-      )
-    : '';
-  const name = personaName(run);
-  const relationship = flow.origin === 'derived'
-    ? '<p class="r-label">Response variant</p>'
-    : flow.similarTo
-      ? '<p class="r-muted r-flow-note">A similar baseline flow was also discovered in this persona.</p>'
+  const skipped =
+    audit.skipped.length > 0
+      ? audit.skipped
+          .map(
+            (entry) =>
+              `<div class="runtime-issue"><strong>${escapeHtml(entry.name)}</strong> skipped — ${escapeHtml(summarizeReason(entry.reason))}</div>`,
+          )
+          .join('')
       : '';
-  const crumb = name
-    ? `<a class="r-crumb-link" href="#${panelId(runIndex)}" data-target="${panelId(runIndex)}">${escapeHtml(name)}</a><span class="r-crumb-sep">/</span><span>${escapeHtml(run.name)}</span><span class="r-crumb-sep">/</span><span>${flow.origin === 'derived' ? 'response variant' : 'discovered flow'}</span>`
-    : `<a class="r-crumb-link" href="#${panelId(runIndex)}" data-target="${panelId(runIndex)}">${escapeHtml(run.name)}</a><span class="r-crumb-sep">/</span><span>${flow.origin === 'derived' ? 'response variant' : 'discovered flow'}</span>`;
-  return `<section id="${panelId(runIndex, flowIndex)}" class="r-panel" hidden>
-    <div class="r-panel-head"><p class="r-crumb">${crumb}</p>${relationship}<h1 class="r-h1">${escapeHtml(flow.title)}</h1></div>
-    <div class="r-card">
-      <p class="r-flow-status r-tone-${status.tone}">${escapeHtml(status.label)}</p>
-      <div class="r-flow-checks">
-        <div class="r-flow-check"><p class="r-label">Discovery</p><p class="r-flow-check-value${flow.discoveryVerified ? ' r-tone-good' : ''}">${flow.discoveryVerified ? 'Verified' : 'Not verified'}</p></div>
-        <div class="r-flow-check"><p class="r-label">Replay</p><p class="r-flow-check-value${flow.replayConfirmed ? ' r-tone-good' : ''}">${flow.replayConfirmed ? 'Confirmed' : 'Not confirmed'}</p></div>
-      </div>
-      <p>${escapeHtml(flow.summary)}</p>
-    </div>
-    ${finding}
-    ${renderReplayFailure(flow.replayFailure)}
-    ${renderFlowRuntimeIssues(flow.runtimeIssues)}
-    ${renderStepsCard(flow.steps)}
-    ${audit ? renderResponseScenariosCard(audit) : ''}
+  const plannerNote = audit.plannerReason ? `<div class="runtime-issue">${escapeHtml(audit.plannerReason)}</div>` : '';
+  const tone = audit.planningStatus === 'failed' ? 'warning' : 'muted';
+  return `<div class="note ${tone}"><span class="eyebrow">Response scenarios · ${escapeHtml(statusLabel)}</span>${counts}${rejectionReasons}${skipped}${plannerNote}</div>`;
+}
+
+function renderFlow(flow: ReportFlow, children: ReportFlow[] = [], audit?: ReportResponseVariantAudit): string {
+  const chip = flowStatusChip(flow);
+  const originTag = flow.origin === 'derived' ? `<span class="chip muted">derived scenario</span>` : '';
+  const similarOrdinal = flow.similarTo ? flowOrdinal(flow.similarTo) : undefined;
+  const similarTag = similarOrdinal ? `<span class="chip muted">similar to Flow ${similarOrdinal}</span>` : '';
+  const steps =
+    flow.steps.length > 0
+      ? `<ol class="steps">${flow.steps.map(renderStep).join('')}</ol>`
+      : `<p class="empty">No recorded steps.</p>`;
+  const failure = flow.replayFailure
+    ? `<div class="note warning"><span class="eyebrow">Replay</span><span>${escapeHtml(summarizeReason(flow.replayFailure.reason))}</span></div>`
+    : '';
+  const finding = flow.finding?.failure
+    ? `<div class="note critical"><span class="eyebrow">Finding</span><span>${escapeHtml(summarizeReason(flow.finding.failure))}</span></div>`
+    : '';
+  const runtimeNotes =
+    flow.runtimeIssues.length > 0
+      ? `<div class="note warning"><span class="eyebrow">Runtime</span>${flow.runtimeIssues.map(renderRuntimeIssue).join('')}</div>`
+      : '';
+  const variantAudit = audit ? renderVariantAudit(audit) : '';
+  const variants =
+    children.length > 0
+      ? `<div class="variants"><span class="eyebrow">Response scenarios confirmed (${children.length})</span>${children.map((child) => renderFlow(child)).join('')}</div>`
+      : '';
+  return `<div class="flow">
+    <div class="flow-head"><h3>${escapeHtml(flow.title)}</h3><span class="chip-group">${originTag}${similarTag}<span class="chip ${chip.tone}">${escapeHtml(chip.label)}</span></span></div>
+    ${steps}
+    ${failure}${finding}${runtimeNotes}${variantAudit}${variants}
+  </div>`;
+}
+
+function renderBrief(run: ReportRun): string {
+  const scope = run.scope ? `<div class="scope"><span class="eyebrow">Scope</span>${escapeHtml(run.scope)}</div>` : '';
+  const expectations =
+    run.expectations.length > 0
+      ? `<div class="expect"><span class="eyebrow">Expectations</span><ol>${run.expectations.map((expectation) => `<li>${escapeHtml(expectation)}</li>`).join('')}</ol></div>`
+      : '';
+  return `<div class="brief">
+    <h2>${escapeHtml(run.persona ?? run.name)}${run.personaIntent ? `<span class="intent ${run.personaIntent}">${run.personaIntent}</span>` : ''}</h2>
+    ${scope}${expectations}
+  </div>`;
+}
+
+function renderCase(run: ReportRun, index: number, active: boolean): string {
+  // Counts only baseline flows — derived response scenarios are nested under their baseline in
+  // the detail view, so they shouldn't inflate the top-level "N flows" count here either.
+  const baselineFlows = run.flows.filter((flow) => flow.origin !== 'derived');
+  const confirmed = baselineFlows.filter((flow) => flow.replayConfirmed).length;
+  const metaItems = [`${baselineFlows.length} flow${baselineFlows.length === 1 ? '' : 's'}`, `${confirmed} confirmed`];
+  if (run.error) metaItems.push(`<span class="text-critical">failed</span>`);
+  return `<button class="case" aria-current="${active}" data-case="run-${index}">
+    <div class="case-top"><span class="case-name">${escapeHtml(run.persona ?? run.name)}</span>${run.personaIntent ? `<span class="intent ${run.personaIntent}">${run.personaIntent}</span>` : ''}</div>
+    ${metaRow(metaItems).replace('class="meta-row"', 'class="meta-row case-meta"')}
+  </button>`;
+}
+
+function renderRunDetail(run: ReportRun, index: number, active: boolean): string {
+  const errorNote = run.error
+    ? `<div class="note critical"><span class="eyebrow">Run error</span><span>${escapeHtml(run.error)}</span></div>`
+    : '';
+  // Derived flows are confirmed response scenarios of a baseline flow, not independent flows —
+  // nest them under that baseline instead of listing them as flat, unrelated top-level cards.
+  const baselineFlows = run.flows.filter((flow) => flow.origin !== 'derived');
+  const derivedByParent = new Map<string, ReportFlow[]>();
+  for (const flow of run.flows) {
+    if (flow.origin !== 'derived' || !flow.parentFlowId) continue;
+    const siblings = derivedByParent.get(flow.parentFlowId) ?? [];
+    siblings.push(flow);
+    derivedByParent.set(flow.parentFlowId, siblings);
+  }
+  const flows =
+    baselineFlows.length > 0
+      ? baselineFlows
+          .map((flow) => {
+            const audit = run.responseVariants.find((candidate) =>
+              flow.id.endsWith(`-flow-${candidate.flowIndex + 1}`),
+            );
+            return renderFlow(flow, derivedByParent.get(flow.id) ?? [], audit);
+          })
+          .join('')
+      : `<p class="empty">No flows discovered in this run.</p>`;
+  return `<section class="persona-detail" id="run-${index}"${active ? '' : ' hidden'}>
+    ${renderBrief(run)}
+    ${errorNote}
+    ${flows}
   </section>`;
 }
 
 export function renderHtmlReport(report: ExecutionReport): string {
-  const index = renderIndex(report);
-  const overview = renderOverviewPanel(report);
-  const panels = report.runs
-    .map((run, runIndex) => {
-      const auditsByFlowIndex = new Map(
-        run.responseVariants.map((audit) => [audit.flowIndex, audit]),
-      );
-      const variantsByParent = new Map<string, Array<{ flow: ReportFlow; index: number }>>();
-      run.flows.forEach((flow, flowIndex) => {
-        if (!flow.parentFlowId) return;
-        const variants = variantsByParent.get(flow.parentFlowId) ?? [];
-        variants.push({ flow, index: flowIndex });
-        variantsByParent.set(flow.parentFlowId, variants);
-      });
-      const renderedFlowIndexes = new Set<number>();
-      const flowPanels = run.flows.map((flow, flowIndex) => {
-        if (flow.origin === 'derived' || renderedFlowIndexes.has(flowIndex)) return '';
-        renderedFlowIndexes.add(flowIndex);
-        const variants = variantsByParent.get(flow.id) ?? [];
-        variants.forEach((variant) => renderedFlowIndexes.add(variant.index));
-        return renderFlowPanel(flow, run, runIndex, flowIndex, auditsByFlowIndex.get(flowIndex)) +
-          variants.map((variant) => renderFlowPanel(variant.flow, run, runIndex, variant.index, undefined)).join('');
-      }).join('') + run.flows.map((flow, flowIndex) =>
-        flow.origin === 'derived' && !renderedFlowIndexes.has(flowIndex)
-          ? renderFlowPanel(flow, run, runIndex, flowIndex, undefined)
-          : '',
-      ).join('');
-      return renderPersonaPanel(run, runIndex) + flowPanels;
-    })
-    .join('');
-  const styles = [
-    ':root { color-scheme: light; --brand: #4338ca; --brand-tint: #eef0fd; --brand-ink: #312e81; }',
-    '* { box-sizing: border-box; }',
-    'body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 14px; color: #1c2529; background: #f4f5f6; line-height: 1.55; }',
-    '.r-app { width: min(1280px, calc(100% - 64px)); margin: 0 auto; padding: 36px 0 96px; }',
-    'h1, p, ol { margin: 0; }',
-    'a { color: var(--brand); text-decoration: none; }',
-    'a:hover { text-decoration: underline; }',
-    '.r-h1 { font-size: 26px; font-weight: 700; }',
-    '.r-label { color: #6b7680; font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }',
-    '.r-stat { font-size: 20px; font-weight: 700; margin-top: 4px; }',
-    '.r-tone-good { color: #157347; }',
-    '.r-tone-warning { color: #8a6a00; }',
-    '.r-tone-danger { color: #b42318; }',
-    '.r-muted { color: #6b7680; }',
-    '.r-card { background: #fff; border-radius: 12px; padding: 20px 22px; }',
-    '.r-callout { border-radius: 10px; padding: 12px 14px; margin-top: 14px; color: #33424c; }',
-    '.r-callout-good { background: #eaf6ee; }',
-    '.r-callout-warning { background: #fdf6df; }',
-    '.r-callout-danger { background: #fbeae8; }',
-    '.r-masthead { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding-bottom: 24px; }',
-    '.r-brand { display: flex; align-items: baseline; gap: 8px; }',
-    '.r-brand-mark { color: var(--brand); font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }',
-    '.r-brand-sub { color: #6b7680; font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }',
-    '.r-badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 650; letter-spacing: .02em; white-space: nowrap; }',
-    '.r-badge-good { background: #e3f5ea; color: #157347; }',
-    '.r-badge-warning { background: #fdf3d9; color: #8a6a00; }',
-    '.r-badge-danger { background: #fbe4e1; color: #b42318; }',
-    '.r-masthead-url { display: block; margin-top: 4px; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }',
-    '.r-workspace { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 28px; align-items: start; }',
-    '.r-index { position: sticky; top: 24px; padding: 10px; max-height: calc(100vh - 48px); overflow-y: auto; }',
-    '.r-link { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 10px; padding: 7px 10px; border-radius: 7px; color: #5b6670; }',
-    '.r-link-title { min-width: 0; display: flex; flex-direction: column; }',
-    '.r-persona-secondary { margin-top: 2px; color: #6b7680; font-weight: 400; }',
-    '.r-flow-secondary { margin-top: 2px; color: #89939b; font-size: 11px; font-weight: 500; }',
-    '.r-link:hover { background: #f6f7f7; text-decoration: none; }',
-    '.r-link.r-active { background: var(--brand-tint); color: var(--brand-ink); font-weight: 600; }',
-    '.r-link-overview { font-weight: 600; margin-bottom: 8px; }',
-    '.r-link-persona { font-weight: 600; margin-top: 14px; }',
-    '.r-index-group:first-child .r-link-persona { margin-top: 0; }',
-    '.r-index-flows { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 0 22px; padding-left: 10px; }',
-    '.r-index-variants { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 6px 18px; padding-left: 14px; }',
-    '.r-variant-group-label, .r-variant-label { color: #7a858d; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }',
-    '.r-variant-group-label { padding: 4px 10px 2px; }',
-    '.r-link-variant { padding-top: 5px; padding-bottom: 5px; font-size: 13px; }',
-    '.r-panel { display: none; }',
-    '.r-panel:not([hidden]) { display: flex; flex-direction: column; gap: 18px; }',
-    '.r-panel-head p.r-label, .r-panel-head p.r-crumb { margin-bottom: 6px; }',
-    '.r-panel-head h1 + p { margin-top: 4px; }',
-    '.r-crumb { font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: #6b7680; }',
-    '.r-crumb-link { color: var(--brand); font-weight: 800; }',
-    '.r-crumb-sep { margin: 0 6px; color: #b7bcc1; }',
-    '.r-card-top { display: flex; align-items: baseline; gap: 12px; }',
-    '.r-card-top p { color: #33424c; }',
-    '.r-flow-status { font-size: 16px; font-weight: 700; }',
-    '.r-flow-checks { display: grid; grid-template-columns: repeat(2, minmax(150px, 220px)); gap: 28px; margin-top: 18px; }',
-    '.r-flow-check { display: flex; flex-direction: column; gap: 2px; }',
-    '.r-flow-check .r-label, .r-flow-check-value { margin: 0; }',
-    '.r-flow-check-value { color: #6b7680; font-weight: 700; }',
-    '.r-callout-title { color: #6b7680; font-size: 16px; font-weight: 700; letter-spacing: .04em; }',
-    '.r-failure-description { margin-top: 8px; }',
-    '.r-failure-cause { margin-top: 10px; }',
-    '.r-failure-line { overflow-wrap: anywhere; }',
-    '.r-failure-line code { color: #33424c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }',
-    '.r-code-block { max-height: 280px; margin: 8px 0 0; padding: 12px 14px; overflow: auto; background: #f3f5f6; border-radius: 7px; white-space: pre-wrap; overflow-wrap: anywhere; color: #33424c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; }',
-    '.r-code-block code { font: inherit; }',
-    '.r-callout details { margin-top: 14px; }',
-    '.r-callout summary { color: #33424c; cursor: pointer; font-weight: 600; }',
-    '.r-runtime-item + .r-runtime-item { margin-top: 16px; }',
-    '.r-runtime-message { margin-top: 8px; }',
-    '.r-runtime-line { margin-top: 4px; }',
-    '.r-runtime-line code { color: #33424c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }',
-    '.r-card > * + * { margin-top: 12px; }',
-    '.r-response-meta { margin-top: 14px; }',
-    '.r-response-section { margin-top: 20px; }',
-    '.r-response-section > .r-label { margin-bottom: 8px; }',
-    '.r-response-note { margin-top: 14px; }',
-    '.r-scenario-list { display: grid; gap: 10px; }',
-    '.r-scenario-reason { margin-top: 3px; color: #6b7680; overflow-wrap: anywhere; }',
-    '.r-meta-list { display: grid; gap: 7px; margin-top: 16px; }',
-    '.r-meta-row { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 12px; align-items: baseline; }',
-    '.r-meta-label { color: #33424c; font-weight: 700; }',
-    '.r-meta-value { color: #6b7680; overflow-wrap: anywhere; }',
-    '.r-run-context { display: grid; gap: 10px; color: #33424c; }',
-    '.r-run-context-row { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 12px; align-items: baseline; }',
-    '.r-run-context-row strong { font-weight: 700; }',
-    '.r-run-context-row code { color: #33424c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }',
-    '.r-run-context .r-expectations { margin: 0; }',
-    '.r-expectations { padding-left: 20px; }',
-    '.r-expectations li + li { margin-top: 6px; }',
-    '.r-stat-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 18px; margin-top: 18px; }',
-    '.r-stat-grid > div { background: #f3f5f6; border-radius: 10px; padding: 16px 14px; min-height: 104px; }',
-    '.r-stat-grid .r-stat { text-align: center; margin-top: 14px; }',
-    '.r-persona-stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 18px; }',
-    '.r-persona-stat-grid > div { background: #f3f5f6; border-radius: 10px; padding: 16px 14px; min-height: 104px; }',
-    '.r-persona-stat-grid .r-stat { text-align: center; margin-top: 14px; }',
-    '.r-steps { display: grid; gap: 10px; }',
-    '.r-step { display: grid; grid-template-columns: 22px 1fr; gap: 10px; }',
-    '.r-step-action { font-weight: 600; }',
-    '.r-code, .r-step-error code { color: #33424c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }',
-    '.r-step-error { margin-top: 10px; }',
-    '.r-step-error .r-code-block { max-height: 240px; }',
-    '.r-fixtures { display: grid; gap: 6px; }',
-    '.r-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; }',
-    '.r-fixture-url { overflow-wrap: anywhere; }',
-    '.r-audit-group { margin-top: 14px; }',
-    '.r-audit-group p:not(.r-label) { margin-top: 4px; }',
-    '.r-artifacts { display: flex; flex-wrap: wrap; gap: 10px 22px; font-size: 12px; margin-top: 8px; }',
-    '[hidden] { display: none !important; }',
-  ].join(' ');
-  return [
-    '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
-    '<title>Appwalk report ',
-    escapeHtml(report.url),
-    '</title><style>',
-    styles,
-    '</style></head><body>',
-    '<div class="r-app">',
-    '<header class="r-masthead"><div><p class="r-brand"><span class="r-brand-mark">Appwalk</span><span class="r-brand-sub">Execution report</span></p></div></header>',
-    '<div class="r-workspace">',
-    index,
-    '<div class="r-detail">',
-    overview,
-    panels,
-    '</div>',
-    '</div>',
-    '</div>',
-    '<script>',
-    'const links=[...document.querySelectorAll("[data-target]")];const panels=[...document.querySelectorAll(".r-panel")];',
-    'function activate(id){const target=document.getElementById(id)?id:"panel-overview";panels.forEach((panel)=>{panel.hidden=panel.id!==target;});links.forEach((link)=>{link.classList.toggle("r-active",link.dataset.target===target);});}',
-    'links.forEach((link)=>{link.addEventListener("click",(event)=>{event.preventDefault();activate(link.dataset.target);history.replaceState(null,"","#"+link.dataset.target);});});',
-    'activate(location.hash?location.hash.slice(1):"panel-overview");',
-    '</script>',
-    '</body></html>',
-  ].join('');
+  const stamp = outcomeStamp(report);
+  const cases = report.runs.map((run, index) => renderCase(run, index, index === 0)).join('');
+  const details = report.runs.map((run, index) => renderRunDetail(run, index, index === 0)).join('');
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(report.url)} — execution report</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,450;0,9..144,560;0,9..144,650;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+${REPORT_CSS}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="run-head">
+    <div>
+      <div class="eyebrow">Execution</div>
+      <h1>${escapeHtml(report.url)}</h1>
+      ${metaRow([
+        `<span class="chip muted">${escapeHtml(report.command)}</span>`,
+        `<span class="mono">${formatDate(report.startedAt)}</span>`,
+        `duration <span class="mono">${escapeHtml(formatDuration(report.startedAt, report.completedAt))}</span>`,
+      ])}
+      <div class="execution-id">execution <span class="mono">${escapeHtml(report.executionId)}</span></div>
+    </div>
+    <div class="stamp ${stamp.tone}"><span class="dot"></span>${escapeHtml(stamp.label)}</div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="n mono">${report.summary.runs}</div><div class="l">personas run</div></div>
+    <div class="stat"><div class="n mono">${report.summary.flowsFound}</div><div class="l">flows discovered</div></div>
+    <div class="stat"><div class="n mono">${report.summary.replayConfirmed}</div><div class="l">replay-confirmed</div></div>
+    <div class="stat"><div class="n mono">${report.summary.confirmedFindings}</div><div class="l">findings confirmed</div></div>
+    <div class="stat"><div class="n mono">${report.summary.inconclusiveFindings}</div><div class="l">needs review</div></div>
+  </div>
+
+  <div class="board">
+    <nav class="case-list" role="tablist" aria-label="Personas">${cases}</nav>
+    <div class="detail">${details}</div>
+  </div>
+
+  <footer class="page-foot">
+    <span>report.html</span>
+    <span>generated by appwalk</span>
+  </footer>
+</div>
+
+<script>
+  document.querySelectorAll('.case').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      document.querySelectorAll('.case').forEach(function(b){ b.setAttribute('aria-current','false'); });
+      btn.setAttribute('aria-current','true');
+      document.querySelectorAll('.persona-detail').forEach(function(p){ p.hidden = true; });
+      document.getElementById(btn.dataset.case).hidden = false;
+    });
+  });
+</script>
+</body>
+</html>`;
 }
+
+const REPORT_CSS = `
+  :root{
+    --bg:#EEF1F2; --surface:#FFFFFF; --surface-2:#E3E9EA; --border:#D3DADC;
+    --text:#141A1F; --muted:#5B6B72; --faint:#8B979B;
+    --accent:#2E6E73; --accent-soft:#DCEAEA; --accent-ink:#123236;
+    --success:#3F7D52; --success-soft:#E1EEE4;
+    --warning:#B8791E; --warning-soft:#F5E7D2;
+    --critical:#A83E2C; --critical-soft:#F3E0DA;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0E1518; --surface:#16212A; --surface-2:#1C2932; --border:#2A3A44;
+      --text:#E7ECEC; --muted:#8CA0A8; --faint:#5E7178;
+      --accent:#63BDC3; --accent-soft:#1B3236; --accent-ink:#CFEFF1;
+      --success:#74CE8C; --success-soft:#1C3323;
+      --warning:#E3AD55; --warning-soft:#392C15;
+      --critical:#E58067; --critical-soft:#3A2019;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0E1518; --surface:#16212A; --surface-2:#1C2932; --border:#2A3A44;
+    --text:#E7ECEC; --muted:#8CA0A8; --faint:#5E7178;
+    --accent:#63BDC3; --accent-soft:#1B3236; --accent-ink:#CFEFF1;
+    --success:#74CE8C; --success-soft:#1C3323;
+    --warning:#E3AD55; --warning-soft:#392C15;
+    --critical:#E58067; --critical-soft:#3A2019;
+  }
+  *{box-sizing:border-box;}
+  body{ margin:0; background:var(--bg); color:var(--text); font-family:"IBM Plex Sans",system-ui,sans-serif; font-size:15px; line-height:1.55; }
+  h1,h2,h3,.display{ font-family:"Fraunces","IBM Plex Sans",serif; text-wrap:balance; }
+  .mono{ font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums; }
+  .eyebrow{ display:block; text-transform:uppercase; letter-spacing:.08em; font-size:11.5px; font-weight:600; color:var(--muted); margin-bottom:4px; }
+  .text-critical{ color:var(--critical); font-weight:600; }
+  .meta-row{ display:flex; align-items:center; gap:8px; color:var(--muted); font-size:13px; flex-wrap:wrap; }
+  .meta-row span:not(:first-child)::before{ content:"·"; margin-right:8px; color:var(--faint); }
+  .meta-row .mono{ color:var(--text); }
+  .execution-id{ margin-top:6px; color:var(--faint); font-size:12px; }
+  .execution-id .mono{ color:var(--muted); }
+  .page{ max-width:1180px; margin:0 auto; padding:36px 28px 64px; }
+  .run-head{ display:flex; justify-content:space-between; align-items:flex-end; gap:24px; padding-bottom:20px; border-bottom:1px solid var(--border); margin-bottom:24px; }
+  .run-head h1{ font-size:26px; font-weight:650; margin:6px 0 10px; word-break:break-word; }
+  .stamp{ display:inline-flex; align-items:center; gap:7px; padding:7px 14px; border-radius:3px; font-size:13px; font-weight:600; white-space:nowrap; border:1px solid transparent; }
+  .stamp.success{ background:var(--success-soft); color:var(--success); border-color:color-mix(in srgb, var(--success) 35%, transparent); }
+  .stamp.warning{ background:var(--warning-soft); color:var(--warning); border-color:color-mix(in srgb, var(--warning) 35%, transparent); }
+  .stamp.critical{ background:var(--critical-soft); color:var(--critical); border-color:color-mix(in srgb, var(--critical) 35%, transparent); }
+  .stamp .dot{ width:7px; height:7px; border-radius:50%; background:currentColor; }
+  .stats{ display:grid; grid-template-columns:repeat(5,1fr); gap:1px; background:var(--border); border:1px solid var(--border); border-radius:6px; overflow:hidden; margin-bottom:32px; }
+  .stat{ background:var(--surface); padding:18px 20px; }
+  .stat .n{ font-family:"Fraunces",serif; font-size:34px; font-weight:560; line-height:1; }
+  .stat .l{ margin-top:6px; color:var(--muted); font-size:12.5px; }
+  .board{ display:grid; grid-template-columns:250px 1fr; gap:28px; align-items:start; }
+  .case-list{ display:flex; flex-direction:column; gap:8px; position:sticky; top:24px; }
+  .case{ text-align:left; width:100%; cursor:pointer; border:1px solid var(--border); background:var(--surface); border-radius:6px; padding:13px 14px; display:flex; flex-direction:column; gap:6px; font:inherit; color:inherit; }
+  .case[aria-current="true"]{ border-color:var(--accent); background:var(--accent-soft); }
+  .case-top{ display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .case-name{ font-family:"Fraunces",serif; font-weight:650; font-size:17px; }
+  .intent{ font-size:10.5px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; padding:2px 7px; border-radius:99px; white-space:nowrap; }
+  .intent.journey{ background:var(--accent-soft); color:var(--accent-ink); }
+  .intent.challenge{ background:var(--warning-soft); color:var(--warning); }
+  .case-meta{ font-size:12.5px; }
+  .detail{ display:flex; flex-direction:column; gap:22px; min-width:0; }
+  .persona-detail{ display:flex; flex-direction:column; gap:16px; }
+  .persona-detail[hidden]{ display:none; }
+  .brief{ background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:18px 20px; }
+  .brief h2{ font-size:19px; margin:0 0 10px; display:flex; align-items:baseline; gap:10px; }
+  .brief h2 .intent{ font-family:"IBM Plex Sans",sans-serif; }
+  .brief .scope, .brief .expect{ font-size:14px; }
+  .brief .expect{ margin-top:12px; font-size:13.5px; color:var(--muted); }
+  .brief .expect ol{ margin:0; padding-left:18px; color:var(--text); }
+  .flow{ background:var(--surface); border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+  .flow-head{ display:flex; justify-content:space-between; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid var(--border); }
+  .flow-head h3{ font-size:16.5px; margin:0; }
+  .chip-group{ display:flex; gap:6px; }
+  .chip{ font-size:11.5px; font-weight:600; padding:3px 10px; border-radius:99px; white-space:nowrap; }
+  .chip.success{ background:var(--success-soft); color:var(--success); }
+  .chip.warning{ background:var(--warning-soft); color:var(--warning); }
+  .chip.critical{ background:var(--critical-soft); color:var(--critical); }
+  .chip.muted{ background:var(--surface-2); color:var(--muted); }
+  .steps{ list-style:none; margin:0; padding:6px 0; }
+  .step{ display:grid; grid-template-columns:30px 1fr; gap:12px; padding:8px 18px; align-items:baseline; }
+  .step + .step{ border-top:1px dashed var(--border); }
+  .step .idx{ color:var(--faint); text-align:right; font-size:13px; }
+  .step .verb{ font-weight:600; }
+  .step .target{ color:var(--muted); margin-left:4px; }
+  .step-error{ color:var(--critical); font-size:12.5px; margin-top:2px; }
+  .step-note{ color:var(--warning); font-size:12.5px; margin-top:2px; }
+  .note{ margin:0 18px 12px; padding:9px 12px; border-radius:5px; font-size:13px; }
+  .note.warning{ background:var(--warning-soft); color:var(--warning); }
+  .note.critical{ background:var(--critical-soft); color:var(--critical); }
+  .note.muted{ background:var(--surface-2); color:var(--muted); }
+  .note.muted .mono{ color:var(--text); }
+  .variants{ margin:0 18px 12px; padding-top:8px; border-top:1px dashed var(--border); }
+  .variants > .eyebrow{ margin-bottom:8px; }
+  .variants .flow{ margin-bottom:10px; }
+  .variants .flow:last-child{ margin-bottom:0; }
+  .note .eyebrow{ color:inherit; opacity:.85; margin-bottom:2px; }
+  .runtime-issue{ margin-top:4px; }
+  .runtime-issue:first-of-type{ margin-top:0; }
+  .empty{ padding:14px 18px; color:var(--muted); font-size:13.5px; }
+  footer.page-foot{ margin-top:40px; padding-top:16px; border-top:1px solid var(--border); color:var(--faint); font-size:12px; display:flex; justify-content:space-between; gap:12px; }
+  @media (max-width:760px){
+    .board{ grid-template-columns:1fr; }
+    .case-list{ position:static; flex-direction:row; flex-wrap:wrap; }
+    .case{ width:auto; flex:1 1 220px; }
+    .stats{ grid-template-columns:repeat(2,1fr); }
+  }
+`;

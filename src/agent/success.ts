@@ -1,9 +1,9 @@
-import type { NetworkEntry } from "../evidence/recorder.js";
+import type { NetworkEntry } from '../evidence/recorder.js';
 
 const SUCCESS_URL_PATTERN = /success|thank|complete|confirmation|confirmed/i;
 const SUCCESS_SNAPSHOT_PATTERN =
   /thank you for your|successfully (submitted|completed|placed|created|registered)|(submitted|completed|placed|created|registered) successfully|your order has been|order confirmed|registration (successful|complete)/i;
-const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 export function looksLikeSuccessByUrl(url: string): boolean {
   return SUCCESS_URL_PATTERN.test(url);
@@ -33,10 +33,6 @@ export function looksLikeSuccessByNetwork(network: NetworkEntry[], pageUrl: stri
   });
 }
 
-export function looksLikeSuccess(url: string, network: NetworkEntry[] = [], snapshot = ""): boolean {
-  return (
-    looksLikeSuccessByUrl(url) ||
-    looksLikeSuccessByNetwork(network, url) ||
-    looksLikeSuccessBySnapshot(snapshot)
-  );
+export function looksLikeSuccess(url: string, network: NetworkEntry[] = [], snapshot = ''): boolean {
+  return looksLikeSuccessByUrl(url) || looksLikeSuccessByNetwork(network, url) || looksLikeSuccessBySnapshot(snapshot);
 }

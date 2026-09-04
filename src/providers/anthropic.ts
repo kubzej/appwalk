@@ -1,32 +1,36 @@
-import Anthropic from "@anthropic-ai/sdk";
-import type {
-  LlmProvider,
-  ProviderCallOptions,
-  ProviderTurn,
-  ToolDefinition,
-  ToolResult,
-} from "./provider.js";
-import { AGENT_MAX_OUTPUT_TOKENS } from "./provider.js";
-import { estimateRequestTokens, rateLimitHeadersSummary, rateLimitRetryDelayMs, sharedRateLimitCoordinator } from "./rate-limit.js";
-import { Logger } from "../logging/logger.js";
-import { providerHeaders, providerStatus, withHostedProviderRequest, HOSTED_PROVIDER_REQUEST_TIMEOUT_MS } from "./request-policy.js";
+import Anthropic from '@anthropic-ai/sdk';
+import type { LlmProvider, ProviderCallOptions, ProviderTurn, ToolDefinition, ToolResult } from './provider.js';
+import { AGENT_MAX_OUTPUT_TOKENS } from './provider.js';
+import {
+  estimateRequestTokens,
+  rateLimitHeadersSummary,
+  rateLimitRetryDelayMs,
+  sharedRateLimitCoordinator,
+} from './rate-limit.js';
+import { Logger } from '../logging/logger.js';
+import {
+  providerHeaders,
+  providerStatus,
+  withHostedProviderRequest,
+  HOSTED_PROVIDER_REQUEST_TIMEOUT_MS,
+} from './request-policy.js';
 
 // TS can't verify a cache_control-bearing spread against a discriminated union (ContentBlockParam)
 // without collapsing it — cast through `object` and back to `T` rather than fighting the inference.
 function cached<T>(block: T): T {
-  return { ...(block as object), cache_control: { type: "ephemeral" } } as T;
+  return { ...(block as object), cache_control: { type: 'ephemeral' } } as T;
 }
 
 export class AnthropicProvider implements LlmProvider {
   private readonly client: Anthropic;
   private readonly model: string;
-  private systemPrompt = "";
+  private systemPrompt = '';
   private tools: Anthropic.Tool[] = [];
   private messages: Anthropic.MessageParam[] = [];
   private requestIndex = 0;
   private readonly logger: Logger;
 
-  constructor(apiKey: string, model: string, logger = new Logger("quiet")) {
+  constructor(apiKey: string, model: string, logger = new Logger('quiet')) {
     // The SDK retries 429s by default with its own backoff, blind to the reset time in the
     // response headers. We disable that and retry ourselves (see send()) so the wait actually
     // matches the window the provider reported instead of a generic exponential guess.
@@ -49,14 +53,14 @@ export class AnthropicProvider implements LlmProvider {
       description: tool.description,
       input_schema: tool.inputSchema as Anthropic.Tool.InputSchema,
     }));
-    const content: Anthropic.ContentBlockParam[] = [{ type: "text", text: params.initialInput }];
+    const content: Anthropic.ContentBlockParam[] = [{ type: 'text', text: params.initialInput }];
     if (params.screenshot) {
       content.push({
-        type: "image",
-        source: { type: "base64", media_type: "image/jpeg", data: params.screenshot },
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/jpeg', data: params.screenshot },
       });
     }
-    this.messages = [{ role: "user", content }];
+    this.messages = [{ role: 'user', content }];
     return this.send(params.maxOutputTokens, params.signal);
   }
 
@@ -64,19 +68,19 @@ export class AnthropicProvider implements LlmProvider {
     // Anthropic lets an image ride inside the tool_result block itself, unlike the
     // OpenAI/Grok Responses API shape, which needs a separate synthetic user message.
     const resultContent: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [
-      { type: "text", text: toolResult.result },
+      { type: 'text', text: toolResult.result },
     ];
     if (toolResult.screenshot) {
       resultContent.push({
-        type: "image",
-        source: { type: "base64", media_type: "image/jpeg", data: toolResult.screenshot },
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/jpeg', data: toolResult.screenshot },
       });
     }
     this.messages.push({
-      role: "user",
+      role: 'user',
       content: [
         {
-          type: "tool_result",
+          type: 'tool_result',
           tool_use_id: toolResult.toolCallId,
           content: resultContent,
         },
@@ -92,13 +96,11 @@ export class AnthropicProvider implements LlmProvider {
     // Anthropic reuse everything before it instead of re-billing it as fresh input. Built
     // fresh per request; `this.messages` itself stays plain.
     const tools = this.tools.map((tool, i) => (i === this.tools.length - 1 ? cached(tool) : tool));
-    const system: Anthropic.TextBlockParam[] = [cached({ type: "text", text: this.systemPrompt })];
+    const system: Anthropic.TextBlockParam[] = [cached({ type: 'text', text: this.systemPrompt })];
     const messages = this.messages.map((message, i) => {
       if (i !== this.messages.length - 1) return message;
       const content: Anthropic.ContentBlockParam[] =
-        typeof message.content === "string"
-          ? [{ type: "text", text: message.content }]
-          : message.content;
+        typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content;
       const lastIndex = content.length - 1;
       return {
         ...message,
@@ -115,26 +117,32 @@ export class AnthropicProvider implements LlmProvider {
       // Our loop executes one action at a time — without this, Claude can return
       // multiple tool_use blocks in one turn, and we'd only ever resolve the first,
       // leaving the rest without a tool_result (Anthropic's API rejects that on the next call).
-      tool_choice: { type: "auto" as const, disable_parallel_tool_use: true },
+      tool_choice: { type: 'auto' as const, disable_parallel_tool_use: true },
     };
-    this.logger.debug("provider.request_started", "Anthropic request started", { provider: "anthropic", model: this.model, requestIndex });
+    this.logger.debug('provider.request_started', 'Anthropic request started', {
+      provider: 'anthropic',
+      model: this.model,
+      requestIndex,
+    });
     const result = await withHostedProviderRequest<{ data: Anthropic.Message; response: { headers: Headers } }>(
       async (attemptSignal) => this.client.messages.create(request, { signal: attemptSignal }).withResponse(),
       {
-        provider: "Anthropic",
+        provider: 'Anthropic',
         model: this.model,
         requestIndex,
         signal,
         logger: this.logger,
-        beforeAttempt: (attemptSignal) => sharedRateLimitCoordinator.beforeRequest(
-          `anthropic:${this.model}`,
-          estimateRequestTokens(request, maxOutputTokens),
-          this.logger,
-          attemptSignal,
-        ),
-        retryDelayMs: (error) => providerStatus(error) === 429 && providerHeaders(error)
-          ? rateLimitRetryDelayMs(providerHeaders(error) as Headers)
-          : undefined,
+        beforeAttempt: (attemptSignal) =>
+          sharedRateLimitCoordinator.beforeRequest(
+            `anthropic:${this.model}`,
+            estimateRequestTokens(request, maxOutputTokens),
+            this.logger,
+            attemptSignal,
+          ),
+        retryDelayMs: (error) =>
+          providerStatus(error) === 429 && providerHeaders(error)
+            ? rateLimitRetryDelayMs(providerHeaders(error) as Headers)
+            : undefined,
       },
     );
     const response: Anthropic.Message = result.data;
@@ -143,32 +151,48 @@ export class AnthropicProvider implements LlmProvider {
       result.response.headers,
       response.usage.input_tokens + (response.usage.cache_creation_input_tokens ?? 0),
     );
-    this.logger.debug("provider.rate_limits_observed", "Anthropic rate limits observed", { provider: "anthropic", model: this.model, requestIndex, rateLimit: rateLimitHeadersSummary(result.response.headers).trim() || undefined });
-    const { input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens } =
-      response.usage;
-    this.logger.debug("provider.response_received", "Anthropic response received", {
-      provider: "anthropic", model: this.model, requestIndex, inputTokens: input_tokens, outputTokens: output_tokens,
-      cacheWriteTokens: cache_creation_input_tokens ?? 0, cacheReadTokens: cache_read_input_tokens ?? 0,
+    this.logger.debug('provider.rate_limits_observed', 'Anthropic rate limits observed', {
+      provider: 'anthropic',
+      model: this.model,
+      requestIndex,
+      rateLimit: rateLimitHeadersSummary(result.response.headers).trim() || undefined,
+    });
+    const { input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens } = response.usage;
+    this.logger.debug('provider.response_received', 'Anthropic response received', {
+      provider: 'anthropic',
+      model: this.model,
+      requestIndex,
+      inputTokens: input_tokens,
+      outputTokens: output_tokens,
+      cacheWriteTokens: cache_creation_input_tokens ?? 0,
+      cacheReadTokens: cache_read_input_tokens ?? 0,
     });
 
-    const toolUses = response.content.filter((block) => block.type === "tool_use");
+    const toolUses = response.content.filter((block) => block.type === 'tool_use');
     if (toolUses.length > 1) {
-      this.logger.debug("provider.multiple_tool_calls", "Anthropic returned multiple tool calls; processing only the first", {
-        provider: "anthropic", model: this.model, requestIndex, count: toolUses.length,
-        tools: toolUses.map((tool) => tool.name),
-      });
+      this.logger.debug(
+        'provider.multiple_tool_calls',
+        'Anthropic returned multiple tool calls; processing only the first',
+        {
+          provider: 'anthropic',
+          model: this.model,
+          requestIndex,
+          count: toolUses.length,
+          tools: toolUses.map((tool) => tool.name),
+        },
+      );
     }
 
     const toolUse = toolUses[0];
-    if (toolUse && toolUse.type === "tool_use") {
+    if (toolUse && toolUse.type === 'tool_use') {
       // The request disables parallel calls, but normalize a non-conforming response before
       // adding it to history so the next tool_result has no unresolved sibling call.
       this.messages.push({
-        role: "assistant",
-        content: response.content.filter((block) => block.type !== "tool_use" || block === toolUse),
+        role: 'assistant',
+        content: response.content.filter((block) => block.type !== 'tool_use' || block === toolUse),
       });
       return {
-        type: "tool_call",
+        type: 'tool_call',
         toolCall: {
           id: toolUse.id,
           name: toolUse.name,
@@ -177,11 +201,11 @@ export class AnthropicProvider implements LlmProvider {
       };
     }
 
-    this.messages.push({ role: "assistant", content: response.content });
+    this.messages.push({ role: 'assistant', content: response.content });
     const text = response.content
-      .filter((block) => block.type === "text")
-      .map((block) => (block.type === "text" ? block.text : ""))
-      .join("");
-    return { type: "text", text, incompleteReason: response.stop_reason === "max_tokens" ? "max_tokens" : undefined };
+      .filter((block) => block.type === 'text')
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('');
+    return { type: 'text', text, incompleteReason: response.stop_reason === 'max_tokens' ? 'max_tokens' : undefined };
   }
 }

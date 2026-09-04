@@ -10,7 +10,7 @@ export interface RateLimitState {
 
 export const MAX_RATE_LIMIT_WAIT_MS = 60_000;
 
-import type { Logger } from "../logging/logger.js";
+import type { Logger } from '../logging/logger.js';
 
 interface TrackedRateLimit extends RateLimitState {
   lastObservedInputTokens?: number;
@@ -28,7 +28,7 @@ function parseDurationMs(value: string | null): number | undefined {
     matched = true;
     const amount = Number(match[1]);
     const unit = match[2];
-    total += amount * (unit === "ms" ? 1 : unit === "s" ? 1_000 : unit === "m" ? 60_000 : 3_600_000);
+    total += amount * (unit === 'ms' ? 1 : unit === 's' ? 1_000 : unit === 'm' ? 60_000 : 3_600_000);
   }
   return matched ? total : undefined;
 }
@@ -63,18 +63,18 @@ function headerResetAt(headers: Headers, ...names: string[]): number | undefined
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      reject(signal.reason ?? new Error("Operation was cancelled."));
+      reject(signal.reason ?? new Error('Operation was cancelled.'));
       return;
     }
     const timeoutId = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
+      signal?.removeEventListener('abort', onAbort);
       resolve();
     }, ms);
     const onAbort = () => {
       clearTimeout(timeoutId);
-      reject(signal?.reason ?? new Error("Operation was cancelled."));
+      reject(signal?.reason ?? new Error('Operation was cancelled.'));
     };
-    signal?.addEventListener("abort", onAbort, { once: true });
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -92,12 +92,12 @@ const RATE_LIMIT_RETRY_SAFETY_MARGIN_MS = 3_000;
 export function rateLimitRetryDelayMs(headers: Headers, fallbackMs = 5_000): number {
   const tokenResetAt = headerResetAt(
     headers,
-    "x-ratelimit-reset-project-tokens",
-    "x-ratelimit-reset-tokens",
-    "anthropic-ratelimit-tokens-reset",
-    "anthropic-ratelimit-input-tokens-reset",
+    'x-ratelimit-reset-project-tokens',
+    'x-ratelimit-reset-tokens',
+    'anthropic-ratelimit-tokens-reset',
+    'anthropic-ratelimit-input-tokens-reset',
   );
-  const requestResetAt = headerResetAt(headers, "x-ratelimit-reset-requests", "anthropic-ratelimit-requests-reset");
+  const requestResetAt = headerResetAt(headers, 'x-ratelimit-reset-requests', 'anthropic-ratelimit-requests-reset');
   const resets = [tokenResetAt, requestResetAt].filter((value): value is number => value !== undefined);
   if (resets.length === 0) return Math.min(fallbackMs, MAX_RATE_LIMIT_WAIT_MS);
   return Math.min(
@@ -124,7 +124,7 @@ export class RateLimitCoordinator {
     // time; a stale window (reset time already passed) is dropped rather than treated as still
     // exhausted, since the provider would have refilled it by now.
     let waitMs: number | undefined;
-    let reason: "token" | "request" | undefined;
+    let reason: 'token' | 'request' | undefined;
 
     if (state.remainingTokens !== undefined && state.resetAt !== undefined) {
       if (state.resetAt <= now) {
@@ -139,7 +139,7 @@ export class RateLimitCoordinator {
         );
         if (state.remainingTokens < expected) {
           waitMs = state.resetAt - now + 100;
-          reason = "token";
+          reason = 'token';
         }
       }
     }
@@ -152,7 +152,7 @@ export class RateLimitCoordinator {
         const requestWaitMs = state.requestsResetAt - now + 100;
         if (waitMs === undefined || requestWaitMs > waitMs) {
           waitMs = requestWaitMs;
-          reason = "request";
+          reason = 'request';
         }
       }
     }
@@ -163,17 +163,24 @@ export class RateLimitCoordinator {
     }
 
     if (waitMs > MAX_RATE_LIMIT_WAIT_MS) {
-      throw new Error(`Provider rate-limit wait of ${Math.ceil(waitMs / 1000)}s exceeds the ${Math.ceil(MAX_RATE_LIMIT_WAIT_MS / 1000)}s safety limit.`);
+      throw new Error(
+        `Provider rate-limit wait of ${Math.ceil(waitMs / 1000)}s exceeds the ${Math.ceil(MAX_RATE_LIMIT_WAIT_MS / 1000)}s safety limit.`,
+      );
     }
 
     logger?.warn(`API quota reached (${reason} limit). Waiting ${Math.ceil(waitMs / 1000)}s before continuing.`);
-    logger?.debug("provider.rate_limit_wait", "Waiting for the provider rate-limit window to reset", {
-      key, reason, remainingTokens: state.remainingTokens, remainingRequests: state.remainingRequests, estimatedTokens, waitMs,
+    logger?.debug('provider.rate_limit_wait', 'Waiting for the provider rate-limit window to reset', {
+      key,
+      reason,
+      remainingTokens: state.remainingTokens,
+      remainingRequests: state.remainingRequests,
+      estimatedTokens,
+      waitMs,
     });
     await sleep(waitMs, signal);
     // Only the dimension that actually triggered the wait is cleared — the other window's last
     // observed counters are still valid until its own reset time.
-    if (reason === "token") {
+    if (reason === 'token') {
       state.remainingTokens = undefined;
       state.resetAt = undefined;
     } else {
@@ -202,31 +209,39 @@ export class RateLimitCoordinator {
   observe(key: string, headers: Headers, inputTokens?: number): void {
     const remainingTokens = headerNumber(
       headers,
-      "x-ratelimit-remaining-project-tokens",
-      "x-ratelimit-remaining-tokens",
-      "anthropic-ratelimit-tokens-remaining",
-      "anthropic-ratelimit-input-tokens-remaining",
+      'x-ratelimit-remaining-project-tokens',
+      'x-ratelimit-remaining-tokens',
+      'anthropic-ratelimit-tokens-remaining',
+      'anthropic-ratelimit-input-tokens-remaining',
     );
     const limitTokens = headerNumber(
       headers,
-      "x-ratelimit-limit-project-tokens",
-      "x-ratelimit-limit-tokens",
-      "anthropic-ratelimit-tokens-limit",
-      "anthropic-ratelimit-input-tokens-limit",
+      'x-ratelimit-limit-project-tokens',
+      'x-ratelimit-limit-tokens',
+      'anthropic-ratelimit-tokens-limit',
+      'anthropic-ratelimit-input-tokens-limit',
     );
     const resetAt = headerResetAt(
       headers,
-      "x-ratelimit-reset-project-tokens",
-      "x-ratelimit-reset-tokens",
-      "anthropic-ratelimit-tokens-reset",
-      "anthropic-ratelimit-input-tokens-reset",
+      'x-ratelimit-reset-project-tokens',
+      'x-ratelimit-reset-tokens',
+      'anthropic-ratelimit-tokens-reset',
+      'anthropic-ratelimit-input-tokens-reset',
     );
-    const remainingRequests = headerNumber(headers, "x-ratelimit-remaining-requests", "anthropic-ratelimit-requests-remaining");
-    const requestsResetAt = headerResetAt(headers, "x-ratelimit-reset-requests", "anthropic-ratelimit-requests-reset");
+    const remainingRequests = headerNumber(
+      headers,
+      'x-ratelimit-remaining-requests',
+      'anthropic-ratelimit-requests-remaining',
+    );
+    const requestsResetAt = headerResetAt(headers, 'x-ratelimit-reset-requests', 'anthropic-ratelimit-requests-reset');
     if (
-      remainingTokens === undefined && limitTokens === undefined && resetAt === undefined &&
-      remainingRequests === undefined && requestsResetAt === undefined
-    ) return;
+      remainingTokens === undefined &&
+      limitTokens === undefined &&
+      resetAt === undefined &&
+      remainingRequests === undefined &&
+      requestsResetAt === undefined
+    )
+      return;
 
     const previous = this.states.get(key);
     this.states.set(key, {
@@ -247,20 +262,27 @@ export function estimateRequestTokens(value: unknown, maxOutputTokens: number): 
 }
 
 export function rateLimitHeadersSummary(headers: Headers): string {
-  const remaining = headers.get("x-ratelimit-remaining-project-tokens")
-    ?? headers.get("x-ratelimit-remaining-tokens")
-    ?? headers.get("anthropic-ratelimit-tokens-remaining")
-    ?? headers.get("anthropic-ratelimit-input-tokens-remaining");
-  const reset = headers.get("x-ratelimit-reset-project-tokens")
-    ?? headers.get("x-ratelimit-reset-tokens")
-    ?? headers.get("anthropic-ratelimit-tokens-reset")
-    ?? headers.get("anthropic-ratelimit-input-tokens-reset");
-  const remainingRequests = headers.get("x-ratelimit-remaining-requests") ?? headers.get("anthropic-ratelimit-requests-remaining");
-  const requestsReset = headers.get("x-ratelimit-reset-requests") ?? headers.get("anthropic-ratelimit-requests-reset");
-  if (!remaining && !reset && !remainingRequests && !requestsReset) return "";
-  const resetValue = reset && reset !== "0" && reset !== "0s" ? reset : "not-provided";
-  const requestsResetValue = requestsReset && requestsReset !== "0" && requestsReset !== "0s" ? requestsReset : "not-provided";
-  const tokenPart = remaining || reset ? ` remaining=${remaining ?? "unknown"} reset=${resetValue}` : "";
-  const requestPart = remainingRequests || requestsReset ? ` remainingRequests=${remainingRequests ?? "unknown"} requestsReset=${requestsResetValue}` : "";
+  const remaining =
+    headers.get('x-ratelimit-remaining-project-tokens') ??
+    headers.get('x-ratelimit-remaining-tokens') ??
+    headers.get('anthropic-ratelimit-tokens-remaining') ??
+    headers.get('anthropic-ratelimit-input-tokens-remaining');
+  const reset =
+    headers.get('x-ratelimit-reset-project-tokens') ??
+    headers.get('x-ratelimit-reset-tokens') ??
+    headers.get('anthropic-ratelimit-tokens-reset') ??
+    headers.get('anthropic-ratelimit-input-tokens-reset');
+  const remainingRequests =
+    headers.get('x-ratelimit-remaining-requests') ?? headers.get('anthropic-ratelimit-requests-remaining');
+  const requestsReset = headers.get('x-ratelimit-reset-requests') ?? headers.get('anthropic-ratelimit-requests-reset');
+  if (!remaining && !reset && !remainingRequests && !requestsReset) return '';
+  const resetValue = reset && reset !== '0' && reset !== '0s' ? reset : 'not-provided';
+  const requestsResetValue =
+    requestsReset && requestsReset !== '0' && requestsReset !== '0s' ? requestsReset : 'not-provided';
+  const tokenPart = remaining || reset ? ` remaining=${remaining ?? 'unknown'} reset=${resetValue}` : '';
+  const requestPart =
+    remainingRequests || requestsReset
+      ? ` remainingRequests=${remainingRequests ?? 'unknown'} requestsReset=${requestsResetValue}`
+      : '';
   return `${tokenPart}${requestPart}`;
 }

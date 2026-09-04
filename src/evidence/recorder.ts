@@ -1,6 +1,6 @@
-import type { BrowserContext, ConsoleMessage, Page } from "playwright";
-import { type Logger } from "../logging/logger.js";
-import { defaultRedactor, type Redactor } from "../security/redaction.js";
+import type { BrowserContext, ConsoleMessage, Page } from 'playwright';
+import { type Logger } from '../logging/logger.js';
+import { defaultRedactor, type Redactor } from '../security/redaction.js';
 
 export interface NetworkEntry {
   method: string;
@@ -19,12 +19,12 @@ export interface ConsoleEntry {
 
 export interface WebSocketFrameEntry {
   url: string;
-  direction: "sent" | "received";
+  direction: 'sent' | 'received';
   /** Binary frames are summarized rather than serialized raw, to stay JSON-safe in evidence.jsonl. */
   payload: string;
 }
 
-export type RuntimeErrorKind = "console_error" | "page_error" | "request_failed" | "http_error" | "page_crash";
+export type RuntimeErrorKind = 'console_error' | 'page_error' | 'request_failed' | 'http_error' | 'page_crash';
 
 export interface RuntimeErrorEntry {
   kind: RuntimeErrorKind;
@@ -76,7 +76,11 @@ export class EvidenceRecorder {
   // to call on every activePage switch without double-counting a single event twice.
   private readonly attachedContexts = new WeakSet<BrowserContext>();
 
-  constructor(context: BrowserContext, private readonly logger?: Logger, options: EvidenceRecorderOptions = {}) {
+  constructor(
+    context: BrowserContext,
+    private readonly logger?: Logger,
+    options: EvidenceRecorderOptions = {},
+  ) {
     this.bodyReadTimeoutMs = Math.max(0, options.bodyReadTimeoutMs ?? DEFAULT_BODY_READ_TIMEOUT_MS);
     this.redactor = options.redactor ?? defaultRedactor;
     this.attach(context);
@@ -102,8 +106,12 @@ export class EvidenceRecorder {
    * failure that can follow one — `page.on('crash')` is page-scoped (there is no context-level
    * equivalent), so the caller attaches it directly rather than through `attach()`. */
   recordCrash(url?: string): void {
-    this.runtimeErrors.push({ kind: "page_crash", message: "The page's renderer process crashed.", url: url ? this.redactor.diagnosticUrl(url) : undefined });
-    this.logger?.debug("browser.page_crash", "The page's renderer process crashed", { url });
+    this.runtimeErrors.push({
+      kind: 'page_crash',
+      message: "The page's renderer process crashed.",
+      url: url ? this.redactor.diagnosticUrl(url) : undefined,
+    });
+    this.logger?.debug('browser.page_crash', "The page's renderer process crashed", { url });
   }
 
   /** Records one WebSocket frame — the caller (`attachWebSocketCapture` in orchestrate.ts) owns
@@ -130,7 +138,7 @@ export class EvidenceRecorder {
     if (this.attachedContexts.has(context)) return;
     this.attachedContexts.add(context);
 
-    context.on("response", (response) => {
+    context.on('response', (response) => {
       const entry: NetworkEntry = {
         method: response.request().method(),
         url: this.redactor.url(response.url()),
@@ -140,7 +148,7 @@ export class EvidenceRecorder {
 
       if (response.status() >= 500) {
         const error: RuntimeErrorEntry = {
-          kind: "http_error",
+          kind: 'http_error',
           message: this.redactor.text(`HTTP ${response.status()} response`),
           method: response.request().method(),
           url: this.redactor.diagnosticUrl(response.url()),
@@ -149,50 +157,60 @@ export class EvidenceRecorder {
         this.runtimeErrors.push(error);
       }
 
-      const contentType = response.headers()["content-type"] ?? "";
-      if (contentType.includes("application/json")) {
+      const contentType = response.headers()['content-type'] ?? '';
+      if (contentType.includes('application/json')) {
         this.pendingBodyReads.push(this.readJsonBody(response, entry));
       }
     });
 
-    context.on("console", (msg: ConsoleMessage) => {
+    context.on('console', (msg: ConsoleMessage) => {
       const text = this.redactor.text(msg.text());
       this.consoleLog.push({ type: msg.type(), text });
-      if (msg.type() === "error") {
+      if (msg.type() === 'error') {
         this.runtimeErrors.push({
-          kind: "console_error",
+          kind: 'console_error',
           message: text,
           safetyRelated: this.isSafetyRelatedConsoleError(msg.text()),
         });
       }
-      this.logger?.debug("browser.console", "Page console message", { type: msg.type(), text });
+      this.logger?.debug('browser.console', 'Page console message', { type: msg.type(), text });
     });
     // Context-level equivalent of page.on("pageerror") — the same uncaught-exception signal,
     // aggregated across every page in the context instead of bound to just one.
-    context.on("weberror", (webError) => {
+    context.on('weberror', (webError) => {
       const error = webError.error();
-      this.runtimeErrors.push({ kind: "page_error", message: this.redactor.text(error.message) });
-      this.logger?.debug("browser.page_error", "Page JavaScript error", { error: error.message });
+      this.runtimeErrors.push({ kind: 'page_error', message: this.redactor.text(error.message) });
+      this.logger?.debug('browser.page_error', 'Page JavaScript error', { error: error.message });
     });
-    context.on("requestfailed", (request) => {
+    context.on('requestfailed', (request) => {
       const safetyRelated = this.consumeSafetyBlock({ method: request.method(), url: request.url() });
-      const message = request.failure()?.errorText ?? "Request failed";
+      const message = request.failure()?.errorText ?? 'Request failed';
       const lifecycle = isLifecycleRequestFailure(message);
       this.runtimeErrors.push({
-        kind: "request_failed",
+        kind: 'request_failed',
         message: this.redactor.text(message),
         method: request.method(),
         url: this.redactor.diagnosticUrl(request.url()),
         safetyRelated,
         lifecycle,
       });
-      this.logger?.debug(lifecycle ? "browser.lifecycle_noise" : "browser.request_failed", lifecycle ? "Browser cancelled a request during navigation or cleanup" : "Browser request failed", {
-        method: request.method(), url: request.url(), error: message, lifecycle,
-      });
+      this.logger?.debug(
+        lifecycle ? 'browser.lifecycle_noise' : 'browser.request_failed',
+        lifecycle ? 'Browser cancelled a request during navigation or cleanup' : 'Browser request failed',
+        {
+          method: request.method(),
+          url: request.url(),
+          error: message,
+          lifecycle,
+        },
+      );
     });
   }
 
-  private async readJsonBody(response: { json: () => Promise<unknown>; url: () => string }, entry: NetworkEntry): Promise<void> {
+  private async readJsonBody(
+    response: { json: () => Promise<unknown>; url: () => string },
+    entry: NetworkEntry,
+  ): Promise<void> {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
     let finalized = false;
@@ -206,7 +224,8 @@ export class EvidenceRecorder {
           resolve();
         }, this.bodyReadTimeoutMs);
         try {
-          response.json()
+          response
+            .json()
             .then((body) => {
               if (finalized) return;
               finalized = true;
@@ -228,7 +247,7 @@ export class EvidenceRecorder {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
     if (timedOut) {
-      this.logger?.debug("evidence.body_read_timeout", "JSON response body was not available before cleanup", {
+      this.logger?.debug('evidence.body_read_timeout', 'JSON response body was not available before cleanup', {
         url: this.redactor.diagnosticUrl(response.url()),
         timeoutMs: this.bodyReadTimeoutMs,
       });
@@ -237,7 +256,9 @@ export class EvidenceRecorder {
 
   private isSafetyRelatedConsoleError(message: string): boolean {
     if (this.safetyBlocksSeen === 0) return false;
-    const isNetworkFailure = /Failed to load resource: net::ERR_FAILED|Failed to fetch|NetworkError|Load failed/i.test(message);
+    const isNetworkFailure = /Failed to load resource: net::ERR_FAILED|Failed to fetch|NetworkError|Load failed/i.test(
+      message,
+    );
     return isNetworkFailure && Date.now() - this.lastSafetyBlockAt <= 2000;
   }
 
@@ -245,12 +266,21 @@ export class EvidenceRecorder {
   async waitForPendingBodies(): Promise<void> {
     const pending = this.pendingBodyReads.splice(0);
     if (pending.length === 0) return;
-    this.logger?.debug("evidence.body_reads_wait_started", "Finalizing captured response bodies", { pending: pending.length });
+    this.logger?.debug('evidence.body_reads_wait_started', 'Finalizing captured response bodies', {
+      pending: pending.length,
+    });
     await Promise.allSettled(pending);
-    this.logger?.debug("evidence.body_reads_finalized", "Captured response bodies finalized", { pending: pending.length });
+    this.logger?.debug('evidence.body_reads_finalized', 'Captured response bodies finalized', {
+      pending: pending.length,
+    });
   }
 
-  drain(): { network: NetworkEntry[]; console: ConsoleEntry[]; runtimeErrors: RuntimeErrorEntry[]; webSocketFrames: WebSocketFrameEntry[] } {
+  drain(): {
+    network: NetworkEntry[];
+    console: ConsoleEntry[];
+    runtimeErrors: RuntimeErrorEntry[];
+    webSocketFrames: WebSocketFrameEntry[];
+  } {
     const network = this.network.slice(this.drainedNetwork);
     const consoleEntries = this.consoleLog.slice(this.drainedConsole);
     const runtimeErrors = this.runtimeErrors.slice(this.drainedRuntimeErrors);

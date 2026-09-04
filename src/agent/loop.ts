@@ -1,22 +1,22 @@
-import type { Page } from "playwright";
-import { type BrowserLifecycle, type BrowserRestartHooks } from "../browser/actions.js";
-import { captureScreenshot, toStepResult } from "../browser/snapshot.js";
-import type { EvidenceRecorder } from "../evidence/recorder.js";
-import type { LlmProvider } from "../providers/provider.js";
-import type { ExpectationObservation, ExpectationStatus, StepResult } from "../types.js";
-import type { Logger } from "../logging/logger.js";
-import type { Persona } from "./personas.js";
-import { executeToolCall, TOOL_DEFINITIONS } from "./tools.js";
-import { validateToolInput } from "./validation.js";
-import type { TabRegistryHandle } from "./tools.js";
-import type { VerificationMode } from "./verification.js";
-import { verifyFlow } from "./verification.js";
-import { defaultRedactor, type Redactor } from "../security/redaction.js";
-import type { SafetyRequestOptions } from "../safety/guard.js";
-import { isValidBurstCount } from "../limits.js";
+import type { Page } from 'playwright';
+import { type BrowserLifecycle, type BrowserRestartHooks } from '../browser/actions.js';
+import { captureScreenshot, toStepResult } from '../browser/snapshot.js';
+import type { EvidenceRecorder } from '../evidence/recorder.js';
+import type { LlmProvider } from '../providers/provider.js';
+import type { ExpectationObservation, ExpectationStatus, StepResult } from '../types.js';
+import type { Logger } from '../logging/logger.js';
+import type { Persona } from './personas.js';
+import { executeToolCall, TOOL_DEFINITIONS } from './tools.js';
+import { validateToolInput } from './validation.js';
+import type { TabRegistryHandle } from './tools.js';
+import type { VerificationMode } from './verification.js';
+import { verifyFlow } from './verification.js';
+import { defaultRedactor, type Redactor } from '../security/redaction.js';
+import type { SafetyRequestOptions } from '../safety/guard.js';
+import { isValidBurstCount } from '../limits.js';
 
 function actionBudgetCost(toolCall: { name: string; input: Record<string, unknown> }): number {
-  if (toolCall.name !== "burst") return 1;
+  if (toolCall.name !== 'burst') return 1;
   const count = toolCall.input.count;
   return isValidBurstCount(count) ? count : 1;
 }
@@ -29,40 +29,40 @@ const MAX_EMPTY_FLOW_ENDINGS = 3;
 
 function actionLabel(name: string): string {
   const labels: Record<string, string> = {
-    navigate: "Navigate",
-    click: "Click",
-    doubleClick: "Double click",
-    fill: "Fill field",
-    select: "Select option",
-    pressKey: "Press key",
-    check: "Check option",
-    uncheck: "Uncheck option",
-    hover: "Hover element",
-    dragAndDrop: "Drag and drop",
-    waitFor: "Wait for element",
-    reload: "Reload page",
-    goBack: "Go back",
-    goForward: "Go forward",
-    setViewportSize: "Set viewport",
-    download: "Download file",
-    verifyExpectation: "Verify expectation",
+    navigate: 'Navigate',
+    click: 'Click',
+    doubleClick: 'Double click',
+    fill: 'Fill field',
+    select: 'Select option',
+    pressKey: 'Press key',
+    check: 'Check option',
+    uncheck: 'Uncheck option',
+    hover: 'Hover element',
+    dragAndDrop: 'Drag and drop',
+    waitFor: 'Wait for element',
+    reload: 'Reload page',
+    goBack: 'Go back',
+    goForward: 'Go forward',
+    setViewportSize: 'Set viewport',
+    download: 'Download file',
+    verifyExpectation: 'Verify expectation',
   };
   return labels[name] ?? name;
 }
 
 function actionFailureReason(error: string): string {
-  if (/strict mode violation/i.test(error)) return "the locator matched more than one element";
-  if (/intercepts pointer events/i.test(error)) return "another element blocked the interaction";
-  if (/timeout/i.test(error)) return "the target did not become available in time";
-  return (error.split("\n")[0] ?? error).replace(/^locator\.[^:]+:\s*/i, "");
+  if (/strict mode violation/i.test(error)) return 'the locator matched more than one element';
+  if (/intercepts pointer events/i.test(error)) return 'another element blocked the interaction';
+  if (/timeout/i.test(error)) return 'the target did not become available in time';
+  return (error.split('\n')[0] ?? error).replace(/^locator\.[^:]+:\s*/i, '');
 }
 
 function actionDescription(name: string, input: Record<string, unknown>): string {
   const label = actionLabel(name);
-  if (name === "setViewportSize") return `${label} to ${input.width}x${input.height}`;
-  if (name === "navigate") return `${label} to target page`;
-  if (name === "dragAndDrop") return `${label} ${input.source} -> ${input.target}`;
-  if (typeof input.locator === "string") return `${label} ${input.locator}`;
+  if (name === 'setViewportSize') return `${label} to ${input.width}x${input.height}`;
+  if (name === 'navigate') return `${label} to target page`;
+  if (name === 'dragAndDrop') return `${label} ${input.source} -> ${input.target}`;
+  if (typeof input.locator === 'string') return `${label} ${input.locator}`;
   return label;
 }
 
@@ -74,15 +74,15 @@ export function buildSystemPrompt(
   expectations: string[] = [],
 ): string {
   const screenshotNote = hasScreenshots
-    ? "\n\nYou also get a screenshot alongside the accessibility tree after every action. Use it when an element has no useful accessible name — an icon-only button, a canvas element — to figure out what it is and where it is."
-    : "";
+    ? '\n\nYou also get a screenshot alongside the accessibility tree after every action. Use it when an element has no useful accessible name — an icon-only button, a canvas element — to figure out what it is and where it is.'
+    : '';
   // Any concrete examples in a persona's own goal text (a cart, an order, a wizard step) are there to
   // illustrate the general pattern, not a description of this specific application — we have no advance
   // knowledge of what this app actually contains, and the model must not expect those exact things to
   // exist. Said once here rather than repeated in every persona's own text.
   const genericAppNote = persona
     ? `\n\nAny concrete examples above (specific field names, page types, flows) are illustrations of the general pattern you're testing for, not a description of this particular application — we have no advance knowledge of what this app actually contains. Look at what this app actually offers and adapt the pattern to it; don't expect it to literally contain the things named in the examples.`
-    : "";
+    : '';
   const intro = persona
     ? `${persona.goal}${genericAppNote}${screenshotNote}`
     : `You are exploring a web application to find and complete as many distinct, meaningful user flows as you can — this could be anything from signing up or checking out to creating a resource, submitting a support request, or completing a multi-step workflow, depending on what the app actually offers.${screenshotNote}`;
@@ -91,17 +91,17 @@ export function buildSystemPrompt(
   // apply to personas that define their own notion of a completed attempt (e.g. one that's
   // deliberately trying to trigger that same validation error).
   const formCorrectionGuidance = persona
-    ? ""
+    ? ''
     : `\n\nIf a form submission shows an error (e.g. "already exists", a validation message) and you correct the input (e.g. filling a different value), you MUST submit that correction — click the submit/confirm button again — before moving on to a different flow. Filling a corrected value and then navigating away without submitting leaves the flow incomplete.`;
   const meaningfulDefinition = persona
-    ? ""
+    ? ''
     : `\n\nA flow counts as "meaningful" and complete when it produces a real state change — something was created, submitted, updated, or confirmed — reflected by something like a confirmation message, a new page, or a changed piece of state on the page. Simply navigating somewhere to look at it is not a completed flow.`;
   const scopeGuidance = scope
     ? `\n\nThe user asked you to explore this scope: "${scope}". Treat it as a soft exploration mission: the current target URL is only your starting point, so navigate through the application to find the relevant area or journey even when its exact URL is unknown. Prefer meaningful flows inside this scope and avoid unrelated areas unless they are necessary to reach or understand it. Do not assume the requested area exists; if you cannot find it, do not invent a result and end with a clear summary of what was unavailable.`
-    : "";
+    : '';
   const expectationGuidance = expectations.length
-    ? `\n\nThe user supplied these expectations for this scope. They are acceptance criteria, not instructions to assume success:\n${expectations.map((expectation, index) => `${index + 1}. ${expectation}`).join("\n")}\nAfter the current flow has actually performed the behavior described by an expectation, physically check it with the \`verifyExpectation\` tool before completing that flow. The evidence must be caused by the current flow itself, not merely found on a page reached by navigation. In particular, an expectation about creating, submitting, updating, completing, or confirming something requires the current flow to perform that operation first; a read-only flow that opens an existing record or displays a matching heading is not evidence of that operation. Do not verify an expectation just because the page contains similar text. You may check an expectation again only when another flow independently performs the same behavior. Use \`unknown\` only when the current flow reaches the relevant behavior but the application offers no reliable observable signal. Do not claim expectation results only in your summary.`
-    : "";
+    ? `\n\nThe user supplied these expectations for this scope. They are acceptance criteria, not instructions to assume success:\n${expectations.map((expectation, index) => `${index + 1}. ${expectation}`).join('\n')}\nAfter the current flow has actually performed the behavior described by an expectation, physically check it with the \`verifyExpectation\` tool before completing that flow. The evidence must be caused by the current flow itself, not merely found on a page reached by navigation. In particular, an expectation about creating, submitting, updating, completing, or confirming something requires the current flow to perform that operation first; a read-only flow that opens an existing record or displays a matching heading is not evidence of that operation. Do not verify an expectation just because the page contains similar text. You may check an expectation again only when another flow independently performs the same behavior. Use \`unknown\` only when the current flow reaches the relevant behavior but the application offers no reliable observable signal. Do not claim expectation results only in your summary.`
+    : '';
 
   return `${intro}${scopeGuidance}${expectationGuidance}
 
@@ -149,7 +149,7 @@ export interface FlowResult {
   startStorageState: string;
 }
 
-export type LoopStopReason = "completed" | "agent_stopped" | "budget_exhausted" | "no_progress";
+export type LoopStopReason = 'completed' | 'agent_stopped' | 'budget_exhausted' | 'no_progress';
 
 export interface LoopResult {
   history: LoopStep[];
@@ -172,14 +172,17 @@ export interface ExpectationResult {
   observations: Array<ExpectationObservation & { flowIndex: number; historyIndex: number }>;
 }
 
-function aggregateExpectationResults(expectations: string[], observations: Array<ExpectationObservation & { flowIndex: number; historyIndex: number }>): ExpectationResult[] {
+function aggregateExpectationResults(
+  expectations: string[],
+  observations: Array<ExpectationObservation & { flowIndex: number; historyIndex: number }>,
+): ExpectationResult[] {
   return expectations.map((text, index) => {
     const matching = observations.filter((observation) => observation.expectationIndex === index + 1);
-    const status = matching.some((observation) => observation.status === "violated")
-      ? "violated"
-      : matching.some((observation) => observation.status === "met")
-        ? "met"
-        : "unknown";
+    const status = matching.some((observation) => observation.status === 'violated')
+      ? 'violated'
+      : matching.some((observation) => observation.status === 'met')
+        ? 'met'
+        : 'unknown';
     return { expectationIndex: index + 1, text, status, observations: matching };
   });
 }
@@ -199,7 +202,7 @@ function lastKnownSnapshot(history: LoopStep[]): string {
     const result = history[i]?.result;
     if (result) return result.snapshot;
   }
-  return "";
+  return '';
 }
 
 function clipForCheckpoint(value: string, maxChars: number): string {
@@ -219,23 +222,26 @@ function checkpointInput(
   const recentActions = history
     .slice(Math.max(flowStartIndex, history.length - CHECKPOINT_ACTIONS))
     .map((step, index) => {
-      const action = step.toolCall ? `${step.toolCall.name} ${JSON.stringify(step.toolCall.input)}` : "(no tool call)";
-      const outcome = step.error ? `error: ${step.error}` : step.result ? `URL: ${step.result.url}` : "no result";
+      const action = step.toolCall ? `${step.toolCall.name} ${JSON.stringify(step.toolCall.input)}` : '(no tool call)';
+      const outcome = step.error ? `error: ${step.error}` : step.result ? `URL: ${step.result.url}` : 'no result';
       return `${index + 1}. ${clipForCheckpoint(action, 900)} -> ${clipForCheckpoint(outcome, 500)}`;
     })
-    .join("\n");
+    .join('\n');
   const completedFlows = flows
     .slice(-5)
-    .map((flow, index) => `${index + 1}. ${clipForCheckpoint(flow.title ?? flow.finalText, CHECKPOINT_FLOW_SUMMARY_MAX_CHARS)}`)
-    .join("\n");
+    .map(
+      (flow, index) =>
+        `${index + 1}. ${clipForCheckpoint(flow.title ?? flow.finalText, CHECKPOINT_FLOW_SUMMARY_MAX_CHARS)}`,
+    )
+    .join('\n');
 
   return `Context checkpoint. Continue the same browser exploration from the current page; browser state and the action evidence are preserved. Do not repeat completed actions just because the conversation was compacted. Choose exactly one next tool call.
 
 Completed flows:
-${completedFlows || "(none)"}
+${completedFlows || '(none)'}
 
 Recent actions in the current flow:
-${recentActions || "(none)"}
+${recentActions || '(none)'}
 
 Current page:
 URL: ${currentSnapshot.url}
@@ -247,12 +253,15 @@ Remaining loop budget: ${remainingSteps} steps.`;
 function nextFlowInput(flows: FlowResult[], currentSnapshot: StepResult, remainingSteps: number): string {
   const completedFlows = flows
     .slice(-5)
-    .map((flow, index) => `${index + 1}. ${clipForCheckpoint(flow.title ?? flow.finalText, CHECKPOINT_FLOW_SUMMARY_MAX_CHARS)}`)
-    .join("\n");
+    .map(
+      (flow, index) =>
+        `${index + 1}. ${clipForCheckpoint(flow.title ?? flow.finalText, CHECKPOINT_FLOW_SUMMARY_MAX_CHARS)}`,
+    )
+    .join('\n');
   return `A previous flow is complete. Start a genuinely different flow from the current starting page. Do not repeat a completed flow or its exact inputs. Choose exactly one next tool call.
 
 Completed flows:
-${completedFlows || "(none)"}
+${completedFlows || '(none)'}
 
 Current page:
 URL: ${currentSnapshot.url}
@@ -305,22 +314,25 @@ export async function runAgentLoop(
   },
 ): Promise<LoopResult> {
   const mode: VerificationMode | VerificationMode[] =
-    options.persona?.verificationMode ?? options.verificationMode ?? "completion";
+    options.persona?.verificationMode ?? options.verificationMode ?? 'completion';
   const history: LoopStep[] = [];
   const flows: FlowResult[] = [];
   const initialUrl = page.url();
   const redactor = options.redactor ?? defaultRedactor;
 
   const initialSnapshot = await toStepResult(page, redactor);
-  const initialScreenshot = options.captureScreenshots ? await captureScreenshot(page, { maskInputs: true }) : undefined;
+  const initialScreenshot = options.captureScreenshots
+    ? await captureScreenshot(page, { maskInputs: true })
+    : undefined;
   const expectationObservations: Array<ExpectationObservation & { flowIndex: number; historyIndex: number }> = [];
-  const systemPrompt = () => buildSystemPrompt(
-    options.maxSteps,
-    Boolean(options.captureScreenshots),
-    options.persona,
-    options.scope,
-    options.expectations,
-  );
+  const systemPrompt = () =>
+    buildSystemPrompt(
+      options.maxSteps,
+      Boolean(options.captureScreenshots),
+      options.persona,
+      options.scope,
+      options.expectations,
+    );
 
   let turn = await provider.start({
     systemPrompt: systemPrompt(),
@@ -329,7 +341,7 @@ export async function runAgentLoop(
     screenshot: initialScreenshot,
     signal: options.signal,
   });
-  options.logger?.debug("agent.turn_started", "Agent context started", { flowIndex: 0, actionCount: 0 });
+  options.logger?.debug('agent.turn_started', 'Agent context started', { flowIndex: 0, actionCount: 0 });
 
   let flowIndex = 0;
   let flowStartIndex = 0;
@@ -343,16 +355,16 @@ export async function runAgentLoop(
   // a stable handle (not a plain local) so attachPopupDetection, wired up before this function was
   // even called, can register a self-opened popup into whichever registry is current right now.
   const tabRegistryHandle: TabRegistryHandle = options.tabRegistryHandle ?? { tabs: new Map() };
-  tabRegistryHandle.tabs = new Map([["tab-0", page]]);
+  tabRegistryHandle.tabs = new Map([['tab-0', page]]);
   let actionCount = 0;
   let flowActionStartCount = 0;
   let emptyFlowEndings = 0;
   options.logger?.phase(`Exploring flow ${flowIndex + 1}`);
 
   while (true) {
-    const isFlowCompleteTool = turn.type === "tool_call" && turn.toolCall.name === "flowComplete";
+    const isFlowCompleteTool = turn.type === 'tool_call' && turn.toolCall.name === 'flowComplete';
 
-    if (turn.type === "text") {
+    if (turn.type === 'text') {
       const stopStep: LoopStep = { finalText: redactor.text(turn.text), result: await toStepResult(page, redactor) };
       history.push(stopStep);
       options.onStep?.(stopStep, history.length - 1, flowIndex);
@@ -361,9 +373,9 @@ export async function runAgentLoop(
           ? `    Exploration reached the action budget before the next flow was completed; retained ${flows.length} completed flow(s)`
           : flows.length > 0
             ? `    Exploration ended before the next flow was completed; retained ${flows.length} completed flow(s)`
-            : "    Exploration stopped before completing a flow",
+            : '    Exploration stopped before completing a flow',
       );
-      options.logger?.debug("exploration.agent_stopped", "Agent returned text without calling flowComplete", {
+      options.logger?.debug('exploration.agent_stopped', 'Agent returned text without calling flowComplete', {
         flowIndex,
         actionCount,
         exhausted: actionCount >= options.maxSteps,
@@ -372,33 +384,38 @@ export async function runAgentLoop(
         history,
         flows,
         exhausted: actionCount >= options.maxSteps,
-        stopReason: actionCount >= options.maxSteps ? "budget_exhausted" : "agent_stopped",
+        stopReason: actionCount >= options.maxSteps ? 'budget_exhausted' : 'agent_stopped',
         expectationResults: aggregateExpectationResults(options.expectations ?? [], expectationObservations),
         finalPage: page,
       };
     }
 
     if (isFlowCompleteTool) {
-      const definition = TOOL_DEFINITIONS.find((tool) => tool.name === "flowComplete")!;
+      const definition = TOOL_DEFINITIONS.find((tool) => tool.name === 'flowComplete')!;
       let completionInput: Record<string, unknown>;
       try {
         completionInput = validateToolInput(definition, turn.toolCall.input);
       } catch (error) {
         const message = (error as Error).message;
-        options.logger?.debug("agent.tool_call_invalid", "Agent returned invalid flow completion input", { error: message });
-        turn = await provider.continue({
-          toolCallId: turn.toolCall.id,
-          toolName: turn.toolCall.name,
-          result: `Error: ${message}`,
-        }, { signal: options.signal });
+        options.logger?.debug('agent.tool_call_invalid', 'Agent returned invalid flow completion input', {
+          error: message,
+        });
+        turn = await provider.continue(
+          {
+            toolCallId: turn.toolCall.id,
+            toolName: turn.toolCall.name,
+            result: `Error: ${message}`,
+          },
+          { signal: options.signal },
+        );
         continue;
       }
       const finalText = completionInput.summary as string;
-      const title = typeof completionInput.title === "string" ? completionInput.title : undefined;
+      const title = typeof completionInput.title === 'string' ? completionInput.title : undefined;
       const currentState = await toStepResult(page, redactor);
 
       const step: LoopStep = { finalText, result: currentState };
-      if (isFlowCompleteTool && turn.type === "tool_call") {
+      if (isFlowCompleteTool && turn.type === 'tool_call') {
         step.toolCall = { name: turn.toolCall.name, input: completionInput };
       }
       history.push(step);
@@ -430,9 +447,9 @@ export async function runAgentLoop(
           finalUrl: url,
           finalSnapshot: snapshot,
           network,
-          snapshots: actionHistory.flatMap((step) => step.result?.snapshot ? [step.result.snapshot] : []),
+          snapshots: actionHistory.flatMap((step) => (step.result?.snapshot ? [step.result.snapshot] : [])),
           runtimeErrors: options.recorder?.runtimeErrors.slice(flowRuntimeErrorStart) ?? [],
-          expectations: actionHistory.flatMap((step) => step.result?.expectation ? [step.result.expectation] : []),
+          expectations: actionHistory.flatMap((step) => (step.result?.expectation ? [step.result.expectation] : [])),
         });
 
       flows.push({
@@ -444,9 +461,13 @@ export async function runAgentLoop(
         startUrl: flowStartUrl,
         startStorageState: flowStartStorageState,
       });
-      options.logger?.success(`Flow ${flows.length} discovered${title ? `: ${title}` : ""}`);
-      options.logger?.debug("flow.completed", "Agent completed a flow", {
-        flowIndex, verified, actions: actionHistory.length, startUrl: flowStartUrl, finalUrl: url,
+      options.logger?.success(`Flow ${flows.length} discovered${title ? `: ${title}` : ''}`);
+      options.logger?.debug('flow.completed', 'Agent completed a flow', {
+        flowIndex,
+        verified,
+        actions: actionHistory.length,
+        startUrl: flowStartUrl,
+        finalUrl: url,
       });
 
       if (actionCount === flowActionStartCount) {
@@ -456,7 +477,7 @@ export async function runAgentLoop(
             history,
             flows,
             exhausted: false,
-            stopReason: "no_progress",
+            stopReason: 'no_progress',
             expectationResults: aggregateExpectationResults(options.expectations ?? [], expectationObservations),
             finalPage: page,
           };
@@ -472,7 +493,9 @@ export async function runAgentLoop(
       if (stepsRemaining > 0) {
         await page.goto(initialUrl);
         const restartSnapshot = await toStepResult(page, redactor);
-        const restartScreenshot = options.captureScreenshots ? await captureScreenshot(page, { maskInputs: true }) : undefined;
+        const restartScreenshot = options.captureScreenshots
+          ? await captureScreenshot(page, { maskInputs: true })
+          : undefined;
 
         flowIndex += 1;
         flowStartIndex = history.length;
@@ -481,7 +504,7 @@ export async function runAgentLoop(
         flowStartUrl = restartSnapshot.url;
         flowStartSnapshot = restartSnapshot.snapshot;
         flowStartStorageState = JSON.stringify(await page.context().storageState({ indexedDB: true }));
-        tabRegistryHandle.tabs = new Map([["tab-0", page]]);
+        tabRegistryHandle.tabs = new Map([['tab-0', page]]);
         flowActionStartCount = actionCount;
 
         turn = await provider.start({
@@ -492,7 +515,10 @@ export async function runAgentLoop(
           signal: options.signal,
         });
         options.logger?.phase(`Exploring flow ${flowIndex + 1}`);
-        options.logger?.debug("agent.turn_started", "New agent context started for the next flow", { flowIndex, remainingSteps: stepsRemaining });
+        options.logger?.debug('agent.turn_started', 'New agent context started for the next flow', {
+          flowIndex,
+          remainingSteps: stepsRemaining,
+        });
         continue;
       }
 
@@ -500,7 +526,7 @@ export async function runAgentLoop(
         history,
         flows,
         exhausted: false,
-        stopReason: "completed",
+        stopReason: 'completed',
         expectationResults: aggregateExpectationResults(options.expectations ?? [], expectationObservations),
         finalPage: page,
       };
@@ -517,27 +543,43 @@ export async function runAgentLoop(
     const safetyCountBefore = options.getSafetyBlockCount?.() ?? 0;
     let safetyBlocked = 0;
 
-    const actionNumber = String(actionCount + 1).padStart(String(options.maxSteps).length, " ");
-    options.logger?.verbose(`Action ${actionNumber}/${options.maxSteps}: ${actionDescription(toolCall.name, toolCall.input)}`);
-    options.logger?.debug("agent.tool_call_requested", "Agent requested a tool call", {
-      flowIndex, stepIndex: actionCount, tool: toolCall.name, input: toolCall.input,
+    const actionNumber = String(actionCount + 1).padStart(String(options.maxSteps).length, ' ');
+    options.logger?.verbose(
+      `Action ${actionNumber}/${options.maxSteps}: ${actionDescription(toolCall.name, toolCall.input)}`,
+    );
+    options.logger?.debug('agent.tool_call_requested', 'Agent requested a tool call', {
+      flowIndex,
+      stepIndex: actionCount,
+      tool: toolCall.name,
+      input: toolCall.input,
     });
 
     const plannedCost = actionBudgetCost(toolCall);
     let consumedCost = 1;
     try {
-      if (toolCall.name === "burst" && plannedCost > options.maxSteps - actionCount) {
-        throw new Error(`burst: count ${plannedCost} exceeds the remaining action budget of ${options.maxSteps - actionCount}.`);
+      if (toolCall.name === 'burst' && plannedCost > options.maxSteps - actionCount) {
+        throw new Error(
+          `burst: count ${plannedCost} exceeds the remaining action budget of ${options.maxSteps - actionCount}.`,
+        );
       }
       // Reserve the full requested count. A burst may stop part-way through after an individual
       // repetition fails, so charging the requested count is the conservative budget contract.
       consumedCost = plannedCost;
-      const toolResult = await executeToolCall(page, toolCall, tabRegistryHandle.tabs, options.safety, options.browserRestartHooks, options.browserLifecycle);
+      const toolResult = await executeToolCall(
+        page,
+        toolCall,
+        tabRegistryHandle.tabs,
+        options.safety,
+        options.browserRestartHooks,
+        options.browserLifecycle,
+      );
       result = {
         ...toolResult,
         url: redactor.url(toolResult.url),
         snapshot: redactor.text(toolResult.snapshot),
-        ...(toolResult.expectation ? { expectation: redactor.redact(toolResult.expectation) as StepResult["expectation"] } : {}),
+        ...(toolResult.expectation
+          ? { expectation: redactor.redact(toolResult.expectation) as StepResult['expectation'] }
+          : {}),
       };
       resultText = `URL: ${result.url}\n${clipForCheckpoint(result.snapshot, MODEL_SNAPSHOT_MAX_CHARS)}`;
       if (result.expectation) {
@@ -547,24 +589,37 @@ export async function runAgentLoop(
         page = toolResult.activePage;
         await options.onActivePageChange?.(page);
       }
-      options.logger?.debug("agent.tool_call_completed", "Browser action completed", {
-        flowIndex, stepIndex: actionCount, tool: toolCall.name, url: result.url,
+      options.logger?.debug('agent.tool_call_completed', 'Browser action completed', {
+        flowIndex,
+        stepIndex: actionCount,
+        tool: toolCall.name,
+        url: result.url,
       });
     } catch (err) {
       error = (err as Error).message;
       resultText = `Error: ${error}`;
-      options.logger?.actionFailure(`Action ${actionNumber}/${options.maxSteps} failed: ${actionLabel(toolCall.name)} — ${actionFailureReason(error)}`);
-      options.logger?.debug("agent.tool_call_failed", "Browser action failed", {
-        flowIndex, stepIndex: actionCount, tool: toolCall.name, error,
+      options.logger?.actionFailure(
+        `Action ${actionNumber}/${options.maxSteps} failed: ${actionLabel(toolCall.name)} — ${actionFailureReason(error)}`,
+      );
+      options.logger?.debug('agent.tool_call_failed', 'Browser action failed', {
+        flowIndex,
+        stepIndex: actionCount,
+        tool: toolCall.name,
+        error,
       });
     }
 
     safetyBlocked = Math.max(0, (options.getSafetyBlockCount?.() ?? safetyCountBefore) - safetyCountBefore);
     if (safetyBlocked > 0) {
-      resultText += `\nSafety policy blocked ${safetyBlocked} network request${safetyBlocked === 1 ? "" : "s"} during this action. The request was not sent; do not repeat the same action. Choose a different safe path or leave the flow incomplete.`;
-      options.logger?.verbose(`Action ${actionNumber}/${options.maxSteps} limited by safety policy: ${safetyBlocked} request${safetyBlocked === 1 ? "" : "s"} blocked`);
-      options.logger?.debug("safety.action_blocked", "The action triggered one or more safety blocks", {
-        flowIndex, stepIndex: actionCount, tool: toolCall.name, blockedRequests: safetyBlocked,
+      resultText += `\nSafety policy blocked ${safetyBlocked} network request${safetyBlocked === 1 ? '' : 's'} during this action. The request was not sent; do not repeat the same action. Choose a different safe path or leave the flow incomplete.`;
+      options.logger?.verbose(
+        `Action ${actionNumber}/${options.maxSteps} limited by safety policy: ${safetyBlocked} request${safetyBlocked === 1 ? '' : 's'} blocked`,
+      );
+      options.logger?.debug('safety.action_blocked', 'The action triggered one or more safety blocks', {
+        flowIndex,
+        stepIndex: actionCount,
+        tool: toolCall.name,
+        blockedRequests: safetyBlocked,
       });
     }
 
@@ -583,19 +638,30 @@ export async function runAgentLoop(
     actionCount += consumedCost;
     const screenshot = options.captureScreenshots ? await captureScreenshot(page, { maskInputs: true }) : undefined;
     if (actionCount >= options.maxSteps) {
-      options.logger?.debug("agent.finalization_requested", "Requesting a flow classification after the final allowed browser action", {
-        flowIndex, actionCount, maxSteps: options.maxSteps,
-      });
+      options.logger?.debug(
+        'agent.finalization_requested',
+        'Requesting a flow classification after the final allowed browser action',
+        {
+          flowIndex,
+          actionCount,
+          maxSteps: options.maxSteps,
+        },
+      );
       try {
-        turn = await provider.continue({
-          toolCallId: toolCall.id,
-          toolName: toolCall.name,
-          result: resultText,
-          screenshot,
-        }, { signal: options.signal });
+        turn = await provider.continue(
+          {
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            result: resultText,
+            screenshot,
+          },
+          { signal: options.signal },
+        );
       } catch (err) {
         if (options.signal?.aborted) throw err;
-        options.logger?.debug("agent.finalization_failed", "Could not classify the final browser state", { error: (err as Error).message });
+        options.logger?.debug('agent.finalization_failed', 'Could not classify the final browser state', {
+          error: (err as Error).message,
+        });
         break;
       }
       continue;
@@ -603,7 +669,7 @@ export async function runAgentLoop(
 
     const checkpointEvery = options.contextCheckpointActions ?? DEFAULT_CONTEXT_CHECKPOINT_ACTIONS;
     if (checkpointEvery > 0 && actionCount % checkpointEvery === 0) {
-      const currentSnapshot = result ?? await toStepResult(page, redactor);
+      const currentSnapshot = result ?? (await toStepResult(page, redactor));
       turn = await provider.start({
         systemPrompt: systemPrompt(),
         tools: TOOL_DEFINITIONS,
@@ -611,22 +677,32 @@ export async function runAgentLoop(
         screenshot,
         signal: options.signal,
       });
-      options.logger?.debug("agent.context_checkpoint", "Agent context checkpoint created", { actionCount, remainingSteps: options.maxSteps - actionCount });
+      options.logger?.debug('agent.context_checkpoint', 'Agent context checkpoint created', {
+        actionCount,
+        remainingSteps: options.maxSteps - actionCount,
+      });
     } else {
-      turn = await provider.continue({
-        toolCallId: toolCall.id,
-        toolName: toolCall.name,
-        result: resultText,
-        screenshot,
-      }, { signal: options.signal });
+      turn = await provider.continue(
+        {
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          result: resultText,
+          screenshot,
+        },
+        { signal: options.signal },
+      );
     }
   }
 
   if (actionCount > flowActionStartCount) {
     const actionsInActiveFlow = actionCount - flowActionStartCount;
-    options.logger?.verbose(`Flow ${flowIndex + 1} incomplete: ${actionsInActiveFlow} action(s) executed before the exploration budget was reached`);
-    options.logger?.debug("flow.incomplete", "Active flow did not reach a completion signal before budget exhaustion", {
-      flowIndex, actions: actionsInActiveFlow, maxSteps: options.maxSteps,
+    options.logger?.verbose(
+      `Flow ${flowIndex + 1} incomplete: ${actionsInActiveFlow} action(s) executed before the exploration budget was reached`,
+    );
+    options.logger?.debug('flow.incomplete', 'Active flow did not reach a completion signal before budget exhaustion', {
+      flowIndex,
+      actions: actionsInActiveFlow,
+      maxSteps: options.maxSteps,
     });
   }
 
@@ -634,7 +710,7 @@ export async function runAgentLoop(
     history,
     flows,
     exhausted: true,
-    stopReason: "budget_exhausted",
+    stopReason: 'budget_exhausted',
     expectationResults: aggregateExpectationResults(options.expectations ?? [], expectationObservations),
     finalPage: page,
   };

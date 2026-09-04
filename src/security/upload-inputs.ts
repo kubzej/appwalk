@@ -1,11 +1,11 @@
-import { lstatSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { lstatSync, realpathSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** Project-provided run inputs that the agent may upload to the target application. */
-export const DEFAULT_UPLOAD_INPUT_ROOT = resolve(PACKAGE_ROOT, "agent-inputs", "uploads");
+export const DEFAULT_UPLOAD_INPUT_ROOT = resolve(PACKAGE_ROOT, 'agent-inputs', 'uploads');
 export const DEFAULT_UPLOAD_INPUT_BASE = PACKAGE_ROOT;
 const MAX_UPLOAD_FILES = 10;
 
@@ -18,7 +18,7 @@ export interface UploadInputPolicyOptions {
 
 function isInside(root: string, candidate: string): boolean {
   const path = relative(root, candidate);
-  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+  return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 
 function assertNoSymlink(path: string, baseDir: string): void {
@@ -27,7 +27,7 @@ function assertNoSymlink(path: string, baseDir: string): void {
   for (const part of relativePath.split(sep).filter(Boolean)) {
     current = join(current, part);
     if (lstatSync(current).isSymbolicLink()) {
-      throw new Error("uploadFile: symbolic links are not allowed in agent input paths.");
+      throw new Error('uploadFile: symbolic links are not allowed in agent input paths.');
     }
   }
 }
@@ -43,7 +43,7 @@ export class UploadInputPolicy {
 
   resolvePaths(filePaths: readonly unknown[]): string[] {
     if (!Array.isArray(filePaths) || filePaths.length === 0) {
-      throw new Error("uploadFile: filePaths must contain at least one approved agent input path.");
+      throw new Error('uploadFile: filePaths must contain at least one approved agent input path.');
     }
     if (filePaths.length > MAX_UPLOAD_FILES) {
       throw new Error(`uploadFile: no more than ${MAX_UPLOAD_FILES} agent input files may be uploaded at once.`);
@@ -57,12 +57,14 @@ export class UploadInputPolicy {
     }
 
     return filePaths.map((filePath, index) => {
-      if (typeof filePath !== "string" || filePath.trim().length === 0) {
+      if (typeof filePath !== 'string' || filePath.trim().length === 0) {
         throw new Error(`uploadFile: filePaths[${index}] must be a non-empty relative agent input path.`);
       }
       const relativePath = filePath.trim();
-      if (relativePath.includes("\0") || isAbsolute(relativePath) || relativePath.split(/[\\/]/).includes("..")) {
-        throw new Error(`uploadFile: filePaths[${index}] must be a relative path without traversal and inside the upload input directory.`);
+      if (relativePath.includes('\0') || isAbsolute(relativePath) || relativePath.split(/[\\/]/).includes('..')) {
+        throw new Error(
+          `uploadFile: filePaths[${index}] must be a relative path without traversal and inside the upload input directory.`,
+        );
       }
 
       const candidate = resolve(this.baseDir, relativePath);
@@ -72,7 +74,7 @@ export class UploadInputPolicy {
       try {
         assertNoSymlink(candidate, this.baseDir);
       } catch (error) {
-        if (error instanceof Error && error.message.startsWith("uploadFile:")) throw error;
+        if (error instanceof Error && error.message.startsWith('uploadFile:')) throw error;
         throw new Error(`uploadFile: agent input path does not exist: ${relative(this.baseDir, candidate)}`);
       }
 

@@ -1,18 +1,18 @@
-import type { Logger } from "../logging/logger.js";
+import type { Logger } from '../logging/logger.js';
 
 interface CodegenFlowLike {
-  origin?: "discovered" | "derived";
+  origin?: 'discovered' | 'derived';
   responseFixtures?: unknown[];
 }
 
-function isBaselineOrigin(origin: "discovered" | "derived" | undefined): boolean {
-  return origin !== "derived";
+function isBaselineOrigin(origin: 'discovered' | 'derived' | undefined): boolean {
+  return origin !== 'derived';
 }
 
-export function logCodegenPlan(logger: Logger, mode: "run" | "generate", flows: CodegenFlowLike[]): void {
+export function logCodegenPlan(logger: Logger, mode: 'run' | 'generate', flows: CodegenFlowLike[]): void {
   logger.debug(
-    "codegen.started",
-    mode === "generate" ? "Generating tests from discovery" : "Generating tests from confirmed flows",
+    'codegen.started',
+    mode === 'generate' ? 'Generating tests from discovery' : 'Generating tests from confirmed flows',
     {
       mode,
       flows: flows.length,
@@ -22,18 +22,18 @@ export function logCodegenPlan(logger: Logger, mode: "run" | "generate", flows: 
     },
   );
   flows.forEach((flow, index) => {
-    logger.debug("codegen.flow", "Preparing generated flow", {
+    logger.debug('codegen.flow', 'Preparing generated flow', {
       mode,
       flowIndex: index + 1,
-      origin: flow.origin ?? "discovered",
+      origin: flow.origin ?? 'discovered',
       responseFixtures: flow.responseFixtures?.length ?? 0,
       responseMocking: (flow.responseFixtures?.length ?? 0) > 0,
     });
   });
 }
 
-export function logCodegenCompleted(logger: Logger, mode: "run" | "generate", flows: CodegenFlowLike[]): void {
-  logger.debug("codegen.completed", "Generated test suite", {
+export function logCodegenCompleted(logger: Logger, mode: 'run' | 'generate', flows: CodegenFlowLike[]): void {
+  logger.debug('codegen.completed', 'Generated test suite', {
     mode,
     tests: flows.length,
     baselineTests: flows.filter((flow) => isBaselineOrigin(flow.origin)).length,

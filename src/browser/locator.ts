@@ -1,4 +1,4 @@
-import type { FrameLocator, Locator, Page } from "playwright";
+import type { FrameLocator, Locator, Page } from 'playwright';
 
 type LocatorRoot = Page | FrameLocator;
 
@@ -20,19 +20,20 @@ function parseTextOrRegExp(value: string): string | RegExp {
  * a form field that role/text can't cleanly match (the reason src/browser/login.ts falls back to
  * getByLabel internally) is reachable from every tool, not just the login helper. */
 function resolveOnRoot(root: LocatorRoot, locator: string): Locator {
-  if (locator.startsWith("label=")) return root.getByLabel(parseTextOrRegExp(locator.slice("label=".length)));
-  if (locator.startsWith("placeholder=")) return root.getByPlaceholder(parseTextOrRegExp(locator.slice("placeholder=".length)));
-  if (locator.startsWith("alt=")) return root.getByAltText(parseTextOrRegExp(locator.slice("alt=".length)));
-  if (locator.startsWith("title=")) return root.getByTitle(parseTextOrRegExp(locator.slice("title=".length)));
+  if (locator.startsWith('label=')) return root.getByLabel(parseTextOrRegExp(locator.slice('label='.length)));
+  if (locator.startsWith('placeholder='))
+    return root.getByPlaceholder(parseTextOrRegExp(locator.slice('placeholder='.length)));
+  if (locator.startsWith('alt=')) return root.getByAltText(parseTextOrRegExp(locator.slice('alt='.length)));
+  if (locator.startsWith('title=')) return root.getByTitle(parseTextOrRegExp(locator.slice('title='.length)));
   return root.locator(locator);
 }
 
 /** Resolves Appwalk's locator syntax, including an optional iframe prefix. */
 export function resolveLocator(page: Page, locator: string): Locator {
-  const separator = locator.indexOf(" >> ");
-  if (locator.startsWith("frame=") && separator > "frame=".length) {
-    const frameSelector = locator.slice("frame=".length, separator);
-    const innerLocator = locator.slice(separator + " >> ".length);
+  const separator = locator.indexOf(' >> ');
+  if (locator.startsWith('frame=') && separator > 'frame='.length) {
+    const frameSelector = locator.slice('frame='.length, separator);
+    const innerLocator = locator.slice(separator + ' >> '.length);
     return resolveOnRoot(page.frameLocator(frameSelector), innerLocator);
   }
   return resolveOnRoot(page, locator);

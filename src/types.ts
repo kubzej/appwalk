@@ -1,18 +1,18 @@
-export type ExpectationStatus = "met" | "violated" | "unknown";
+export type ExpectationStatus = 'met' | 'violated' | 'unknown';
 
 export type ExpectationAssertion =
-  | "visible"
-  | "hidden"
-  | "containsText"
-  | "urlContains"
-  | "urlEquals"
-  | "value"
-  | "checked"
-  | "unchecked"
-  | "disabled"
-  | "enabled"
-  | "count"
-  | "unknown";
+  | 'visible'
+  | 'hidden'
+  | 'containsText'
+  | 'urlContains'
+  | 'urlEquals'
+  | 'value'
+  | 'checked'
+  | 'unchecked'
+  | 'disabled'
+  | 'enabled'
+  | 'count'
+  | 'unknown';
 
 export interface ExpectationObservation {
   expectationIndex: number;

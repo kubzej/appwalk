@@ -1,29 +1,25 @@
-import type { Browser, BrowserContext, Page } from "playwright";
-import type { ToolCall } from "../providers/provider.js";
-import type { FlowResult } from "../agent/loop.js";
-import type { Persona } from "../agent/personas.js";
-import type { TabRegistryHandle } from "../agent/tools.js";
-import type { BrowserLifecycle } from "../browser/actions.js";
-import type { CliArgs } from "./args.js";
-import type { EvidenceEntry, EvidenceLog } from "../evidence/log.js";
-import { EvidenceRecorder } from "../evidence/recorder.js";
-import {
-  applyResponseVariant,
-  installResponseFixtures,
-  responseFixtureMatchesSelector,
-} from "../response/variants.js";
-import type { ExpectationObservation } from "../types.js";
-import type { GuardOptions } from "../safety/guard.js";
-import { installDestructiveActionGuard } from "../safety/guard.js";
-import { hasObservableReplayDifference, replay, type ReplayResult } from "../verify/replay.js";
-import type { ReportResponseVariantAudit } from "../report/contract.js";
-import type { Redactor } from "../security/redaction.js";
-import type { Logger } from "../logging/logger.js";
-import { attachCrashDetection, attachPopupDetection, attachWebSocketCapture } from "./browser-observability.js";
-import { closeTrackedContexts, createBrowserLifecycle } from "./browser-lifecycle.js";
-import { derivedEvidenceEntries, proposeResponseVariants } from "./response-variant-support.js";
-import type { ConfirmedFlow, RuntimeErrorPhaseEntry } from "./run-types.js";
-import { formatTestTitle } from "../codegen/spec.js";
+import type { Browser, BrowserContext, Page } from 'playwright';
+import type { ToolCall } from '../providers/provider.js';
+import type { FlowResult } from '../agent/loop.js';
+import type { Persona } from '../agent/personas.js';
+import type { TabRegistryHandle } from '../agent/tools.js';
+import type { BrowserLifecycle } from '../browser/actions.js';
+import type { CliArgs } from './args.js';
+import type { EvidenceEntry, EvidenceLog } from '../evidence/log.js';
+import { EvidenceRecorder } from '../evidence/recorder.js';
+import { applyResponseVariant, installResponseFixtures, responseFixtureMatchesSelector } from '../response/variants.js';
+import type { ExpectationObservation } from '../types.js';
+import type { GuardOptions } from '../safety/guard.js';
+import { installDestructiveActionGuard } from '../safety/guard.js';
+import { hasObservableReplayDifference, replay, type ReplayResult } from '../verify/replay.js';
+import type { ReportResponseVariantAudit } from '../report/contract.js';
+import type { Redactor } from '../security/redaction.js';
+import type { Logger } from '../logging/logger.js';
+import { attachCrashDetection, attachPopupDetection, attachWebSocketCapture } from './browser-observability.js';
+import { closeTrackedContexts, createBrowserLifecycle } from './browser-lifecycle.js';
+import { derivedEvidenceEntries, proposeResponseVariants } from './response-variant-support.js';
+import type { ConfirmedFlow, RuntimeErrorPhaseEntry } from './run-types.js';
+import { formatTestTitle } from '../codegen/spec.js';
 
 export interface ResponseVariantRunnerInput {
   replayBrowser: Browser;
@@ -44,7 +40,13 @@ export interface ResponseVariantRunnerInput {
   flowLogger: Logger;
   guardOptions: GuardOptions;
   getSafetyBlockCount: () => number;
-  navigateOrLogin: (page: Page, args: CliArgs, hasPreloadedState?: boolean, startUrl?: string, logger?: Logger) => Promise<void>;
+  navigateOrLogin: (
+    page: Page,
+    args: CliArgs,
+    hasPreloadedState?: boolean,
+    startUrl?: string,
+    logger?: Logger,
+  ) => Promise<void>;
   setActiveRecorder: (recorder: EvidenceRecorder) => void;
   trackedContexts: Set<BrowserContext>;
   evidenceLog: EvidenceLog;
@@ -85,7 +87,7 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
   let replayBrowser = input.replayBrowser;
   const runtimeErrorEntries: RuntimeErrorPhaseEntry[] = [];
   const confirmedFlows: ConfirmedFlow[] = [];
-  let variants = [] as Awaited<ReturnType<typeof proposeResponseVariants>>["variants"];
+  let variants = [] as Awaited<ReturnType<typeof proposeResponseVariants>>['variants'];
 
   try {
     flowLogger.verbose(`Flow ${flowIndex + 1}: planning response scenarios`);
@@ -97,7 +99,10 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
       baseFlow.responseFixtures!,
       args.responseVariantMax!,
       baselineReplayResult.finalSnapshot,
-      baselineReplayResult.steps.map((step) => ({ url: step.url, snapshot: step.snapshot })),
+      baselineReplayResult.steps.map((step) => ({
+        url: step.url,
+        snapshot: step.snapshot,
+      })),
       redactor,
       flowLogger,
     );
@@ -107,29 +112,33 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
     responseVariantAudit.plannerRejectionReasons = planning.rejectionReasons;
     responseVariantAudit.plannerReason = planning.reason;
     responseVariantAudit.proposed = variants.length;
-    responseVariantAudit.planningStatus = planning.incomplete ? "incomplete" : "completed";
-    flowLogger.verbose(`Flow ${flowIndex + 1}: response planner proposals=${planning.candidates}, accepted=${planning.variants.length}, rejected=${planning.rejected}`);
+    responseVariantAudit.planningStatus = planning.incomplete ? 'incomplete' : 'completed';
+    flowLogger.verbose(
+      `Flow ${flowIndex + 1}: response planner proposals=${planning.candidates}, accepted=${planning.variants.length}, rejected=${planning.rejected}`,
+    );
     if (planning.reason) flowLogger.verbose(`Flow ${flowIndex + 1}: response planner note: ${planning.reason}`);
   } catch (error) {
     const reason = (error as Error).message;
-    responseVariantAudit.planningStatus = "failed";
+    responseVariantAudit.planningStatus = 'failed';
     responseVariantAudit.plannerReason = reason;
-    responseVariantAudit.skipped.push({ name: "planner", reason });
+    responseVariantAudit.skipped.push({ name: 'planner', reason });
     flowLogger.warn(`Flow ${flowIndex + 1}: response scenario planning skipped`);
-    flowLogger.debug("response_variants.planning_failed", "Response variant planning failed", { error: reason });
+    flowLogger.debug('response_variants.planning_failed', 'Response variant planning failed', { error: reason });
   }
 
   for (const [variantIndex, variant] of variants.entries()) {
     try {
       const variantFixtures = applyResponseVariant(baseFlow.responseFixtures!, variant);
       if (!variantFixtures) {
-        responseVariantAudit.skipped.push({ name: variant.name, reason: "The proposed patch did not apply to the captured response." });
+        responseVariantAudit.skipped.push({
+          name: variant.name,
+          reason: 'The proposed patch did not apply to the captured response.',
+        });
         continue;
       }
       const scenarioId = `derived-${runId}-${flowIndex + 1}-${variantIndex + 1}`;
-      const variantStorageState = flowIndex > 0 && flow.startStorageState
-        ? JSON.parse(flow.startStorageState)
-        : args.storageStatePath;
+      const variantStorageState =
+        flowIndex > 0 && flow.startStorageState ? JSON.parse(flow.startStorageState) : args.storageStatePath;
       const variantTabRegistryHandle: TabRegistryHandle = { tabs: new Map() };
       let variantRecorder: EvidenceRecorder | undefined;
       let runtimeServicesReady = false;
@@ -148,13 +157,15 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
             fixturePages.add(page);
             await installResponseFixtures(page, variantFixtures, {
               onFixtureApplied: (fixture, requestUrl) => {
-                if (responseFixtureMatchesSelector(fixture, {
-                  method: variant.sourceMethod,
-                  url: variant.sourceUrl,
-                  occurrence: variant.sourceOccurrence,
-                })) {
+                if (
+                  responseFixtureMatchesSelector(fixture, {
+                    method: variant.sourceMethod,
+                    url: variant.sourceUrl,
+                    occurrence: variant.sourceOccurrence,
+                  })
+                ) {
                   variantSourceMatched = true;
-                  flowLogger.debug("response_variant.source_applied", "Variant source response was applied", {
+                  flowLogger.debug('response_variant.source_applied', 'Variant source response was applied', {
                     method: fixture.method,
                     sourceUrl: fixture.url,
                     occurrence: fixture.occurrence,
@@ -182,7 +193,9 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
         flowIndex > 0 && flow.startUrl ? flow.startUrl : args.url,
         flowLogger,
       );
-      variantRecorder = new EvidenceRecorder(variantContext, flowLogger, { redactor });
+      variantRecorder = new EvidenceRecorder(variantContext, flowLogger, {
+        redactor,
+      });
       setActiveRecorder(variantRecorder);
       runtimeServicesReady = true;
       await browserLifecycle.prepareContext(variantContext);
@@ -190,13 +203,20 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
       const variantResult = await replay(
         variantPage,
         actions,
-        persona?.verificationMode ?? "completion",
+        persona?.verificationMode ?? 'completion',
         variantRecorder,
         expectedExpectations,
         variant.expectation,
         flowLogger.child({ scenarioId }),
         getSafetyBlockCount,
-        { selector: { method: variant.sourceMethod, url: variant.sourceUrl, occurrence: variant.sourceOccurrence }, isMatched: () => variantSourceMatched },
+        {
+          selector: {
+            method: variant.sourceMethod,
+            url: variant.sourceUrl,
+            occurrence: variant.sourceOccurrence,
+          },
+          isMatched: () => variantSourceMatched,
+        },
         async (newPage) => {
           trackedContexts.add(newPage.context());
           await browserLifecycle.prepareContext(newPage.context());
@@ -207,35 +227,56 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
         undefined,
         browserLifecycle,
       );
-      runtimeErrorEntries.push(...variantRecorder.runtimeErrors.map((error) => ({ error, phase: "replay" as const, flowIndex: flowIndex + 1 })));
+      runtimeErrorEntries.push(
+        ...variantRecorder.runtimeErrors.map((error) => ({
+          error,
+          phase: 'replay' as const,
+          flowIndex: flowIndex + 1,
+        })),
+      );
       const variantExpectationResult = variantResult.variantExpectationResult;
       const activeVariantBrowser = variantResult.finalPage.context().browser();
       if (activeVariantBrowser && activeVariantBrowser !== replayBrowser) replayBrowser = activeVariantBrowser;
       const variantResultContext = variantResult.finalPage.context();
       await variantResult.finalPage.close();
       trackedContexts.add(variantResultContext);
-      await closeTrackedContexts(trackedContexts, flowLogger, `flow ${flowIndex + 1} response variant ${variantIndex + 1}`);
+      await closeTrackedContexts(
+        trackedContexts,
+        flowLogger,
+        `flow ${flowIndex + 1} response variant ${variantIndex + 1}`,
+      );
 
       if (!variantResult.reproduced) {
-        responseVariantAudit.skipped.push({ name: variant.name, reason: variantResult.failedAt
-          ? `Replay failed at step ${variantResult.failedAt.index}: ${variantResult.failedAt.error}`
-          : variantResult.safetyBlocked > 0
-            ? `Replay was limited by the safety policy: ${variantResult.safetyBlocked} request${variantResult.safetyBlocked === 1 ? "" : "s"} blocked.`
-            : variantResult.variantSourceMatched === false
-              ? "The source response was not observed during replay."
-              : variantResult.variantExpectationResult?.expectation?.status !== "met"
-                ? "The derived expectation was not observed after the source response was applied."
-                : variantResult.expectationsReproduced ? "Replay did not satisfy the flow verification." : "Replay did not reproduce the original expectation signals." });
+        responseVariantAudit.skipped.push({
+          name: variant.name,
+          reason: variantResult.failedAt
+            ? `Replay failed at step ${variantResult.failedAt.index}: ${variantResult.failedAt.error}`
+            : variantResult.safetyBlocked > 0
+              ? `Replay was limited by the safety policy: ${variantResult.safetyBlocked} request${variantResult.safetyBlocked === 1 ? '' : 's'} blocked.`
+              : variantResult.variantSourceMatched === false
+                ? 'The source response was not observed during replay.'
+                : variantResult.variantExpectationResult?.expectation?.status !== 'met'
+                  ? 'The derived expectation was not observed after the source response was applied.'
+                  : variantResult.expectationsReproduced
+                    ? 'Replay did not satisfy the flow verification.'
+                    : 'Replay did not reproduce the original expectation signals.',
+        });
         flowLogger.verbose(`Response scenario "${variant.name}": replay failed`);
         continue;
       }
-      if (variantExpectationResult?.expectation?.status !== "met") {
-      responseVariantAudit.skipped.push({ name: variant.name, reason: "The derived expectation was not observed after the source response was applied." });
+      if (variantExpectationResult?.expectation?.status !== 'met') {
+        responseVariantAudit.skipped.push({
+          name: variant.name,
+          reason: 'The derived expectation was not observed after the source response was applied.',
+        });
         flowLogger.verbose(`Response scenario "${variant.name}": expectation not observed`);
         continue;
       }
       if (!hasObservableReplayDifference(baselineReplayResult, variantResult)) {
-        responseVariantAudit.skipped.push({ name: variant.name, reason: "The response patch caused no observable UI difference." });
+        responseVariantAudit.skipped.push({
+          name: variant.name,
+          reason: 'The response patch caused no observable UI difference.',
+        });
         flowLogger.verbose(`Response scenario "${variant.name}": no observable UI difference`);
         continue;
       }
@@ -248,9 +289,16 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
         scenarioId,
         variantExpectationResult,
         variantResult.variantExpectationStep,
-        { expectationIndex: 1, assertion: variant.expectation.assertion, locator: variant.expectation.locator, value: variant.expectation.value },
+        {
+          expectationIndex: 1,
+          assertion: variant.expectation.assertion,
+          locator: variant.expectation.locator,
+          value: variant.expectation.value,
+        },
       );
-      const safeVariantEntries = variantEntries.map((entry) => redactor.redact(entry, { preserveToolInputs: true }) as EvidenceEntry);
+      const safeVariantEntries = variantEntries.map(
+        (entry) => redactor.redact(entry, { preserveToolInputs: true }) as EvidenceEntry,
+      );
       for (const entry of safeVariantEntries) evidenceLog.append(entry);
       confirmedFlows.push({
         name: `${baseFlow.name} — ${variant.name}`,
@@ -261,7 +309,7 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
         responseFixtures: variantFixtures,
         fixtureBaseId: baseFlow.fixtureBaseId,
         baseResponseFixtures: baseFlow.responseFixtures,
-        origin: "derived",
+        origin: 'derived',
         sourceFlowIndex: flowIndex,
         scenarioId,
         responseVariant: variant,
@@ -269,14 +317,26 @@ export async function runResponseVariants(input: ResponseVariantRunnerInput): Pr
       });
       responseVariantAudit.confirmed += 1;
       responseVariantAudit.confirmedScenarios.push(variant.name);
-      flowLogger.verbose(`Response scenario "${variant.name}": replay confirmed`);
+      flowLogger.verbose(`Response scenario "${variant.name}" confirmed`);
     } catch (error) {
-      await closeTrackedContexts(trackedContexts, flowLogger, `flow ${flowIndex + 1} response variant ${variantIndex + 1} failure`);
-      responseVariantAudit.skipped.push({ name: variant.name, reason: (error as Error).message });
+      await closeTrackedContexts(
+        trackedContexts,
+        flowLogger,
+        `flow ${flowIndex + 1} response variant ${variantIndex + 1} failure`,
+      );
+      responseVariantAudit.skipped.push({
+        name: variant.name,
+        reason: (error as Error).message,
+      });
       flowLogger.verbose(`Response scenario "${variant.name}": replay skipped`);
-      flowLogger.debug("response_variant.failed", "Response scenario replay failed", { name: variant.name, error: (error as Error).message });
+      flowLogger.debug('response_variant.failed', 'Response scenario replay failed', {
+        name: variant.name,
+        error: (error as Error).message,
+      });
     }
   }
-  flowLogger.verbose(`Flow ${flowIndex + 1}: response scenarios accepted=${responseVariantAudit.proposed}, rejected=${responseVariantAudit.plannerRejected}, confirmed=${responseVariantAudit.confirmed}, skipped=${responseVariantAudit.skipped.length}`);
+  flowLogger.verbose(
+    `Flow ${flowIndex + 1}: response scenarios accepted=${responseVariantAudit.proposed}, rejected=${responseVariantAudit.plannerRejected}, confirmed=${responseVariantAudit.confirmed}, skipped=${responseVariantAudit.skipped.length}`,
+  );
   return { replayBrowser, confirmedFlows, runtimeErrorEntries };
 }

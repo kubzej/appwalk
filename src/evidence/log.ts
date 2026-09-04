@@ -1,9 +1,14 @@
-import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-import type { ConsoleEntry, NetworkEntry, RuntimeErrorEntry, WebSocketFrameEntry } from "./recorder.js";
-import type { StepResult } from "../types.js";
-import { defaultRedactor, type Redactor } from "../security/redaction.js";
-import { formatArtifactIssues, MAX_ARTIFACT_FILE_BYTES, MAX_ARTIFACT_LINE_BYTES, validateEvidenceEntry } from "../artifacts/validation.js";
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import type { ConsoleEntry, NetworkEntry, RuntimeErrorEntry, WebSocketFrameEntry } from './recorder.js';
+import type { StepResult } from '../types.js';
+import { defaultRedactor, type Redactor } from '../security/redaction.js';
+import {
+  formatArtifactIssues,
+  MAX_ARTIFACT_FILE_BYTES,
+  MAX_ARTIFACT_LINE_BYTES,
+  validateEvidenceEntry,
+} from '../artifacts/validation.js';
 
 export interface EvidenceEntry {
   index: number;
@@ -11,7 +16,7 @@ export interface EvidenceEntry {
   runId?: string;
   /** Identifies replay evidence for a derived response scenario. Base discovery entries omit it. */
   scenarioId?: string;
-  origin?: "discovered" | "derived";
+  origin?: 'discovered' | 'derived';
   timestamp: string;
   toolCall?: { name: string; input: Record<string, unknown> };
   result?: StepResult;
@@ -43,12 +48,12 @@ export class EvidenceLog {
     private readonly redactor: Redactor = defaultRedactor,
   ) {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, "");
+    writeFileSync(path, '');
   }
 
   append(entry: EvidenceEntry): void {
     const safeEntry = this.redactor.redact(entry, { preserveToolInputs: true });
-    appendFileSync(this.path, JSON.stringify(safeEntry) + "\n");
+    appendFileSync(this.path, JSON.stringify(safeEntry) + '\n');
   }
 }
 
@@ -58,11 +63,11 @@ export function readEvidenceLog(path: string): EvidenceReadResult {
   if (statSync(path).size > MAX_ARTIFACT_FILE_BYTES) {
     throw new Error(`Evidence file exceeds the ${MAX_ARTIFACT_FILE_BYTES} byte safety limit: ${path}`);
   }
-  const lines = readFileSync(path, "utf-8").split("\n");
+  const lines = readFileSync(path, 'utf-8').split('\n');
 
   for (const [index, line] of lines.entries()) {
     if (line.trim().length === 0) continue;
-    if (Buffer.byteLength(line, "utf8") > MAX_ARTIFACT_LINE_BYTES) {
+    if (Buffer.byteLength(line, 'utf8') > MAX_ARTIFACT_LINE_BYTES) {
       issues.push({ line: index + 1, reason: `record exceeds the ${MAX_ARTIFACT_LINE_BYTES} byte safety limit` });
       continue;
     }

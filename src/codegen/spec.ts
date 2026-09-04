@@ -1,12 +1,12 @@
-import type { EvidenceEntry } from "../evidence/log.js";
-import { assertValidBurstCount } from "../limits.js";
-import { type ResponseFixture, type ResponseVariant } from "../response/variants.js";
-import { escapeJsString, serializeJsValue, toLocatorExpression } from "./locator.js";
-import { assertValidWebUrl } from "../url.js";
-import { LOGIN_CONTRACT } from "../browser/login-contract.js";
-import { TOOL_DEFINITIONS } from "../agent/tools.js";
-import { validateToolInput } from "../agent/validation.js";
-import type { ExpectationObservation } from "../types.js";
+import type { EvidenceEntry } from '../evidence/log.js';
+import { assertValidBurstCount } from '../limits.js';
+import { type ResponseFixture, type ResponseVariant } from '../response/variants.js';
+import { escapeJsString, serializeJsValue, toLocatorExpression } from './locator.js';
+import { assertValidWebUrl } from '../url.js';
+import { LOGIN_CONTRACT } from '../browser/login-contract.js';
+import { TOOL_DEFINITIONS } from '../agent/tools.js';
+import { validateToolInput } from '../agent/validation.js';
+import type { ExpectationObservation } from '../types.js';
 
 export interface CodegenOptions {
   url: string;
@@ -35,7 +35,7 @@ export interface FlowEntries {
   baseResponseFixtures?: ResponseFixture[];
   /** Validated response patch that produced this derived flow. */
   responseVariant?: ResponseVariant;
-  origin?: "discovered" | "derived";
+  origin?: 'discovered' | 'derived';
   /** Name of a Playwright `devices` entry the flow was discovered/replayed under (e.g. "iPhone 17").
    * A device profile is only settable at context creation, so a flow that needs one gets its own
    * explicit context in the generated test instead of the shared ambient `page` fixture — otherwise
@@ -59,17 +59,17 @@ export interface GeneratedSpecBundle {
  * summary in the report and evidence.
  */
 export function formatTestTitle(name: string): string {
-  let title = name.replace(/\s+/g, " ").trim();
+  let title = name.replace(/\s+/g, ' ').trim();
 
   // `run` and some models commonly prefix the summary with e.g. "mia baseline:".
-  title = title.replace(/^[^:]{1,80}\b(?:baseline|persona)\s*:\s*/i, "");
+  title = title.replace(/^[^:]{1,80}\b(?:baseline|persona)\s*:\s*/i, '');
 
   // IDs and other run-specific values make titles noisy and unstable.
   title = title
-    .replace(/\b(?:order|transaction|request|session)\s*#\s*[a-z0-9-]+\b/gi, "")
-    .replace(/\border(?: number)?\s+[0-9]+\b/gi, "")
-    .replace(/\s+/g, " ")
-    .replace(/[\s,;:.!?-]+$/, "")
+    .replace(/\b(?:order|transaction|request|session)\s*#\s*[a-z0-9-]+\b/gi, '')
+    .replace(/\border(?: number)?\s+[0-9]+\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[\s,;:.!?-]+$/, '')
     .trim();
 
   // Prefer an intentional high-level label when a summary uses `label: details` form.
@@ -79,25 +79,28 @@ export function formatTestTitle(name: string): string {
   }
 
   title = title
-    .replace(/\s+(?:flow|journey|scenario|test)$/i, "")
-    .replace(/\s+/g, " ")
-    .replace(/\s+(?:for|with|in|on)$/, "")
-    .replace(/[\s,;:.!?-]+$/, "")
+    .replace(/\s+(?:flow|journey|scenario|test)$/i, '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+(?:for|with|in|on)$/, '')
+    .replace(/[\s,;:.!?-]+$/, '')
     .trim();
 
-  if (!title) return "Verified user flow";
+  if (!title) return 'Verified user flow';
   if (title.length <= 100) return title;
 
-  const shortened = title.slice(0, 100).replace(/\s+\S*$/, "").trim();
-  return shortened || "Verified user flow";
+  const shortened = title
+    .slice(0, 100)
+    .replace(/\s+\S*$/, '')
+    .trim();
+  return shortened || 'Verified user flow';
 }
 
 // Generated login stays standalone for the user's test project. Its selectors and route rules
 // come from LOGIN_CONTRACT, so the runtime and generated helper share the same login assumptions.
 // English label text only works on English-language UIs; HTML input types are language-independent,
 // so structural signals are tried first, with English text as a fallback.
-export const GENERATED_CREDENTIALS_FILE = ".secrets.json";
-export const GENERATED_STORAGE_STATE_FILE = ".storage-state.json";
+export const GENERATED_CREDENTIALS_FILE = '.secrets.json';
+export const GENERATED_STORAGE_STATE_FILE = '.storage-state.json';
 
 const GENERATED_AUTH_HELPER = `import type { Locator, Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
@@ -360,49 +363,52 @@ function actionToStatement(
   const targetLocatorExpr = () => toLocatorExpression(input.target as string);
   const clickOptionsStatement = (): string => {
     const options: string[] = [];
-    if (input.button === "left" || input.button === "right" || input.button === "middle") {
+    if (input.button === 'left' || input.button === 'right' || input.button === 'middle') {
       options.push(`button: '${input.button}'`);
     }
     if (Array.isArray(input.modifiers)) {
-      const modifiers = input.modifiers.filter((modifier): modifier is string =>
-        typeof modifier === "string" && ["Alt", "Control", "Meta", "Shift"].includes(modifier),
+      const modifiers = input.modifiers.filter(
+        (modifier): modifier is string =>
+          typeof modifier === 'string' && ['Alt', 'Control', 'Meta', 'Shift'].includes(modifier),
       );
       if (modifiers.length > 0) options.push(`modifiers: ${JSON.stringify(modifiers)}`);
     }
-    return options.length > 0 ? `{ ${options.join(", ")} }` : "";
+    return options.length > 0 ? `{ ${options.join(', ')} }` : '';
   };
 
   switch (name) {
-    case "navigate":
-      assertValidWebUrl(input.url, "Generated navigate URL");
+    case 'navigate':
+      assertValidWebUrl(input.url, 'Generated navigate URL');
       return `await page.goto('${escapeJsString(input.url as string)}');`;
-    case "click":
+    case 'click':
       return `await ${locatorExpr()}.click(${clickOptionsStatement()});`;
-    case "doubleClick":
+    case 'doubleClick':
       return `await ${locatorExpr()}.dblclick(${clickOptionsStatement()});`;
-    case "fill":
+    case 'fill':
       return `await ${locatorExpr()}.fill('${escapeJsString(input.value as string)}');`;
-    case "select":
-      return `await ${locatorExpr()}.selectOption(${Array.isArray(input.value)
-        ? `[${input.value.map((value) => `'${escapeJsString(String(value))}'`).join(", ")}]`
-        : `'${escapeJsString(input.value as string)}'`});`;
-    case "pressKey":
+    case 'select':
+      return `await ${locatorExpr()}.selectOption(${
+        Array.isArray(input.value)
+          ? `[${input.value.map((value) => `'${escapeJsString(String(value))}'`).join(', ')}]`
+          : `'${escapeJsString(input.value as string)}'`
+      });`;
+    case 'pressKey':
       return `await ${locatorExpr()}.press('${escapeJsString(input.key as string)}');`;
-    case "check":
+    case 'check':
       return `await ${locatorExpr()}.check();`;
-    case "uncheck":
+    case 'uncheck':
       return `await ${locatorExpr()}.uncheck();`;
-    case "hover":
+    case 'hover':
       return `await ${locatorExpr()}.hover();`;
-    case "dragAndDrop":
+    case 'dragAndDrop':
       return `await ${sourceLocatorExpr()}.dragTo(${targetLocatorExpr()});`;
-    case "goBack":
+    case 'goBack':
       return `await page.goBack();`;
-    case "goForward":
+    case 'goForward':
       return `await page.goForward();`;
-    case "reload":
+    case 'reload':
       return `await page.reload();`;
-    case "clearCookie":
+    case 'clearCookie':
       return input.name
         ? `await page.context().clearCookies({ name: '${escapeJsString(input.name as string)}' });`
         : `await page.context().clearCookies();`;
@@ -411,52 +417,52 @@ function actionToStatement(
     // Goes through a fresh `browser.newContext()` seeded from the current storageState rather than
     // `page.context().newPage()` — Playwright rejects a second page on the implicit context every page
     // in this codebase is created with ("Please use browser.newContext()").
-    case "openInNewTab":
-      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); const newContext = await browser.newContext(${generatedContextOptions(devicePreset)}); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url);${trackPopups ? " registerPopupPage(page);" : ""} }`;
+    case 'openInNewTab':
+      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); const newContext = await browser.newContext(${generatedContextOptions(devicePreset)}); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url);${trackPopups ? ' registerPopupPage(page);' : ''} }`;
     // A genuine second page of the *same* context — real, live-shared cookies/localStorage, like two
     // real browser tabs — rather than a storageState clone into a fresh context. `tabs` maps every tab
     // id ever opened to its page, mirroring the runtime tab registry: the id formula
     // (`tab-${count so far}`) must match it exactly, since a later switchTab statement was recorded
     // against the id the runtime assigned.
-    case "openTab":
-      return `{ const url = page.url(); const newPage = await page.context().newPage(); await newPage.goto(url); tabs[\`tab-\${Object.keys(tabs).length}\`] = page = newPage;${trackPopups ? " registerPopupPage(newPage);" : ""} }`;
-    case "switchTab":
+    case 'openTab':
+      return `{ const url = page.url(); const newPage = await page.context().newPage(); await newPage.goto(url); tabs[\`tab-\${Object.keys(tabs).length}\`] = page = newPage;${trackPopups ? ' registerPopupPage(newPage);' : ''} }`;
+    case 'switchTab':
       return `page = tabs['${escapeJsString(input.tabId as string)}'];`;
     // Closes just the context, not the shared `browser` fixture the test runner owns — closing that
     // would break the runner, not just this one test's simulated "browser restart".
-    case "reopenBrowser":
-      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); await page.context().close(); const newContext = await browser.newContext(${generatedContextOptions(devicePreset)}); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url);${trackPopups ? " registerPopupPage(page);" : ""} }`;
-    case "scroll":
+    case 'reopenBrowser':
+      return `{ const url = page.url(); const storageState = await page.context().storageState({ indexedDB: true }); await page.context().close(); const newContext = await browser.newContext(${generatedContextOptions(devicePreset)}); ${fixtureScenario ? `await installFixtures(newContext, loadScenario('${escapeJsString(fixtureScenario)}'));` : ''} page = await newContext.newPage(); await page.goto(url);${trackPopups ? ' registerPopupPage(page);' : ''} }`;
+    case 'scroll':
       return input.locator ? `await ${locatorExpr()}.scrollIntoViewIfNeeded();` : `await page.mouse.wheel(0, 10000);`;
-    case "setViewportSize":
-      return `await page.setViewportSize({ width: ${codegenViewportDimension(input.width, "width")}, height: ${codegenViewportDimension(input.height, "height")} });`;
-    case "waitFor":
+    case 'setViewportSize':
+      return `await page.setViewportSize({ width: ${codegenViewportDimension(input.width, 'width')}, height: ${codegenViewportDimension(input.height, 'height')} });`;
+    case 'waitFor':
       return `await ${locatorExpr()}.first().waitFor({ state: 'visible' });`;
-    case "uploadFile":
+    case 'uploadFile':
       return `await ${locatorExpr()}.setInputFiles(${serializeJsValue(input.filePaths)});`;
-    case "download":
+    case 'download':
       // A real, non-empty saved file, not just the event having fired — the same distinction the
       // live download() action checks (suggestedFilename() alone can't tell a real file from a
       // broken/empty one).
       return `{ const downloadPromise = page.waitForEvent('download'); await ${locatorExpr()}.click(); const download = await downloadPromise; expect(await download.failure()).toBeNull(); const downloadPath = await download.path(); expect(downloadPath).toBeTruthy(); if (downloadPath) { const downloadStats = await stat(downloadPath); expect(downloadStats.size).toBeGreaterThan(0); } }`;
-    case "handleDialog":
-      if (input.behavior !== "accept" && input.behavior !== "dismiss") {
-        throw new Error("Cannot generate handleDialog: behavior must be accept or dismiss.");
+    case 'handleDialog':
+      if (input.behavior !== 'accept' && input.behavior !== 'dismiss') {
+        throw new Error('Cannot generate handleDialog: behavior must be accept or dismiss.');
       }
       return `page.once('dialog', (dialog) => dialog.${input.behavior}());`;
-    case "burst": {
+    case 'burst': {
       // Short on purpose, matching the real `burst()` — a repetition whose target is already gone
       // (an earlier one navigated away) should fail fast, not wait out Playwright's much longer default.
       const count = input.count;
       const innerAction = input.action as string;
       const innerStatement =
-        innerAction === "click"
+        innerAction === 'click'
           ? `await ${locatorExpr()}.click({ timeout: 1000 });`
-          : innerAction === "pressKey"
+          : innerAction === 'pressKey'
             ? `await ${locatorExpr()}.press('${escapeJsString(input.key as string)}', { timeout: 1000 });`
-            : innerAction === "check"
+            : innerAction === 'check'
               ? `await ${locatorExpr()}.check({ timeout: 1000 });`
-              : innerAction === "uncheck"
+              : innerAction === 'uncheck'
                 ? `await ${locatorExpr()}.uncheck({ timeout: 1000 });`
                 : null;
       if (innerStatement === null) return null;
@@ -465,19 +471,19 @@ function actionToStatement(
       // early here instead of letting the exception fail the whole test mirrors the real `burst()`.
       return `for (let i = 0; i < ${count}; i++) { try { ${innerStatement} } catch { break; } }`;
     }
-    case "simulateFailure": {
+    case 'simulateFailure': {
       const pattern = escapeJsString(input.urlPattern as string);
       const mode = input.mode as string;
       const modeCode =
-        mode === "500" || mode === "503" || mode === "404"
+        mode === '500' || mode === '503' || mode === '404'
           ? `await route.fulfill({ status: ${mode}, contentType: 'application/json', body: '{"error":"simulated failure"}' });`
-          : mode === "malformed"
+          : mode === 'malformed'
             ? `await route.fulfill({ status: 200, contentType: 'application/json', body: '{not valid json' });`
-            : mode === "offline"
+            : mode === 'offline'
               ? `await route.abort('internetdisconnected');`
-              : mode === "connectionReset"
+              : mode === 'connectionReset'
                 ? `await route.abort('connectionreset');`
-                : mode === "timeout"
+                : mode === 'timeout'
                   ? `await route.fetch(); await route.abort('timedout');`
                   : null;
       if (modeCode === null) return null;
@@ -485,21 +491,27 @@ function actionToStatement(
       // route as already handled and throw on the fulfill/abort call meant to actually settle it.
       return `await page.route('${pattern}', async (route) => { ${modeCode} await page.unroute('${pattern}'); });`;
     }
-    case "simulateLatency": {
+    case 'simulateLatency': {
       const pattern = escapeJsString(input.urlPattern as string);
       const delayMs = Number(input.delayMs);
       if (!Number.isFinite(delayMs) || delayMs < 0 || delayMs > 60000) return null;
-      return `await page.route('` + pattern + `', async (route) => { await new Promise((resolve) => setTimeout(resolve, ${delayMs})); await route.continue(); await page.unroute('` + pattern + `'); });`;
+      return (
+        `await page.route('` +
+        pattern +
+        `', async (route) => { await new Promise((resolve) => setTimeout(resolve, ${delayMs})); await route.continue(); await page.unroute('` +
+        pattern +
+        `'); });`
+      );
     }
-    case "setOffline":
-      return `await page.context().setOffline(${input.offline ? "true" : "false"});`;
-    case "apiRequest": {
-      const method = escapeJsString((input.method as string) ?? "GET");
+    case 'setOffline':
+      return `await page.context().setOffline(${input.offline ? 'true' : 'false'});`;
+    case 'apiRequest': {
+      const method = escapeJsString((input.method as string) ?? 'GET');
       const requestUrl = escapeJsString(input.url as string);
-      const headers = input.headers && typeof input.headers === "object" ? serializeJsValue(input.headers) : undefined;
-      return `await page.request.fetch('${requestUrl}', { method: '${method}'${headers ? `, headers: ${headers}` : ""} });`;
+      const headers = input.headers && typeof input.headers === 'object' ? serializeJsValue(input.headers) : undefined;
+      return `await page.request.fetch('${requestUrl}', { method: '${method}'${headers ? `, headers: ${headers}` : ''} });`;
     }
-    case "verifyExpectation":
+    case 'verifyExpectation':
       return null;
     default:
       return null;
@@ -511,35 +523,35 @@ function expectationToStatement(entry: EvidenceEntry): string | null {
   if (!observation) return null;
   const locator = observation.locator ? toLocatorExpression(observation.locator) : null;
   switch (observation.assertion) {
-    case "visible":
+    case 'visible':
       return locator ? `await expect(${locator}).toBeVisible();` : null;
-    case "hidden":
+    case 'hidden':
       return locator ? `await expect(${locator}).not.toBeVisible();` : null;
-    case "containsText":
+    case 'containsText':
       return locator && observation.value !== undefined
         ? `await expect(${locator}).toContainText('${escapeJsString(observation.value)}');`
         : null;
-    case "urlContains":
+    case 'urlContains':
       return observation.value !== undefined
         ? `await expect(page).toHaveURL(new RegExp('${escapeJsString(observation.value)}'));`
         : null;
-    case "urlEquals":
+    case 'urlEquals':
       return observation.value !== undefined
         ? `await expect(page).toHaveURL('${escapeJsString(observation.value)}');`
         : null;
-    case "value":
+    case 'value':
       return locator && observation.value !== undefined
         ? `await expect(${locator}).toHaveValue('${escapeJsString(observation.value)}');`
         : null;
-    case "checked":
+    case 'checked':
       return locator ? `await expect(${locator}).toBeChecked();` : null;
-    case "unchecked":
+    case 'unchecked':
       return locator ? `await expect(${locator}).not.toBeChecked();` : null;
-    case "disabled":
+    case 'disabled':
       return locator ? `await expect(${locator}).toBeDisabled();` : null;
-    case "enabled":
+    case 'enabled':
       return locator ? `await expect(${locator}).toBeEnabled();` : null;
-    case "count":
+    case 'count':
       return locator && observation.expectedCount !== undefined
         ? `await expect(${locator}).toHaveCount(${observation.expectedCount});`
         : null;
@@ -550,45 +562,53 @@ function expectationToStatement(entry: EvidenceEntry): string | null {
 
 function validateCodegenExpectation(value: unknown): ExpectationObservation | null {
   if (value === undefined) return null;
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Cannot generate expectation: expected an object.");
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Cannot generate expectation: expected an object.');
   }
 
   const observation = value as Record<string, unknown>;
-  if (observation.status !== "met") return null;
+  if (observation.status !== 'met') return null;
 
   const assertions = new Set([
-    "visible", "hidden", "containsText", "urlContains", "urlEquals", "value",
-    "checked", "unchecked", "disabled", "enabled", "count", "unknown",
+    'visible',
+    'hidden',
+    'containsText',
+    'urlContains',
+    'urlEquals',
+    'value',
+    'checked',
+    'unchecked',
+    'disabled',
+    'enabled',
+    'count',
+    'unknown',
   ]);
-  if (typeof observation.assertion !== "string" || !assertions.has(observation.assertion)) {
-    throw new Error("Cannot generate expectation: assertion is invalid.");
+  if (typeof observation.assertion !== 'string' || !assertions.has(observation.assertion)) {
+    throw new Error('Cannot generate expectation: assertion is invalid.');
   }
-  if (observation.locator !== undefined && typeof observation.locator !== "string") {
-    throw new Error("Cannot generate expectation: locator must be a string.");
+  if (observation.locator !== undefined && typeof observation.locator !== 'string') {
+    throw new Error('Cannot generate expectation: locator must be a string.');
   }
-  if (observation.value !== undefined && typeof observation.value !== "string") {
-    throw new Error("Cannot generate expectation: value must be a string.");
+  if (observation.value !== undefined && typeof observation.value !== 'string') {
+    throw new Error('Cannot generate expectation: value must be a string.');
   }
   if (
-    observation.expectedCount !== undefined
-    && (typeof observation.expectedCount !== "number"
-      || !Number.isSafeInteger(observation.expectedCount)
-      || observation.expectedCount < 0)
+    observation.expectedCount !== undefined &&
+    (typeof observation.expectedCount !== 'number' ||
+      !Number.isSafeInteger(observation.expectedCount) ||
+      observation.expectedCount < 0)
   ) {
-    throw new Error("Cannot generate expectation: expectedCount must be a non-negative safe integer.");
+    throw new Error('Cannot generate expectation: expectedCount must be a non-negative safe integer.');
   }
   return observation as unknown as ExpectationObservation;
 }
 
 function generatedContextOptions(devicePreset?: string): string {
-  return devicePreset
-    ? `{ ...devices['${escapeJsString(devicePreset)}'], storageState }`
-    : `{ storageState }`;
+  return devicePreset ? `{ ...devices['${escapeJsString(devicePreset)}'], storageState }` : `{ storageState }`;
 }
 
 function codegenViewportDimension(value: unknown, name: string): number {
-  const dimension = typeof value === "number" ? value : Number(value);
+  const dimension = typeof value === 'number' ? value : Number(value);
   if (!Number.isSafeInteger(dimension) || dimension <= 0) {
     throw new Error(`Invalid viewport ${name}: expected a positive integer.`);
   }
@@ -618,31 +638,41 @@ function flowToTest(
   testTitle = formatTestTitle(flow.title ?? flow.name),
   fixtureScenario?: string,
 ): string {
-  const toolCalls = flow.entries.filter((entry) => entry.toolCall && !entry.error && entry.toolCall.name !== "flowComplete");
+  const toolCalls = flow.entries.filter(
+    (entry) => entry.toolCall && !entry.error && entry.toolCall.name !== 'flowComplete',
+  );
   // The runtime registers app-opened popups as tab-1, tab-2, ... so a later switchTab can reach
   // them. Generated tests need the same registry whenever a flow switches tabs.
   const needsTabRegistry = toolCalls.some(
-    (entry) => entry.toolCall!.name === "openTab" || entry.toolCall!.name === "switchTab",
+    (entry) => entry.toolCall!.name === 'openTab' || entry.toolCall!.name === 'switchTab',
   );
-  const tabRegistrySetup = needsTabRegistry ? [
-    "const tabs: Record<string, typeof page> = { 'tab-0': page };",
-    "const popupPages = new WeakSet<typeof page>();",
-    "function registerPopupPage(sourcePage: typeof page): void {",
-    "  if (popupPages.has(sourcePage)) return;",
-    "  popupPages.add(sourcePage);",
-    "  sourcePage.on('popup', (popup) => {",
-    "    const newId = 'tab-' + Object.keys(tabs).length;",
-    "    tabs[newId] = popup;",
-    "    registerPopupPage(popup);",
-    "  });",
-    "}",
-    "registerPopupPage(page);",
-  ] : [];
+  const tabRegistrySetup = needsTabRegistry
+    ? [
+        "const tabs: Record<string, typeof page> = { 'tab-0': page };",
+        'const popupPages = new WeakSet<typeof page>();',
+        'function registerPopupPage(sourcePage: typeof page): void {',
+        '  if (popupPages.has(sourcePage)) return;',
+        '  popupPages.add(sourcePage);',
+        "  sourcePage.on('popup', (popup) => {",
+        "    const newId = 'tab-' + Object.keys(tabs).length;",
+        '    tabs[newId] = popup;',
+        '    registerPopupPage(popup);',
+        '  });',
+        '}',
+        'registerPopupPage(page);',
+      ]
+    : [];
   // Preserve the original timeline: an expectation may describe an intermediate state (e.g. an
   // item is present in the cart) and must run before later actions navigate away from that state.
   const bodyLines = toolCalls
     .flatMap((entry) => [
-      actionToStatement(entry.toolCall!.name, validateCodegenToolInput(entry.toolCall!.name, entry.toolCall!.input), fixtureScenario, needsTabRegistry, flow.devicePreset),
+      actionToStatement(
+        entry.toolCall!.name,
+        validateCodegenToolInput(entry.toolCall!.name, entry.toolCall!.input),
+        fixtureScenario,
+        needsTabRegistry,
+        flow.devicePreset,
+      ),
       expectationToStatement(entry),
     ])
     .filter((line): line is string => line !== null);
@@ -651,46 +681,59 @@ function flowToTest(
   // A recorded final expectation can already express the flow completion signal. Avoid emitting
   // the same assertion again as a generic confirmation fallback.
   const finalAssertion = assertion && bodyLines.includes(assertion) ? null : assertion;
-  const body = [...bodyLines, finalAssertion].filter((line): line is string => line !== null).map((line) => `  ${line}`).join("\n");
+  const body = [...bodyLines, finalAssertion]
+    .filter((line): line is string => line !== null)
+    .map((line) => `  ${line}`)
+    .join('\n');
 
   // `openInNewTab`/`reopenBrowser` need the `browser` fixture to open a fresh context from; `openTab`
   // only needs `page.context()`, since it stays in the same context. Every other action only ever
   // needs `page` (reassigned in place when one of those switches it).
   const needsBrowserFixture = toolCalls.some(
-    (entry) => entry.toolCall!.name === "openInNewTab" || entry.toolCall!.name === "reopenBrowser",
+    (entry) => entry.toolCall!.name === 'openInNewTab' || entry.toolCall!.name === 'reopenBrowser',
   );
   // A device profile is a newContext()-time-only option (viewport alone can change mid-session,
   // but user agent/touch/scale factor cannot) — a flow discovered under one needs its own explicit
   // context too, exactly like storageState, even when it has no storageState of its own.
   const needsOwnContext = Boolean(flow.devicePreset);
-  const fixtureParams = needsOwnContext || needsBrowserFixture ? (needsOwnContext ? "{ browser }" : "{ page, browser }") : "{ page }";
-  const setupNavigationLines = options.username && options.password
-    ? [
-      `await page.goto('${escapeJsString(options.url)}');`,
-      "await loginWithConfiguredCredentials(page);",
-      ...(flow.startUrl && flow.startUrl !== options.url ? [`await page.goto('${escapeJsString(flow.startUrl)}');`] : []),
-    ]
-    : [`await page.goto('${escapeJsString(flow.startUrl ?? options.url)}');`];
+  const fixtureParams =
+    needsOwnContext || needsBrowserFixture ? (needsOwnContext ? '{ browser }' : '{ page, browser }') : '{ page }';
+  const setupNavigationLines =
+    options.username && options.password
+      ? [
+          `await page.goto('${escapeJsString(options.url)}');`,
+          'await loginWithConfiguredCredentials(page);',
+          ...(flow.startUrl && flow.startUrl !== options.url
+            ? [`await page.goto('${escapeJsString(flow.startUrl)}');`]
+            : []),
+        ]
+      : [`await page.goto('${escapeJsString(flow.startUrl ?? options.url)}');`];
   if (needsOwnContext) {
     const contextOptionEntries = [
       ...(flow.devicePreset ? [`...devices['${escapeJsString(flow.devicePreset)}']`] : []),
       ...(options.storageStatePath
-        ? [options.storageStateArtifactPath
-          ? `storageState: join(generatedSuiteDirectory, '${escapeJsString(options.storageStateArtifactPath)}')`
-          : `storageState: '${escapeJsString(options.storageStatePath)}'`]
+        ? [
+            options.storageStateArtifactPath
+              ? `storageState: join(generatedSuiteDirectory, '${escapeJsString(options.storageStateArtifactPath)}')`
+              : `storageState: '${escapeJsString(options.storageStatePath)}'`,
+          ]
         : []),
     ];
-    const contextOptions = contextOptionEntries.length ? `{ ${contextOptionEntries.join(", ")} }` : "";
+    const contextOptions = contextOptionEntries.length ? `{ ${contextOptionEntries.join(', ')} }` : '';
     const indentedBody = body
-      .split("\n")
+      .split('\n')
       .map((line) => `  ${line}`)
-      .join("\n");
+      .join('\n');
     const setupLines = [
       ...tabRegistrySetup,
-      ...(fixtureScenario ? [`await installFixtures(page.context(), loadScenario('${escapeJsString(fixtureScenario)}'));`] : []),
+      ...(fixtureScenario
+        ? [`await installFixtures(page.context(), loadScenario('${escapeJsString(fixtureScenario)}'));`]
+        : []),
       ...setupNavigationLines,
-    ].map((line) => `  ${line}`).join("\n");
-  return `test('${escapeJsString(testTitle)}', async (${fixtureParams}) => {
+    ]
+      .map((line) => `  ${line}`)
+      .join('\n');
+    return `test('${escapeJsString(testTitle)}', async (${fixtureParams}) => {
   const flowContext = await browser.newContext(${contextOptions});
   let page = await flowContext.newPage();
 ${setupLines}
@@ -704,19 +747,23 @@ ${indentedBody}
 
   const setup = [
     ...tabRegistrySetup,
-    ...(fixtureScenario ? [
-      `const responseFixtures = loadScenario('${escapeJsString(fixtureScenario)}');`,
-      "await installFixtures(page.context(), responseFixtures);",
-    ] : []),
+    ...(fixtureScenario
+      ? [
+          `const responseFixtures = loadScenario('${escapeJsString(fixtureScenario)}');`,
+          'await installFixtures(page.context(), responseFixtures);',
+        ]
+      : []),
     ...setupNavigationLines,
-  ].map((line) => `  ${line}`).join("\n");
+  ]
+    .map((line) => `  ${line}`)
+    .join('\n');
   return `test('${escapeJsString(testTitle)}', async (${fixtureParams}) => {\n${setup}\n${body}\n});`;
 }
 
 function validateCodegenToolInput(name: string, input: Record<string, unknown>): Record<string, unknown> {
   const definition = TOOL_DEFINITIONS.find((candidate) => candidate.name === name);
   if (!definition) throw new Error(`Cannot generate ${name}: unknown tool.`);
-  if (name === "burst") assertValidBurstCount(input.count, "Cannot generate burst");
+  if (name === 'burst') assertValidBurstCount(input.count, 'Cannot generate burst');
   try {
     return validateToolInput(definition, input);
   } catch (error) {
@@ -726,20 +773,23 @@ function validateCodegenToolInput(name: string, input: Record<string, unknown>):
 }
 
 function fixtureFileContent(fixtures: ResponseFixture[]): string {
-  return JSON.stringify(fixtures, null, 2) + "\n";
+  return JSON.stringify(fixtures, null, 2) + '\n';
 }
 
-function variantFileContent(
-  baselineFile: string,
-  variant: ResponseVariant,
-): string {
-  return JSON.stringify({
-    base: baselineFile,
-    sourceMethod: variant.sourceMethod,
-    sourceUrl: variant.sourceUrl,
-    sourceOccurrence: variant.sourceOccurrence,
-    patches: variant.patches,
-  }, null, 2) + "\n";
+function variantFileContent(baselineFile: string, variant: ResponseVariant): string {
+  return (
+    JSON.stringify(
+      {
+        base: baselineFile,
+        sourceMethod: variant.sourceMethod,
+        sourceUrl: variant.sourceUrl,
+        sourceOccurrence: variant.sourceOccurrence,
+        patches: variant.patches,
+      },
+      null,
+      2,
+    ) + '\n'
+  );
 }
 
 interface FixtureScenarioPlan {
@@ -764,7 +814,7 @@ function planFixtureScenarios(flows: FlowEntries[]): FixtureScenarioPlan {
     let baseScenario = baseScenarioNames.get(baseKey);
     if (!baseScenario) {
       const baseNumber = baseScenarioNames.size + 1;
-      baseScenario = `flow-${String(baseNumber).padStart(3, "0")}.base`;
+      baseScenario = `flow-${String(baseNumber).padStart(3, '0')}.base`;
       baseScenarioNames.set(baseKey, baseScenario);
       const baseFixtures = flow.baseResponseFixtures ?? flow.responseFixtures ?? [];
       const baseFile = `${baseScenario}.json`;
@@ -772,10 +822,10 @@ function planFixtureScenarios(flows: FlowEntries[]): FixtureScenarioPlan {
       artifacts.push({ relativePath: `fixtures/${baseFile}`, content: fixtureFileContent(baseFixtures) });
     }
 
-    if (flow.origin === "derived" && flow.responseVariant) {
+    if (flow.origin === 'derived' && flow.responseVariant) {
       const variantNumber = (variantCounts.get(baseKey) ?? 0) + 1;
       variantCounts.set(baseKey, variantNumber);
-      const scenario = `${baseScenario.replace(/\.base$/, "")}-variant-${String(variantNumber).padStart(3, "0")}`;
+      const scenario = `${baseScenario.replace(/\.base$/, '')}-variant-${String(variantNumber).padStart(3, '0')}`;
       const baseFile = baseFiles.get(baseKey)!;
       artifacts.push({
         relativePath: `fixtures/${scenario}.json`,
@@ -792,7 +842,7 @@ function planFixtureScenarios(flows: FlowEntries[]): FixtureScenarioPlan {
 
 /** One session can discover several distinct flows — each becomes its own independent `test()` with its own setup and response fixtures. */
 export function generateSpecBundle(flows: FlowEntries[], options: CodegenOptions): GeneratedSpecBundle {
-  assertValidWebUrl(options.url, "Codegen target URL");
+  assertValidWebUrl(options.url, 'Codegen target URL');
   for (const [index, flow] of flows.entries()) {
     if (flow.startUrl !== undefined) assertValidWebUrl(flow.startUrl, `Codegen flow ${index + 1} start URL`);
   }
@@ -801,7 +851,7 @@ export function generateSpecBundle(flows: FlowEntries[], options: CodegenOptions
   const hasLogin = !hasStorageState && Boolean(options.username && options.password);
   const hasFixtures = fixturePlan.artifacts.length > 0;
   const hasDeviceProfile = flows.some((flow) => Boolean(flow.devicePreset));
-  const hasDownload = flows.some((flow) => flow.entries.some((entry) => entry.toolCall?.name === "download"));
+  const hasDownload = flows.some((flow) => flow.entries.some((entry) => entry.toolCall?.name === 'download'));
 
   const parts: string[] = [
     hasDeviceProfile
@@ -816,8 +866,10 @@ export function generateSpecBundle(flows: FlowEntries[], options: CodegenOptions
     if (options.storageStateArtifactPath) {
       parts.push("import { dirname, join } from 'node:path';");
       parts.push("import { fileURLToPath } from 'node:url';");
-      parts.push("const generatedSuiteDirectory = dirname(fileURLToPath(import.meta.url));");
-      parts.push(`test.use({ storageState: join(generatedSuiteDirectory, '${escapeJsString(options.storageStateArtifactPath)}') });`);
+      parts.push('const generatedSuiteDirectory = dirname(fileURLToPath(import.meta.url));');
+      parts.push(
+        `test.use({ storageState: join(generatedSuiteDirectory, '${escapeJsString(options.storageStateArtifactPath)}') });`,
+      );
     } else {
       parts.push(`test.use({ storageState: '${escapeJsString(options.storageStatePath!)}' });`);
     }
@@ -832,9 +884,8 @@ export function generateSpecBundle(flows: FlowEntries[], options: CodegenOptions
   for (const [index, flow] of flows.entries()) {
     const baseTitle = formatTestTitle(flow.title ?? flow.name);
     const detailTitle = formatTestTitle(flow.name);
-    let testTitle = baseTitleCounts.get(baseTitle) === 1 || detailTitle === baseTitle
-      ? baseTitle
-      : `${baseTitle} - ${detailTitle}`;
+    let testTitle =
+      baseTitleCounts.get(baseTitle) === 1 || detailTitle === baseTitle ? baseTitle : `${baseTitle} - ${detailTitle}`;
     const titleRoot = testTitle;
     let suffix = 2;
     while (usedTitles.has(testTitle)) {
@@ -845,13 +896,20 @@ export function generateSpecBundle(flows: FlowEntries[], options: CodegenOptions
   }
 
   return {
-    spec: parts.join("\n\n") + "\n",
+    spec: parts.join('\n\n') + '\n',
     artifacts: [
-      ...(hasLogin ? [
-        { relativePath: "auth.ts", content: GENERATED_AUTH_HELPER },
-        { relativePath: GENERATED_CREDENTIALS_FILE, content: JSON.stringify({ username: options.username, password: options.password }, null, 2) + "\n" },
-      ] : []),
-      ...(hasFixtures ? [{ relativePath: "fixtures.ts", content: GENERATED_FIXTURES_HELPER }, ...fixturePlan.artifacts] : []),
+      ...(hasLogin
+        ? [
+            { relativePath: 'auth.ts', content: GENERATED_AUTH_HELPER },
+            {
+              relativePath: GENERATED_CREDENTIALS_FILE,
+              content: JSON.stringify({ username: options.username, password: options.password }, null, 2) + '\n',
+            },
+          ]
+        : []),
+      ...(hasFixtures
+        ? [{ relativePath: 'fixtures.ts', content: GENERATED_FIXTURES_HELPER }, ...fixturePlan.artifacts]
+        : []),
     ],
   };
 }

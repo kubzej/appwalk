@@ -1,29 +1,29 @@
-import type { FlowEntries } from "../codegen/spec.js";
-import type { ResponseVariant } from "../response/variants.js";
-import type { RuntimeErrorEntry } from "../evidence/recorder.js";
+import type { FlowEntries } from '../codegen/spec.js';
+import type { ResponseVariant } from '../response/variants.js';
+import type { RuntimeErrorEntry } from '../evidence/recorder.js';
 
 export interface FlowFinding {
   flowIndex: number;
-  status: "confirmed" | "inconclusive";
+  status: 'confirmed' | 'inconclusive';
   summary: string;
   failure?: string;
 }
 
 export interface ConfirmedFlow extends FlowEntries {
-  origin: "discovered" | "derived";
+  origin: 'discovered' | 'derived';
   sourceFlowIndex?: number;
   scenarioId?: string;
   responseVariant?: ResponseVariant;
 }
 
 export interface SafetyEvent {
-  phase: "exploration" | "replay";
+  phase: 'exploration' | 'replay';
   method: string;
   url: string;
 }
 
 export interface RuntimeErrorPhaseEntry {
   error: RuntimeErrorEntry;
-  phase: "exploration" | "replay";
+  phase: 'exploration' | 'replay';
   flowIndex?: number;
 }

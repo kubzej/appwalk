@@ -22,8 +22,7 @@ export interface ToolResult {
 export const AGENT_MAX_OUTPUT_TOKENS = 1024;
 
 export type ProviderTurn =
-  | { type: "tool_call"; toolCall: ToolCall }
-  | { type: "text"; text: string; incompleteReason?: string };
+  { type: 'tool_call'; toolCall: ToolCall } | { type: 'text'; text: string; incompleteReason?: string };
 
 export interface ProviderCallOptions {
   signal?: AbortSignal;

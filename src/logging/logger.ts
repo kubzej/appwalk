@@ -1,5 +1,5 @@
-import { inspect } from "node:util";
-import { Redactor } from "../security/redaction.js";
+import { inspect } from 'node:util';
+import { Redactor } from '../security/redaction.js';
 
 /**
  * Every line this Logger writes follows one fixed anatomy, in this order:
@@ -33,11 +33,11 @@ import { Redactor } from "../security/redaction.js";
  *
  * Changing any of this should change the rule here, not patch one call site's formatting.
  */
-export { redact } from "../security/redaction.js";
+export { redact } from '../security/redaction.js';
 
-export type LogLevel = "quiet" | "normal" | "verbose" | "debug";
-export type LogEventLevel = "info" | "success" | "warn" | "error" | "debug";
-export type LogTone = "phase" | "success" | "warn" | "error" | "muted" | "debug";
+export type LogLevel = 'quiet' | 'normal' | 'verbose' | 'debug';
+export type LogEventLevel = 'info' | 'success' | 'warn' | 'error' | 'debug';
+export type LogTone = 'phase' | 'success' | 'warn' | 'error' | 'muted' | 'debug';
 
 export interface LoggerOptions {
   /** Override automatic TTY detection, primarily for tests and embedders. */
@@ -54,38 +54,43 @@ export interface LogEvent {
 
 const ANSI_ESCAPE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const ENCODED_ANSI_ESCAPE = /%1b\[[0-?]*[ -/]*[@-~]/gi;
-const RESET = "\u001b[0m";
-const INDENT_UNIT = "  ";
+const RESET = '\u001b[0m';
+const INDENT_UNIT = '  ';
 
 function stripAnsi(value: string): string {
-  return value.replace(ANSI_ESCAPE, "").replace(ENCODED_ANSI_ESCAPE, "");
+  return value.replace(ANSI_ESCAPE, '').replace(ENCODED_ANSI_ESCAPE, '');
 }
 
 function formatDetails(details: Record<string, unknown> | undefined, redactor: Redactor): string {
-  if (!details) return "";
-  const rendered = stripAnsi(inspect(redactor.redact(details), { depth: 4, breakLength: 140, compact: true, colors: false }));
-  if (!rendered.includes("\n")) return ` ${rendered}`;
-  return `\n${rendered.split("\n").map((line) => `  ${line}`).join("\n")}`;
+  if (!details) return '';
+  const rendered = stripAnsi(
+    inspect(redactor.redact(details), { depth: 4, breakLength: 140, compact: true, colors: false }),
+  );
+  if (!rendered.includes('\n')) return ` ${rendered}`;
+  return `\n${rendered
+    .split('\n')
+    .map((line) => `  ${line}`)
+    .join('\n')}`;
 }
 
 export function streamSupportsColor(out: NodeJS.WritableStream): boolean {
-  if (process.env.NO_COLOR !== undefined || process.env.FORCE_COLOR === "0") return false;
+  if (process.env.NO_COLOR !== undefined || process.env.FORCE_COLOR === '0') return false;
   if (process.env.FORCE_COLOR !== undefined) return true;
   return Boolean((out as NodeJS.WritableStream & { isTTY?: boolean }).isTTY);
 }
 
 const TONE_COLOR: Record<LogTone, string> = {
-  phase: "\u001b[36m",
-  success: "\u001b[32m",
-  warn: "\u001b[33m",
-  error: "\u001b[31m",
-  muted: "\u001b[90m",
-  debug: "\u001b[90m",
+  phase: '\u001b[36m',
+  success: '\u001b[32m',
+  warn: '\u001b[33m',
+  error: '\u001b[31m',
+  muted: '\u001b[90m',
+  debug: '\u001b[90m',
 };
 
 // One fixed color for every persona badge -- deliberately not cyan/green/yellow/red/gray,
 // since those are TONE_COLOR's hues and a badge must never be confusable with a status tone.
-const PERSONA_BADGE_COLOR = "\u001b[35m";
+const PERSONA_BADGE_COLOR = '\u001b[35m';
 
 export function paint(value: string, tone: LogTone, enabled: boolean): string {
   if (!enabled) return value;
@@ -115,10 +120,10 @@ export function formatElapsed(ms: number): string {
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
   const minutes = Math.floor(seconds / 60);
   const remainder = Math.round(seconds - minutes * 60);
-  return `${minutes}m ${String(remainder).padStart(2, "0")}s`;
+  return `${minutes}m ${String(remainder).padStart(2, '0')}s`;
 }
 
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const SPINNER_INTERVAL_MS = 80;
 
 /** A single-line, in-place spinner. Only meaningful on a color-capable TTY; callers fall back to
@@ -129,7 +134,11 @@ class Spinner {
 
   /** `prefix` (indentation + persona badge) always precedes the status glyph, matching every
    * other Logger line -- only the glyph itself (spinner frame, then success/fail) changes as work runs. */
-  constructor(private readonly out: NodeJS.WritableStream, private readonly prefix: string, private readonly label: string) {}
+  constructor(
+    private readonly out: NodeJS.WritableStream,
+    private readonly prefix: string,
+    private readonly label: string,
+  ) {}
 
   start(): void {
     this.render();
@@ -149,11 +158,11 @@ class Spinner {
   }
 
   succeed(suffix: string): void {
-    this.clear(`${this.prefix}${paint(this.label, "success", true)} ${dim(suffix, true)}`);
+    this.clear(`${this.prefix}${paint(this.label, 'success', true)} ${dim(suffix, true)}`);
   }
 
   fail(suffix: string): void {
-    this.clear(`${this.prefix}${paint(this.label, "error", true)} ${dim(suffix, true)}`);
+    this.clear(`${this.prefix}${paint(this.label, 'error', true)} ${dim(suffix, true)}`);
   }
 }
 
@@ -163,7 +172,7 @@ export class Logger {
   private readonly depth: number;
 
   constructor(
-    readonly level: LogLevel = "normal",
+    readonly level: LogLevel = 'normal',
     private readonly out: NodeJS.WritableStream = process.stderr,
     private readonly context: Record<string, unknown> = {},
     options: LoggerOptions = {},
@@ -177,7 +186,13 @@ export class Logger {
   /** Every child scope (a run, a flow, a derived scenario) is one level of visual nesting —
    * indentation and badges are derived from this, so call sites never hand-format whitespace. */
   child(context: Record<string, unknown>): Logger {
-    return new Logger(this.level, this.out, { ...this.context, ...context }, { color: this.colorEnabled, redactor: this.redactor }, this.depth + 1);
+    return new Logger(
+      this.level,
+      this.out,
+      { ...this.context, ...context },
+      { color: this.colorEnabled, redactor: this.redactor },
+      this.depth + 1,
+    );
   }
 
   private indent(): string {
@@ -186,14 +201,20 @@ export class Logger {
 
   private badge(): string {
     const persona = this.context.persona;
-    if (typeof persona !== "string" || !persona) return "";
+    if (typeof persona !== 'string' || !persona) return '';
     if (!this.colorEnabled) return `[${persona}] `;
     return `${PERSONA_BADGE_COLOR}[${persona}]${RESET} `;
   }
 
-  private write(message: string, details?: Record<string, unknown>, tone?: LogTone, prefix = "", includeContext = true): void {
+  private write(
+    message: string,
+    details?: Record<string, unknown>,
+    tone?: LogTone,
+    prefix = '',
+    includeContext = true,
+  ): void {
     const safeMessage = stripAnsi(this.redactor.text(message));
-    const combined = includeContext ? { ...this.context, ...details } : details ?? {};
+    const combined = includeContext ? { ...this.context, ...details } : (details ?? {});
     const detailsStr = formatDetails(Object.keys(combined).length ? combined : undefined, this.redactor);
     const body = `${prefix}${safeMessage}`;
     const styledBody = tone ? paint(body, tone, this.colorEnabled) : body;
@@ -201,50 +222,56 @@ export class Logger {
   }
 
   event(level: LogEventLevel, event: string, message: string, details?: Record<string, unknown>): void {
-    if (level === "debug" && this.level !== "debug") return;
-    if (level === "info" && this.level === "quiet") return;
-    if (level === "success" && this.level === "quiet") return;
-    const prefix = level === "debug" ? `[debug] ${event}: ` : "";
-    const showDetails = level === "debug" || this.level === "verbose" || this.level === "debug";
-    const tone = level === "success" || level === "warn" || level === "error" || level === "debug"
-      ? level
-      : undefined;
-    this.write(message, showDetails ? details : undefined, tone, prefix, level === "debug");
+    if (level === 'debug' && this.level !== 'debug') return;
+    if (level === 'info' && this.level === 'quiet') return;
+    if (level === 'success' && this.level === 'quiet') return;
+    const prefix = level === 'debug' ? `[debug] ${event}: ` : '';
+    const showDetails = level === 'debug' || this.level === 'verbose' || this.level === 'debug';
+    const tone = level === 'success' || level === 'warn' || level === 'error' || level === 'debug' ? level : undefined;
+    this.write(message, showDetails ? details : undefined, tone, prefix, level === 'debug');
   }
 
   info(message: string, details?: Record<string, unknown>): void {
-    this.event("info", "info", message, details);
+    this.event('info', 'info', message, details);
   }
 
   success(message: string, details?: Record<string, unknown>): void {
-    this.event("success", "success", message, details);
+    this.event('success', 'success', message, details);
   }
 
   warn(message: string, details?: Record<string, unknown>): void {
-    if (this.level !== "quiet") this.event("warn", "warning", message, details);
+    if (this.level !== 'quiet') this.event('warn', 'warning', message, details);
   }
 
   error(message: string, details?: Record<string, unknown>): void {
-    this.event("error", "error", message, details);
+    this.event('error', 'error', message, details);
   }
 
   verbose(message: string, details?: Record<string, unknown>): void {
-    if (this.level === "verbose" || this.level === "debug") this.write(message, details, "muted", "", this.level === "debug");
+    if (this.level === 'verbose' || this.level === 'debug')
+      this.write(message, details, 'muted', '', this.level === 'debug');
   }
 
   actionFailure(message: string, details?: Record<string, unknown>): void {
-    if (this.level === "quiet") return;
-    const detailed = this.level === "verbose" || this.level === "debug" ? details : undefined;
-    this.write(message, detailed, this.level === "normal" ? "warn" : "muted", "", this.level === "debug");
+    if (this.level === 'quiet') return;
+    const detailed = this.level === 'verbose' || this.level === 'debug' ? details : undefined;
+    this.write(message, detailed, this.level === 'normal' ? 'warn' : 'muted', '', this.level === 'debug');
   }
 
   /** A section header. */
   phase(message: string, details?: Record<string, unknown>): void {
-    if (this.level !== "quiet") this.write(message, this.level === "verbose" || this.level === "debug" ? details : undefined, "phase", "", this.level === "debug");
+    if (this.level !== 'quiet')
+      this.write(
+        message,
+        this.level === 'verbose' || this.level === 'debug' ? details : undefined,
+        'phase',
+        '',
+        this.level === 'debug',
+      );
   }
 
   debug(event: string, message: string, details?: Record<string, unknown>): void {
-    this.event("debug", event, message, details);
+    this.event('debug', event, message, details);
   }
 
   /**
@@ -255,9 +282,9 @@ export class Logger {
    * with other output.
    */
   async task<T>(label: string, fn: () => Promise<T>): Promise<T> {
-    if (this.level === "quiet") return fn();
+    if (this.level === 'quiet') return fn();
     const prefix = `${this.indent()}${this.badge()}`;
-    const useSpinner = this.colorEnabled && this.level !== "debug";
+    const useSpinner = this.colorEnabled && this.level !== 'debug';
     const spinner = useSpinner ? new Spinner(this.out, prefix, label) : undefined;
     if (spinner) spinner.start();
     else this.out.write(`${prefix}${label}\n`);
@@ -266,12 +293,13 @@ export class Logger {
       const result = await fn();
       const elapsed = formatElapsed(Date.now() - startedAt);
       if (spinner) spinner.succeed(elapsed);
-      else this.out.write(`${prefix}${paint(label, "success", this.colorEnabled)} ${dim(elapsed, this.colorEnabled)}\n`);
+      else
+        this.out.write(`${prefix}${paint(label, 'success', this.colorEnabled)} ${dim(elapsed, this.colorEnabled)}\n`);
       return result;
     } catch (error) {
       const elapsed = formatElapsed(Date.now() - startedAt);
       if (spinner) spinner.fail(elapsed);
-      else this.out.write(`${prefix}${paint(label, "error", this.colorEnabled)} ${dim(elapsed, this.colorEnabled)}\n`);
+      else this.out.write(`${prefix}${paint(label, 'error', this.colorEnabled)} ${dim(elapsed, this.colorEnabled)}\n`);
       throw error;
     }
   }

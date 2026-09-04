@@ -1,4 +1,4 @@
-import type { ToolDefinition } from "../providers/provider.js";
+import type { ToolDefinition } from '../providers/provider.js';
 
 type Schema = Record<string, unknown>;
 
@@ -6,19 +6,27 @@ type Schema = Record<string, unknown>;
 const DEFAULT_MAX_STRING_LENGTH = 20_000;
 
 function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function schemaTypeMatches(value: unknown, type: string): boolean {
   switch (type) {
-    case "object": return isObject(value);
-    case "array": return Array.isArray(value);
-    case "string": return typeof value === "string";
-    case "number": return typeof value === "number" && Number.isFinite(value);
-    case "integer": return typeof value === "number" && Number.isSafeInteger(value);
-    case "boolean": return typeof value === "boolean";
-    case "null": return value === null;
-    default: return true;
+    case 'object':
+      return isObject(value);
+    case 'array':
+      return Array.isArray(value);
+    case 'string':
+      return typeof value === 'string';
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value);
+    case 'integer':
+      return typeof value === 'number' && Number.isSafeInteger(value);
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'null':
+      return value === null;
+    default:
+      return true;
   }
 }
 
@@ -35,34 +43,36 @@ function validateSchema(value: unknown, schema: Schema, path: string, errors: st
   }
 
   const type = schema.type;
-  if (typeof type === "string" && !schemaTypeMatches(value, type)) {
+  if (typeof type === 'string' && !schemaTypeMatches(value, type)) {
     errors.push(`${path} must be a ${type}.`);
     return;
   }
 
   if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => Object.is(candidate, value))) {
-    errors.push(`${path} must be one of ${schema.enum.map(String).join(", ")}.`);
+    errors.push(`${path} must be one of ${schema.enum.map(String).join(', ')}.`);
     return;
   }
 
-  if (typeof value === "string") {
-    const maxLength = typeof schema.maxLength === "number" ? schema.maxLength : DEFAULT_MAX_STRING_LENGTH;
+  if (typeof value === 'string') {
+    const maxLength = typeof schema.maxLength === 'number' ? schema.maxLength : DEFAULT_MAX_STRING_LENGTH;
     if (value.length > maxLength) errors.push(`${path} must be at most ${maxLength} characters.`);
-    if (typeof schema.minLength === "number" && value.length < schema.minLength) {
+    if (typeof schema.minLength === 'number' && value.length < schema.minLength) {
       errors.push(`${path} must be at least ${schema.minLength} characters.`);
     }
   }
 
-  if (typeof value === "number") {
-    if (typeof schema.minimum === "number" && value < schema.minimum) errors.push(`${path} must be at least ${schema.minimum}.`);
-    if (typeof schema.maximum === "number" && value > schema.maximum) errors.push(`${path} must be at most ${schema.maximum}.`);
+  if (typeof value === 'number') {
+    if (typeof schema.minimum === 'number' && value < schema.minimum)
+      errors.push(`${path} must be at least ${schema.minimum}.`);
+    if (typeof schema.maximum === 'number' && value > schema.maximum)
+      errors.push(`${path} must be at most ${schema.maximum}.`);
   }
 
   if (Array.isArray(value)) {
-    if (typeof schema.minItems === "number" && value.length < schema.minItems) {
+    if (typeof schema.minItems === 'number' && value.length < schema.minItems) {
       errors.push(`${path} must contain at least ${schema.minItems} item(s).`);
     }
-    if (typeof schema.maxItems === "number" && value.length > schema.maxItems) {
+    if (typeof schema.maxItems === 'number' && value.length > schema.maxItems) {
       errors.push(`${path} must contain at most ${schema.maxItems} item(s).`);
     }
     if (isObject(schema.items)) {
@@ -70,9 +80,11 @@ function validateSchema(value: unknown, schema: Schema, path: string, errors: st
     }
   }
 
-  if (isObject(value) && type === "object") {
+  if (isObject(value) && type === 'object') {
     const properties = isObject(schema.properties) ? schema.properties : {};
-    const required = Array.isArray(schema.required) ? schema.required.filter((item): item is string => typeof item === "string") : [];
+    const required = Array.isArray(schema.required)
+      ? schema.required.filter((item): item is string => typeof item === 'string')
+      : [];
     for (const key of required) {
       if (!(key in value)) errors.push(`${path}.${key} is required.`);
     }
@@ -99,9 +111,9 @@ function validateSchema(value: unknown, schema: Schema, path: string, errors: st
  */
 export function validateToolInput(definition: ToolDefinition, input: unknown): Record<string, unknown> {
   const errors: string[] = [];
-  validateSchema(input, definition.inputSchema, "$", errors);
+  validateSchema(input, definition.inputSchema, '$', errors);
   if (errors.length > 0) {
-    throw new Error(`Invalid input for tool "${definition.name}": ${errors.join(" ")}`);
+    throw new Error(`Invalid input for tool "${definition.name}": ${errors.join(' ')}`);
   }
   return input as Record<string, unknown>;
 }

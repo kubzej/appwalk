@@ -1,13 +1,19 @@
-import type { ToolCallResult } from "../agent/tools.js";
-import type { ProviderName } from "../config.js";
-import type { EvidenceEntry } from "../evidence/log.js";
-import { RESPONSE_VARIANT_MAX_OUTPUT_TOKENS, responseVariantPrompt, parseResponseVariantsDetailed, type ResponseFixture, type ResponseVariantParseResult } from "../response/variants.js";
-import { createProvider } from "./provider-factory.js";
-import { appLogger } from "./logger-state.js";
-import { Redactor } from "../security/redaction.js";
-import type { Logger } from "../logging/logger.js";
-import type { StepResult } from "../types.js";
-import type { ToolCall } from "../providers/provider.js";
+import type { ToolCallResult } from '../agent/tools.js';
+import type { ProviderName } from '../config.js';
+import type { EvidenceEntry } from '../evidence/log.js';
+import {
+  RESPONSE_VARIANT_MAX_OUTPUT_TOKENS,
+  responseVariantPrompt,
+  parseResponseVariantsDetailed,
+  type ResponseFixture,
+  type ResponseVariantParseResult,
+} from '../response/variants.js';
+import { createProvider } from './provider-factory.js';
+import { appLogger } from './logger-state.js';
+import { Redactor } from '../security/redaction.js';
+import type { Logger } from '../logging/logger.js';
+import type { StepResult } from '../types.js';
+import type { ToolCall } from '../providers/provider.js';
 
 export async function proposeResponseVariants(
   provider: ProviderName,
@@ -21,8 +27,8 @@ export async function proposeResponseVariants(
   redactor: Redactor,
   logger: Logger = appLogger,
 ): Promise<ResponseVariantParseResult> {
-  const plannerLogger = logger.child({ operation: "response_variant_planner" });
-  plannerLogger.debug("response_variants.planning_started", "Response variant planning started", {
+  const plannerLogger = logger.child({ operation: 'response_variant_planner' });
+  plannerLogger.debug('response_variants.planning_started', 'Response variant planning started', {
     flowName,
     fixtureCount: fixtures.length,
     maxVariants,
@@ -32,20 +38,20 @@ export async function proposeResponseVariants(
   const planner = createProvider(provider, model, apiKey, redactor, plannerLogger);
   const turn = await planner.start({
     systemPrompt:
-      "You are a conservative response-variant planner for browser test generation. Return only the JSON requested by the user. Never invent application behavior or fields.",
+      'You are a conservative response-variant planner for browser test generation. Return only the JSON requested by the user. Never invent application behavior or fields.',
     tools: [],
     initialInput: responseVariantPrompt(flowName, fixtures, maxVariants, finalSnapshot, replayTimeline),
     maxOutputTokens: RESPONSE_VARIANT_MAX_OUTPUT_TOKENS,
   });
-  if (turn.type !== "text") {
+  if (turn.type !== 'text') {
     const result = {
       variants: [],
       candidates: 0,
       rejected: 0,
       rejectionReasons: [],
-      reason: "Planner did not return a text response.",
+      reason: 'Planner did not return a text response.',
     };
-    plannerLogger.debug("response_variants.planning_parsed", "Response variant planner returned no text proposals", {
+    plannerLogger.debug('response_variants.planning_parsed', 'Response variant planner returned no text proposals', {
       responseType: turn.type,
       candidates: result.candidates,
       accepted: result.variants.length,
@@ -59,13 +65,13 @@ export async function proposeResponseVariants(
     result.incomplete = true;
     result.reason = `Planner response was incomplete: ${turn.incompleteReason}.`;
   }
-  plannerLogger.debug("response_variants.planning_response", "Response variant planner response received", {
+  plannerLogger.debug('response_variants.planning_response', 'Response variant planner response received', {
     responseType: turn.type,
     responseLength: turn.text.length,
     incompleteReason: turn.incompleteReason,
     plannerReason: result.plannerReason,
   });
-  plannerLogger.debug("response_variants.planning_parsed", "Response variant planner output parsed", {
+  plannerLogger.debug('response_variants.planning_parsed', 'Response variant planner output parsed', {
     candidates: result.candidates,
     accepted: result.variants.length,
     rejected: result.rejected,
@@ -92,9 +98,9 @@ export function derivedEvidenceEntries(
       flowIndex,
       runId,
       scenarioId,
-      origin: "derived",
+      origin: 'derived',
       timestamp: new Date().toISOString(),
-      toolCall: { name: "verifyExpectation", input: expectationInput ?? {} },
+      toolCall: { name: 'verifyExpectation', input: expectationInput ?? {} },
       result: expectationResult,
       network: [],
       console: [],
@@ -107,7 +113,7 @@ export function derivedEvidenceEntries(
       flowIndex,
       runId,
       scenarioId,
-      origin: "derived",
+      origin: 'derived',
       timestamp: new Date().toISOString(),
       toolCall: { name: action.name, input: action.input },
       result: steps[index],
@@ -121,9 +127,9 @@ export function derivedEvidenceEntries(
         flowIndex,
         runId,
         scenarioId,
-        origin: "derived",
+        origin: 'derived',
         timestamp: new Date().toISOString(),
-        toolCall: { name: "verifyExpectation", input: expectationInput ?? {} },
+        toolCall: { name: 'verifyExpectation', input: expectationInput ?? {} },
         result: expectationResult,
         network: [],
         console: [],
@@ -137,9 +143,9 @@ export function derivedEvidenceEntries(
       flowIndex,
       runId,
       scenarioId,
-      origin: "derived",
+      origin: 'derived',
       timestamp: new Date().toISOString(),
-      toolCall: { name: "verifyExpectation", input: expectationInput ?? {} },
+      toolCall: { name: 'verifyExpectation', input: expectationInput ?? {} },
       result: expectationResult,
       network: [],
       console: [],

@@ -1,7 +1,7 @@
-import type { Page } from "playwright";
-import type { EvidenceEntry } from "../evidence/log.js";
-import type { ExpectationAssertion } from "../types.js";
-import { defaultRedactor, type Redactor } from "../security/redaction.js";
+import type { Page } from 'playwright';
+import type { EvidenceEntry } from '../evidence/log.js';
+import type { ExpectationAssertion } from '../types.js';
+import { defaultRedactor, type Redactor } from '../security/redaction.js';
 
 export interface ResponseFixture {
   method: string;
@@ -30,7 +30,7 @@ export interface ResponseVariant {
 }
 
 export interface ResponseExpectation {
-  assertion: Exclude<ExpectationAssertion, "unknown">;
+  assertion: Exclude<ExpectationAssertion, 'unknown'>;
   locator?: string;
   value?: string;
 }
@@ -65,17 +65,15 @@ function jsonClone<T>(value: T): T {
 function compactPromptValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return {
-      __preview: "array",
+      __preview: 'array',
       length: value.length,
       sample: value.length > 0 ? [compactPromptValue(value[0])] : [],
     };
   }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, compactPromptValue(entry)]),
-    );
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, compactPromptValue(entry)]));
   }
-  if (typeof value === "string" && value.length > 500) {
+  if (typeof value === 'string' && value.length > 500) {
     return `${value.slice(0, 500)}… [truncated]`;
   }
   return value;
@@ -117,18 +115,18 @@ function isDynamicPathSegment(segment: string): boolean {
 export function responseFixtureUrlPattern(url: string): string {
   try {
     const parsed = new URL(url);
-    const pathParts = parsed.pathname.split("/");
+    const pathParts = parsed.pathname.split('/');
     let changed = false;
     parsed.pathname = pathParts
       .map((part) => {
         if (!part || !isDynamicPathSegment(part)) return part;
         changed = true;
-        return "*";
+        return '*';
       })
-      .join("/");
+      .join('/');
     for (const [key, value] of parsed.searchParams.entries()) {
       if (!isDynamicPathSegment(value)) continue;
-      parsed.searchParams.set(key, "*");
+      parsed.searchParams.set(key, '*');
       changed = true;
     }
     return changed ? parsed.toString() : url;
@@ -138,7 +136,12 @@ export function responseFixtureUrlPattern(url: string): string {
 }
 
 /** Extracts bounded, replayable JSON responses observed during a flow. */
-export function extractResponseFixtures(entries: EvidenceEntry[], applicationUrl: string, maxFixtureBytes?: number, redactor: Redactor = defaultRedactor): ResponseFixture[] {
+export function extractResponseFixtures(
+  entries: EvidenceEntry[],
+  applicationUrl: string,
+  maxFixtureBytes?: number,
+  redactor: Redactor = defaultRedactor,
+): ResponseFixture[] {
   const fixtures: ResponseFixture[] = [];
   const occurrences = new Map<string, number>();
   for (const entry of entries) {
@@ -173,19 +176,19 @@ export function extractResponseFixtures(entries: EvidenceEntry[], applicationUrl
 }
 
 function parsePath(path: string): Array<string | number> | null {
-  if (path === "$" || !path.startsWith("$")) return null;
+  if (path === '$' || !path.startsWith('$')) return null;
   const tokens: Array<string | number> = [];
   const expression = path.slice(1);
   let offset = 0;
   while (offset < expression.length) {
-    if (expression[offset] === ".") {
+    if (expression[offset] === '.') {
       const match = /^\.([A-Za-z_][A-Za-z0-9_-]*)/.exec(expression.slice(offset));
       if (!match) return null;
       tokens.push(match[1]!);
       offset += match[0].length;
       continue;
     }
-    if (expression[offset] === "[") {
+    if (expression[offset] === '[') {
       const match = /^\[(\d+)\]/.exec(expression.slice(offset));
       if (!match) return null;
       tokens.push(Number(match[1]));
@@ -203,11 +206,11 @@ function setExistingJsonPath(root: unknown, path: string, value: unknown): boole
   let current: unknown = root;
   for (let index = 0; index < tokens.length - 1; index += 1) {
     const token = tokens[index]!;
-    if (current === null || typeof current !== "object" || !(token in current)) return false;
+    if (current === null || typeof current !== 'object' || !(token in current)) return false;
     current = (current as Record<string | number, unknown>)[token];
   }
   const last = tokens[tokens.length - 1]!;
-  if (current === null || typeof current !== "object" || !(last in current)) return false;
+  if (current === null || typeof current !== 'object' || !(last in current)) return false;
   (current as Record<string | number, unknown>)[last] = jsonClone(value);
   return true;
 }
@@ -217,9 +220,12 @@ export function applyResponseVariant(fixtures: ResponseFixture[], variant: Respo
   const methodMatches = variant.sourceMethod
     ? matches.filter((fixture) => fixture.method === variant.sourceMethod)
     : matches;
-  const source = variant.sourceOccurrence !== undefined
-    ? methodMatches.find((fixture) => fixture.occurrence === variant.sourceOccurrence)
-    : methodMatches.length === 1 ? methodMatches[0] : undefined;
+  const source =
+    variant.sourceOccurrence !== undefined
+      ? methodMatches.find((fixture) => fixture.occurrence === variant.sourceOccurrence)
+      : methodMatches.length === 1
+        ? methodMatches[0]
+        : undefined;
   if (!source) return null;
   const next = fixtures.map((fixture) => ({ ...fixture, body: jsonClone(fixture.body) }));
   const sourceIndex = fixtures.indexOf(source);
@@ -231,13 +237,12 @@ export function applyResponseVariant(fixtures: ResponseFixture[], variant: Respo
   return next;
 }
 
-export function responseFixtureMatchesSelector(
-  fixture: ResponseFixture,
-  selector: ResponseFixtureSelector,
-): boolean {
-  return fixture.url === selector.url &&
+export function responseFixtureMatchesSelector(fixture: ResponseFixture, selector: ResponseFixtureSelector): boolean {
+  return (
+    fixture.url === selector.url &&
     (!selector.method || fixture.method === selector.method) &&
-    (selector.occurrence === undefined || fixture.occurrence === selector.occurrence);
+    (selector.occurrence === undefined || fixture.occurrence === selector.occurrence)
+  );
 }
 
 function extractJson(text: string): unknown {
@@ -257,25 +262,26 @@ export function parseResponseVariantsDetailed(
   maxVariants?: number,
 ): ResponseVariantParseResult {
   if (maxVariants !== undefined && maxVariants <= 0) {
-    return { variants: [], candidates: 0, rejected: 0, rejectionReasons: [], reason: "Variant planning is disabled." };
+    return { variants: [], candidates: 0, rejected: 0, rejectionReasons: [], reason: 'Variant planning is disabled.' };
   }
   const parsed = extractJson(text);
   let candidates: unknown[];
   let plannerReason: string | undefined;
   if (Array.isArray(parsed)) {
     candidates = parsed;
-  } else if (parsed && typeof parsed === "object" && Array.isArray((parsed as Record<string, unknown>).variants)) {
+  } else if (parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).variants)) {
     candidates = (parsed as { variants: unknown[] }).variants;
-    plannerReason = typeof (parsed as Record<string, unknown>).reason === "string"
-      ? ((parsed as Record<string, unknown>).reason as string).trim()
-      : undefined;
+    plannerReason =
+      typeof (parsed as Record<string, unknown>).reason === 'string'
+        ? ((parsed as Record<string, unknown>).reason as string).trim()
+        : undefined;
   } else {
     return {
       variants: [],
       candidates: 0,
       rejected: 0,
       rejectionReasons: [],
-      reason: "Planner response was not a valid response object or array.",
+      reason: 'Planner response was not a valid response object or array.',
     };
   }
   const knownUrls = new Set(fixtures.map((fixture) => fixture.url));
@@ -287,77 +293,85 @@ export function parseResponseVariantsDetailed(
     if (!rejectionReasons.includes(reason)) rejectionReasons.push(reason);
   };
   for (const candidate of candidates) {
-    if (!candidate || typeof candidate !== "object") {
-      reject("proposal was not an object");
+    if (!candidate || typeof candidate !== 'object') {
+      reject('proposal was not an object');
       continue;
     }
     const value = candidate as Record<string, unknown>;
-    const name = typeof value.name === "string" ? value.name.trim() : "";
-    const sourceMethod = typeof value.sourceMethod === "string" ? value.sourceMethod.toUpperCase() : undefined;
-    const sourceUrl = typeof value.sourceUrl === "string" ? value.sourceUrl : "";
+    const name = typeof value.name === 'string' ? value.name.trim() : '';
+    const sourceMethod = typeof value.sourceMethod === 'string' ? value.sourceMethod.toUpperCase() : undefined;
+    const sourceUrl = typeof value.sourceUrl === 'string' ? value.sourceUrl : '';
     const rawSourceOccurrence = value.sourceOccurrence;
-    if (rawSourceOccurrence !== undefined && (!Number.isSafeInteger(rawSourceOccurrence) || (rawSourceOccurrence as number) < 1)) {
-      reject("sourceOccurrence was invalid");
+    if (
+      rawSourceOccurrence !== undefined &&
+      (!Number.isSafeInteger(rawSourceOccurrence) || (rawSourceOccurrence as number) < 1)
+    ) {
+      reject('sourceOccurrence was invalid');
       continue;
     }
     const sourceOccurrence = rawSourceOccurrence as number | undefined;
     if (!name || !knownUrls.has(sourceUrl) || !Array.isArray(value.patches) || value.patches.length === 0) {
-      reject("name, exact sourceUrl, or patches were missing");
+      reject('name, exact sourceUrl, or patches were missing');
       continue;
     }
     if (sourceMethod && !fixtures.some((fixture) => fixture.url === sourceUrl && fixture.method === sourceMethod)) {
-      reject("sourceMethod did not match the captured response");
+      reject('sourceMethod did not match the captured response');
       continue;
     }
-    const sourceMatches = fixtures.filter((fixture) => fixture.url === sourceUrl && (!sourceMethod || fixture.method === sourceMethod));
+    const sourceMatches = fixtures.filter(
+      (fixture) => fixture.url === sourceUrl && (!sourceMethod || fixture.method === sourceMethod),
+    );
     if (!sourceMethod && new Set(sourceMatches.map((fixture) => fixture.method)).size > 1) {
-      reject("sourceMethod was required for an ambiguous URL");
+      reject('sourceMethod was required for an ambiguous URL');
       continue;
     }
     if (sourceOccurrence !== undefined && !sourceMatches.some((fixture) => fixture.occurrence === sourceOccurrence)) {
-      reject("sourceOccurrence did not match the captured response");
+      reject('sourceOccurrence did not match the captured response');
       continue;
     }
     if (sourceOccurrence === undefined && sourceMatches.length > 1) {
-      reject("sourceOccurrence was required for a repeated response");
+      reject('sourceOccurrence was required for a repeated response');
       continue;
     }
     const rawExpectation = value.expectation;
-    if (!rawExpectation || typeof rawExpectation !== "object") {
-      reject("expectation was missing");
+    if (!rawExpectation || typeof rawExpectation !== 'object') {
+      reject('expectation was missing');
       continue;
     }
     const expectationValue = rawExpectation as Record<string, unknown>;
     const assertion = expectationValue.assertion;
     if (
-      assertion !== "visible" &&
-      assertion !== "hidden" &&
-      assertion !== "containsText" &&
-      assertion !== "urlContains" &&
-      assertion !== "urlEquals"
+      assertion !== 'visible' &&
+      assertion !== 'hidden' &&
+      assertion !== 'containsText' &&
+      assertion !== 'urlContains' &&
+      assertion !== 'urlEquals'
     ) {
-      reject("expectation assertion was invalid");
+      reject('expectation assertion was invalid');
       continue;
     }
-    const locator = typeof expectationValue.locator === "string" ? expectationValue.locator : undefined;
-    const expectedValue = typeof expectationValue.value === "string" ? expectationValue.value : undefined;
-    if ((assertion === "visible" || assertion === "hidden" || assertion === "containsText") && !locator) {
-      reject("expectation locator was missing");
+    const locator = typeof expectationValue.locator === 'string' ? expectationValue.locator : undefined;
+    const expectedValue = typeof expectationValue.value === 'string' ? expectationValue.value : undefined;
+    if ((assertion === 'visible' || assertion === 'hidden' || assertion === 'containsText') && !locator) {
+      reject('expectation locator was missing');
       continue;
     }
-    if ((assertion === "containsText" || assertion === "urlContains" || assertion === "urlEquals") && expectedValue === undefined) {
-      reject("expectation value was missing");
+    if (
+      (assertion === 'containsText' || assertion === 'urlContains' || assertion === 'urlEquals') &&
+      expectedValue === undefined
+    ) {
+      reject('expectation value was missing');
       continue;
     }
     const patches: ResponsePatch[] = [];
     for (const patch of value.patches) {
-      if (!patch || typeof patch !== "object") continue;
+      if (!patch || typeof patch !== 'object') continue;
       const item = patch as Record<string, unknown>;
-      if (typeof item.path !== "string" || item.value === undefined || !parsePath(item.path)) continue;
+      if (typeof item.path !== 'string' || item.value === undefined || !parsePath(item.path)) continue;
       patches.push({ path: item.path, value: item.value });
     }
     if (patches.length === 0) {
-      reject("no patch targeted an existing JSON path");
+      reject('no patch targeted an existing JSON path');
       continue;
     }
     const variant: ResponseVariant = {
@@ -367,10 +381,10 @@ export function parseResponseVariantsDetailed(
       sourceOccurrence,
       patches,
       expectation: { assertion, locator, value: expectedValue },
-      reason: typeof value.reason === "string" ? value.reason.trim() : undefined,
+      reason: typeof value.reason === 'string' ? value.reason.trim() : undefined,
     };
     if (!applyResponseVariant(fixtures, variant)) {
-      reject("patch did not apply to the captured response");
+      reject('patch did not apply to the captured response');
       continue;
     }
     variants.push(variant);
@@ -381,18 +395,23 @@ export function parseResponseVariantsDetailed(
     candidates: candidates.length,
     rejected,
     rejectionReasons,
-    reason: candidates.length === 0
-      ? plannerReason
-        ? `Planner returned no variant proposals: ${plannerReason}`
-        : "Planner returned no variant proposals."
-      : variants.length === 0
-        ? "All planner proposals were rejected by Appwalk validation."
-        : undefined,
+    reason:
+      candidates.length === 0
+        ? plannerReason
+          ? `Planner returned no variant proposals: ${plannerReason}`
+          : 'Planner returned no variant proposals.'
+        : variants.length === 0
+          ? 'All planner proposals were rejected by Appwalk validation.'
+          : undefined,
     plannerReason,
   };
 }
 
-export function parseResponseVariants(text: string, fixtures: ResponseFixture[], maxVariants?: number): ResponseVariant[] {
+export function parseResponseVariants(
+  text: string,
+  fixtures: ResponseFixture[],
+  maxVariants?: number,
+): ResponseVariant[] {
   return parseResponseVariantsDetailed(text, fixtures, maxVariants).variants;
 }
 
@@ -400,12 +419,14 @@ export function responseVariantPrompt(
   flowName: string,
   fixtures: ResponseFixture[],
   maxVariants: number,
-  finalSnapshot = "",
+  finalSnapshot = '',
   replayTimeline: Array<{ url: string; snapshot: string }> = [],
 ): string {
   const timeline = replayTimeline.length
-    ? replayTimeline.map((step, index) => `${index + 1}. URL: ${step.url}\n${step.snapshot.slice(0, 1200)}`).join("\n\n")
-    : "(No replay timeline was available.)";
+    ? replayTimeline
+        .map((step, index) => `${index + 1}. URL: ${step.url}\n${step.snapshot.slice(0, 1200)}`)
+        .join('\n\n')
+    : '(No replay timeline was available.)';
   return `You are designing a small set of deterministic UI scenarios from one verified browser flow.
 
 Flow: ${flowName}
@@ -471,7 +492,7 @@ export async function installResponseFixtures(
       exactQueue.next += 1;
       await route.fulfill({
         status: fixture.status,
-        contentType: "application/json",
+        contentType: 'application/json',
         body: JSON.stringify(fixture.body),
       });
       options.onFixtureApplied?.(fixture, route.request().url());

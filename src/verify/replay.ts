@@ -1,17 +1,17 @@
-import type { Page } from "playwright";
-import { executeToolCall } from "../agent/tools.js";
-import type { TabRegistryHandle } from "../agent/tools.js";
-import type { VerificationMode } from "../agent/verification.js";
-import { verifyFlow } from "../agent/verification.js";
-import { type BrowserLifecycle, type BrowserRestartHooks } from "../browser/actions.js";
-import { captureSnapshot } from "../browser/snapshot.js";
-import type { EvidenceEntry } from "../evidence/log.js";
-import type { EvidenceRecorder } from "../evidence/recorder.js";
-import type { ToolCall } from "../providers/provider.js";
-import type { ResponseExpectation, ResponseFixtureSelector } from "../response/variants.js";
-import type { ExpectationObservation, StepResult } from "../types.js";
-import type { Logger } from "../logging/logger.js";
-import type { SafetyRequestOptions } from "../safety/guard.js";
+import type { Page } from 'playwright';
+import { executeToolCall } from '../agent/tools.js';
+import type { TabRegistryHandle } from '../agent/tools.js';
+import type { VerificationMode } from '../agent/verification.js';
+import { verifyFlow } from '../agent/verification.js';
+import { type BrowserLifecycle, type BrowserRestartHooks } from '../browser/actions.js';
+import { captureSnapshot } from '../browser/snapshot.js';
+import type { EvidenceEntry } from '../evidence/log.js';
+import type { EvidenceRecorder } from '../evidence/recorder.js';
+import type { ToolCall } from '../providers/provider.js';
+import type { ResponseExpectation, ResponseFixtureSelector } from '../response/variants.js';
+import type { ExpectationObservation, StepResult } from '../types.js';
+import type { Logger } from '../logging/logger.js';
+import type { SafetyRequestOptions } from '../safety/guard.js';
 
 export interface ReplayResult {
   reproduced: boolean;
@@ -25,7 +25,7 @@ export interface ReplayResult {
   safetyBlocked: number;
   finalSnapshot: string;
   /** The first successful observation of a derived scenario expectation, if one was supplied. */
-  variantExpectationResult?: import("../agent/tools.js").ToolCallResult;
+  variantExpectationResult?: import('../agent/tools.js').ToolCallResult;
   variantExpectationStep?: number;
   /** Whether the response selected by the variant was actually applied during replay. */
   variantSourceMatched?: boolean;
@@ -37,7 +37,7 @@ export interface ReplayResult {
 /** Pulls out just the successful tool calls from an evidence log — replay isn't interested in the agent's failed exploratory attempts, only the sequence that actually worked. `flowComplete` isn't a browser action, so it's excluded here too. */
 export function extractActions(entries: EvidenceEntry[]): ToolCall[] {
   return entries
-    .filter((entry) => entry.toolCall && !entry.error && entry.toolCall.name !== "flowComplete")
+    .filter((entry) => entry.toolCall && !entry.error && entry.toolCall.name !== 'flowComplete')
     .map((entry, i) => ({
       id: `replay-${i}`,
       name: entry.toolCall!.name,
@@ -52,7 +52,7 @@ export function extractActions(entries: EvidenceEntry[]): ToolCall[] {
 export async function replay(
   page: Page,
   actions: ToolCall[],
-  mode: VerificationMode | VerificationMode[] = "completion",
+  mode: VerificationMode | VerificationMode[] = 'completion',
   recorder?: EvidenceRecorder,
   expectedExpectations: ExpectationObservation[] = [],
   variantExpectation?: ResponseExpectation,
@@ -80,9 +80,9 @@ export async function replay(
   const flowStartSnapshot = await captureSnapshot(page);
   const replayNetworkStart = recorder?.network.length ?? 0;
   const replayRuntimeErrorStart = recorder?.runtimeErrors.length ?? 0;
-  tabRegistryHandle.tabs = new Map([["tab-0", page]]);
+  tabRegistryHandle.tabs = new Map([['tab-0', page]]);
   const steps: StepResult[] = [];
-  let variantExpectationResult: import("../agent/tools.js").ToolCallResult | undefined;
+  let variantExpectationResult: import('../agent/tools.js').ToolCallResult | undefined;
   let variantExpectationStep: number | undefined;
   let finalUrl = flowStartUrl;
   const safetyCountBefore = getSafetyBlockCount?.() ?? 0;
@@ -90,17 +90,22 @@ export async function replay(
   const sourceMatched = () => variantSource?.isMatched() ?? true;
   const checkVariantExpectation = async (step: number): Promise<void> => {
     if (!variantExpectation || variantExpectationResult || !sourceMatched()) return;
-    const expectationResult = await executeToolCall(page, {
-      id: `replay-variant-expectation-${step}`,
-      name: "verifyExpectation",
-      input: {
-        expectationIndex: 1,
-        assertion: variantExpectation.assertion,
-        locator: variantExpectation.locator,
-        value: variantExpectation.value,
+    const expectationResult = await executeToolCall(
+      page,
+      {
+        id: `replay-variant-expectation-${step}`,
+        name: 'verifyExpectation',
+        input: {
+          expectationIndex: 1,
+          assertion: variantExpectation.assertion,
+          locator: variantExpectation.locator,
+          value: variantExpectation.value,
+        },
       },
-    }, tabRegistryHandle.tabs, safety);
-    if (expectationResult.expectation?.status === "met") {
+      tabRegistryHandle.tabs,
+      safety,
+    );
+    if (expectationResult.expectation?.status === 'met') {
       variantExpectationResult = expectationResult;
       variantExpectationStep = step;
     }
@@ -111,9 +116,20 @@ export async function replay(
   await checkVariantExpectation(-1);
 
   for (const [index, action] of actions.entries()) {
-    logger?.debug("replay.step_started", "Replay action started", { stepIndex: index, action: action.name, input: action.input });
+    logger?.debug('replay.step_started', 'Replay action started', {
+      stepIndex: index,
+      action: action.name,
+      input: action.input,
+    });
     try {
-      const result = await executeToolCall(page, action, tabRegistryHandle.tabs, safety, browserRestartHooks, browserLifecycle);
+      const result = await executeToolCall(
+        page,
+        action,
+        tabRegistryHandle.tabs,
+        safety,
+        browserRestartHooks,
+        browserLifecycle,
+      );
       steps.push(result);
       finalUrl = result.url;
       if (result.activePage) {
@@ -121,9 +137,17 @@ export async function replay(
         await onActivePageChange?.(page);
       }
       await checkVariantExpectation(index);
-      logger?.debug("replay.step_completed", "Replay action completed", { stepIndex: index, action: action.name, url: result.url });
+      logger?.debug('replay.step_completed', 'Replay action completed', {
+        stepIndex: index,
+        action: action.name,
+        url: result.url,
+      });
     } catch (err) {
-      logger?.debug("replay.step_failed", "Replay action failed", { stepIndex: index, action: action.name, error: (err as Error).message });
+      logger?.debug('replay.step_failed', 'Replay action failed', {
+        stepIndex: index,
+        action: action.name,
+        error: (err as Error).message,
+      });
       return {
         reproduced: false,
         verificationPassed: false,
@@ -140,19 +164,20 @@ export async function replay(
   }
 
   const finalSnapshot = steps[steps.length - 1]?.snapshot ?? flowStartSnapshot;
-  const replayedExpectations = steps.flatMap((step) => step.expectation ? [step.expectation] : []);
-  const expectationsReproduced = expectedExpectations.every((expected, index) => {
-    const actual = replayedExpectations[index];
-    return Boolean(
-      actual &&
+  const replayedExpectations = steps.flatMap((step) => (step.expectation ? [step.expectation] : []));
+  const expectationsReproduced =
+    expectedExpectations.every((expected, index) => {
+      const actual = replayedExpectations[index];
+      return Boolean(
+        actual &&
         actual.expectationIndex === expected.expectationIndex &&
         actual.status === expected.status &&
         actual.assertion === expected.assertion &&
         actual.locator === expected.locator &&
         actual.value === expected.value &&
         actual.expectedCount === expected.expectedCount,
-    );
-  }) && replayedExpectations.length === expectedExpectations.length;
+      );
+    }) && replayedExpectations.length === expectedExpectations.length;
   const verificationPassed = verifyFlow(mode, {
     flowStartUrl,
     flowStartSnapshot,
@@ -168,22 +193,26 @@ export async function replay(
   });
   const safetyBlocked = Math.max(0, (getSafetyBlockCount?.() ?? safetyCountBefore) - safetyCountBefore);
   const variantSourceMatched = variantSource ? sourceMatched() : undefined;
-  const variantExpectationReproduced = !variantExpectation || variantExpectationResult?.expectation?.status === "met";
-  const reproduced = safetyBlocked === 0 && expectationsReproduced && verificationPassed &&
-    variantSourceMatched !== false && variantExpectationReproduced;
+  const variantExpectationReproduced = !variantExpectation || variantExpectationResult?.expectation?.status === 'met';
+  const reproduced =
+    safetyBlocked === 0 &&
+    expectationsReproduced &&
+    verificationPassed &&
+    variantSourceMatched !== false &&
+    variantExpectationReproduced;
   if (variantSource && !variantSourceMatched) {
-    logger?.debug("response_variant.source_not_observed", "Variant source response was not observed during replay", {
+    logger?.debug('response_variant.source_not_observed', 'Variant source response was not observed during replay', {
       method: variantSource.selector.method,
       sourceUrl: variantSource.selector.url,
       occurrence: variantSource.selector.occurrence,
     });
   }
-  logger?.debug("replay.completed", "Replay verification completed", {
+  logger?.debug('replay.completed', 'Replay verification completed', {
     reproduced,
     verificationPassed,
     expectationsReproduced,
     variantSourceMatched,
-    variantExpectationObserved: variantExpectationResult?.expectation?.status === "met",
+    variantExpectationObserved: variantExpectationResult?.expectation?.status === 'met',
     safetyBlocked,
     steps: steps.length,
     finalUrl,

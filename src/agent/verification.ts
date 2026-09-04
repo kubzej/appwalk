@@ -1,16 +1,9 @@
-import type { NetworkEntry, RuntimeErrorEntry } from "../evidence/recorder.js";
-import { looksLikeSuccessByNetwork, looksLikeSuccessBySnapshot, looksLikeSuccessByUrl } from "./success.js";
-import type { ExpectationObservation } from "../types.js";
+import type { NetworkEntry, RuntimeErrorEntry } from '../evidence/recorder.js';
+import { looksLikeSuccessByNetwork, looksLikeSuccessBySnapshot, looksLikeSuccessByUrl } from './success.js';
+import type { ExpectationObservation } from '../types.js';
 
 export type VerificationMode =
-  | "completion"
-  | "rejection"
-  | "preservation"
-  | "stability"
-  | "recovery"
-  | "consistency"
-  | "visual"
-  | "removal";
+  'completion' | 'rejection' | 'preservation' | 'stability' | 'recovery' | 'consistency' | 'visual' | 'removal';
 
 export interface VerificationContext {
   flowStartUrl: string;
@@ -26,12 +19,12 @@ export interface VerificationContext {
   expectations?: ExpectationObservation[];
 }
 
-const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 // Confirmed against real Playwright ariaSnapshot output (not guessed): role="alert" renders as
 // "- alert: <text>", aria-invalid="true" renders as a "[invalid]" suffix on the field's own line.
 const ALERT_PATTERN = /-\s*alert:/i;
 const INVALID_FIELD_PATTERN = /\[invalid\]/i;
-const CONSISTENCY_ASSERTIONS = new Set(["containsText", "value", "count", "checked", "unchecked"]);
+const CONSISTENCY_ASSERTIONS = new Set(['containsText', 'value', 'count', 'checked', 'unchecked']);
 const VISUAL_SIGNAL_PATTERN = /(?:^|\n)Layout:|content-overflows/i;
 
 function hasSuccessfulStateChange(network: NetworkEntry[]): boolean {
@@ -45,7 +38,7 @@ function hasSuccessfulStateChange(network: NetworkEntry[]): boolean {
 }
 
 function hasExplicitMetExpectation(ctx: VerificationContext): boolean {
-  return ctx.expectations?.some((expectation) => expectation.status === "met") ?? false;
+  return ctx.expectations?.some((expectation) => expectation.status === 'met') ?? false;
 }
 
 function hasObservableChange(ctx: VerificationContext): boolean {
@@ -53,24 +46,26 @@ function hasObservableChange(ctx: VerificationContext): boolean {
 }
 
 function hasExplicitConsistencyExpectation(ctx: VerificationContext): boolean {
-  return ctx.expectations?.some((expectation) =>
-    expectation.status === "met" && CONSISTENCY_ASSERTIONS.has(expectation.assertion),
-  ) ?? false;
+  return (
+    ctx.expectations?.some(
+      (expectation) => expectation.status === 'met' && CONSISTENCY_ASSERTIONS.has(expectation.assertion),
+    ) ?? false
+  );
 }
 
 function hasNewVisualSignal(ctx: VerificationContext): boolean {
-  const initialSignals = new Set(ctx.flowStartSnapshot.split("\n").filter((line) => VISUAL_SIGNAL_PATTERN.test(line)));
+  const initialSignals = new Set(ctx.flowStartSnapshot.split('\n').filter((line) => VISUAL_SIGNAL_PATTERN.test(line)));
   const observedSnapshots = [...(ctx.snapshots ?? []), ctx.finalSnapshot];
   return observedSnapshots
-    .flatMap((snapshot) => snapshot.split("\n"))
+    .flatMap((snapshot) => snapshot.split('\n'))
     .some((line) => VISUAL_SIGNAL_PATTERN.test(line) && !initialSignals.has(line));
 }
 
 function hasFailedRequest(ctx: VerificationContext): boolean {
   const httpFailure = ctx.network.some((entry) => entry.status !== undefined && entry.status >= 400);
-  const transportFailure = ctx.runtimeErrors?.some(
-    (error) => error.kind === "request_failed" && !error.lifecycle && !error.safetyRelated,
-  ) ?? false;
+  const transportFailure =
+    ctx.runtimeErrors?.some((error) => error.kind === 'request_failed' && !error.lifecycle && !error.safetyRelated) ??
+    false;
   return httpFailure || transportFailure;
 }
 
@@ -96,9 +91,14 @@ function looksLikeRemoval(ctx: VerificationContext): boolean {
 }
 
 function hasNewMatchingLine(before: string, after: string, pattern: RegExp): boolean {
-  const beforeLines = new Set(before.split("\n").map((line) => line.trim()).filter(Boolean));
+  const beforeLines = new Set(
+    before
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean),
+  );
   return after
-    .split("\n")
+    .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
     .some((line) => pattern.test(line) && !beforeLines.has(line));
@@ -115,13 +115,18 @@ function looksLikeRejection(ctx: VerificationContext): boolean {
     hasNewMatchingLine(ctx.flowStartSnapshot, ctx.finalSnapshot, ALERT_PATTERN) ||
     hasNewMatchingLine(ctx.flowStartSnapshot, ctx.finalSnapshot, INVALID_FIELD_PATTERN);
   if (newAlertOrInvalidMarker) return true;
-  return hasObservableChange(ctx) && hasFailedRequest(ctx) &&
+  return (
+    hasObservableChange(ctx) &&
+    hasFailedRequest(ctx) &&
     !looksLikeSuccessByNetwork(ctx.network, ctx.finalUrl) &&
-    !looksLikeSuccessBySnapshot(ctx.finalSnapshot);
+    !looksLikeSuccessBySnapshot(ctx.finalSnapshot)
+  );
 }
 
 function looksLikePreservation(ctx: VerificationContext): boolean {
-  return hasExplicitMetExpectation(ctx) || (ctx.finalUrl === ctx.flowStartUrl && !hasSuccessfulStateChange(ctx.network));
+  return (
+    hasExplicitMetExpectation(ctx) || (ctx.finalUrl === ctx.flowStartUrl && !hasSuccessfulStateChange(ctx.network))
+  );
 }
 
 function looksLikeStability(ctx: VerificationContext): boolean {
@@ -136,7 +141,8 @@ function looksLikeCompletion(ctx: VerificationContext): boolean {
   if (hasExplicitMetExpectation(ctx)) return true;
   if (!hasObservableChange(ctx)) return false;
   const newSuccessUrl = ctx.finalUrl !== ctx.flowStartUrl && looksLikeSuccessByUrl(ctx.finalUrl);
-  const newSuccessSnapshot = !looksLikeSuccessBySnapshot(ctx.flowStartSnapshot) && looksLikeSuccessBySnapshot(ctx.finalSnapshot);
+  const newSuccessSnapshot =
+    !looksLikeSuccessBySnapshot(ctx.flowStartSnapshot) && looksLikeSuccessBySnapshot(ctx.finalSnapshot);
   return newSuccessUrl || newSuccessSnapshot;
 }
 
@@ -144,21 +150,21 @@ function looksLikeCompletion(ctx: VerificationContext): boolean {
  * objective layout signal. Neither mode claims to perform generic business-value or pixel diffing. */
 function verifySingle(mode: VerificationMode, ctx: VerificationContext): boolean {
   switch (mode) {
-    case "rejection":
+    case 'rejection':
       return looksLikeRejection(ctx);
-    case "preservation":
+    case 'preservation':
       return looksLikePreservation(ctx);
-    case "stability":
+    case 'stability':
       return looksLikeStability(ctx);
-    case "recovery":
+    case 'recovery':
       return looksLikeRecovery(ctx);
-    case "removal":
+    case 'removal':
       return looksLikeRemoval(ctx);
-    case "completion":
+    case 'completion':
       return looksLikeCompletion(ctx);
-    case "consistency":
+    case 'consistency':
       return hasExplicitConsistencyExpectation(ctx);
-    case "visual":
+    case 'visual':
       return hasExplicitMetExpectation(ctx) || hasNewVisualSignal(ctx);
     default:
       return false;

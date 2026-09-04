@@ -1,0 +1,5 @@
+node_modules
+dist
+appwalk-output
+appwalk-live
+*.log

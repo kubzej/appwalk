@@ -1,21 +1,26 @@
-import assert from "node:assert/strict";
-import { createServer } from "node:http";
-import test from "node:test";
-import { chromium } from "playwright";
-import { buildSystemPrompt, runAgentLoop } from "../src/agent/loop.js";
-import { captureSnapshot } from "../src/browser/snapshot.js";
-import { attachPopupDetection } from "../src/cli/orchestrate.js";
-import type { TabRegistryHandle } from "../src/agent/tools.js";
-import { Logger } from "../src/logging/logger.js";
-import type { LlmProvider, ProviderTurn, ToolDefinition, ToolResult } from "../src/providers/provider.js";
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import test from 'node:test';
+import { chromium } from 'playwright';
+import { buildSystemPrompt, runAgentLoop } from '../../src/agent/loop.js';
+import { captureSnapshot } from '../../src/browser/snapshot.js';
+import { attachPopupDetection } from '../../src/cli/orchestrate.js';
+import type { TabRegistryHandle } from '../../src/agent/tools.js';
+import { Logger } from '../../src/logging/logger.js';
+import type { LlmProvider, ProviderTurn, ToolDefinition, ToolResult } from '../../src/providers/provider.js';
 
 class TextOnlyProvider implements LlmProvider {
-  async start(_params: { systemPrompt: string; tools: ToolDefinition[]; initialInput: string; screenshot?: string }): Promise<ProviderTurn> {
-    return { type: "text", text: "I found a page, but did not complete a flow." };
+  async start(_params: {
+    systemPrompt: string;
+    tools: ToolDefinition[];
+    initialInput: string;
+    screenshot?: string;
+  }): Promise<ProviderTurn> {
+    return { type: 'text', text: 'I found a page, but did not complete a flow.' };
   }
 
   async continue(_toolResult: ToolResult): Promise<ProviderTurn> {
-    return { type: "text", text: "stop" };
+    return { type: 'text', text: 'stop' };
   }
 }
 
@@ -23,61 +28,70 @@ class TextOnlyProvider implements LlmProvider {
  * exact, predetermined tool calls rather than a text-generation model's actual reasoning. */
 class ScriptedProvider implements LlmProvider {
   constructor(private readonly turns: ProviderTurn[]) {}
-  async start(): Promise<ProviderTurn> { return this.turns.shift()!; }
-  async continue(): Promise<ProviderTurn> { return this.turns.shift()!; }
+  async start(): Promise<ProviderTurn> {
+    return this.turns.shift()!;
+  }
+  async continue(): Promise<ProviderTurn> {
+    return this.turns.shift()!;
+  }
 }
 
-test("stops on plain provider text without inventing a flow", async () => {
+test('stops on plain provider text without inventing a flow', async () => {
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
-    await page.setContent("<main><h1>Example</h1></main>");
+    await page.setContent('<main><h1>Example</h1></main>');
     const result = await runAgentLoop(page, new TextOnlyProvider(), { maxSteps: 5 });
     assert.equal(result.flows.length, 0);
     assert.equal(result.history.length, 1);
-    assert.equal(result.history[0]?.finalText, "I found a page, but did not complete a flow.");
+    assert.equal(result.history[0]?.finalText, 'I found a page, but did not complete a flow.');
     assert.equal(result.exhausted, false);
-    assert.equal(result.stopReason, "agent_stopped");
+    assert.equal(result.stopReason, 'agent_stopped');
   } finally {
     await browser.close();
   }
 });
 
-test("charges every burst repetition against the agent action budget", async () => {
+test('charges every burst repetition against the agent action budget', async () => {
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
-    await page.setContent(`<button id="target" onclick="this.dataset.clicks = String(Number(this.dataset.clicks || 0) + 1)">Submit</button>`);
+    await page.setContent(
+      `<button id="target" onclick="this.dataset.clicks = String(Number(this.dataset.clicks || 0) + 1)">Submit</button>`,
+    );
     const provider = new ScriptedProvider([
-      { type: "tool_call", toolCall: { id: "1", name: "burst", input: { action: "click", locator: "#target", count: 3 } } },
-      { type: "tool_call", toolCall: { id: "2", name: "flowComplete", input: { summary: "Rapid submit" } } },
+      {
+        type: 'tool_call',
+        toolCall: { id: '1', name: 'burst', input: { action: 'click', locator: '#target', count: 3 } },
+      },
+      { type: 'tool_call', toolCall: { id: '2', name: 'flowComplete', input: { summary: 'Rapid submit' } } },
     ]);
 
     const result = await runAgentLoop(page, provider, { maxSteps: 3 });
 
-    assert.equal(await page.locator("#target").getAttribute("data-clicks"), "3");
+    assert.equal(await page.locator('#target').getAttribute('data-clicks'), '3');
     assert.equal(result.flows.length, 1);
-    assert.equal(result.history.length, 2, "the completed flow must not start another flow with leftover burst budget");
-    assert.equal(result.stopReason, "completed");
+    assert.equal(result.history.length, 2, 'the completed flow must not start another flow with leftover burst budget');
+    assert.equal(result.stopReason, 'completed');
     assert.equal(result.exhausted, false);
   } finally {
     await browser.close();
   }
 });
 
-test("a popup discovered mid-flow is reachable via switchTab inside the real agent loop", async () => {
+test('a popup discovered mid-flow is reachable via switchTab inside the real agent loop', async () => {
   // A target="_blank" link to a data: URI never actually opens (Chromium blocks top-level
   // navigation to data: URLs), so this needs a real same-origin destination to pop up at all.
   const server = createServer((req, res) => {
-    if (req.url === "/popped") {
-      res.writeHead(200, { "content-type": "text/html" });
-      res.end("<h1>popped</h1>");
+    if (req.url === '/popped') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<h1>popped</h1>');
       return;
     }
-    res.writeHead(200, { "content-type": "text/html" });
+    res.writeHead(200, { 'content-type': 'text/html' });
     res.end('<a id="opener" href="/popped" target="_blank">open</a>');
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
 
   const browser = await chromium.launch({ headless: true });
@@ -88,12 +102,15 @@ test("a popup discovered mid-flow is reachable via switchTab inside the real age
     // and handed to runAgentLoop so a popup registered while flow N's registry is current lands in
     // that same registry, not a stale one.
     const tabRegistryHandle: TabRegistryHandle = { tabs: new Map() };
-    attachPopupDetection(page, new Logger("quiet"), tabRegistryHandle);
+    attachPopupDetection(page, new Logger('quiet'), tabRegistryHandle);
 
     const provider = new ScriptedProvider([
-      { type: "tool_call", toolCall: { id: "1", name: "click", input: { locator: "#opener" } } },
-      { type: "tool_call", toolCall: { id: "2", name: "switchTab", input: { tabId: "tab-1" } } },
-      { type: "tool_call", toolCall: { id: "3", name: "flowComplete", input: { summary: "Reached the popup via switchTab." } } },
+      { type: 'tool_call', toolCall: { id: '1', name: 'click', input: { locator: '#opener' } } },
+      { type: 'tool_call', toolCall: { id: '2', name: 'switchTab', input: { tabId: 'tab-1' } } },
+      {
+        type: 'tool_call',
+        toolCall: { id: '3', name: 'flowComplete', input: { summary: 'Reached the popup via switchTab.' } },
+      },
     ]);
 
     // maxSteps matches the two real actions exactly, so the loop returns right after flowComplete
@@ -107,7 +124,7 @@ test("a popup discovered mid-flow is reachable via switchTab inside the real age
     assert.match(clickStep!.result!.snapshot, /new tab opened on its own.*tab-1/is);
 
     const switchStep = result.history[1];
-    assert.equal(switchStep?.toolCall?.name, "switchTab");
+    assert.equal(switchStep?.toolCall?.name, 'switchTab');
     assert.equal(switchStep?.error, undefined, "switchTab must not fail to find the popup's tab id");
     assert.match(switchStep!.result!.snapshot, /popped/);
     assert.equal(result.flows.length, 1);
@@ -117,14 +134,14 @@ test("a popup discovered mid-flow is reachable via switchTab inside the real age
   }
 });
 
-test("grounds expectations in behavior performed by the current flow", () => {
-  const prompt = buildSystemPrompt(20, false, undefined, "Checkout", ["A completed order reaches confirmation"]);
+test('grounds expectations in behavior performed by the current flow', () => {
+  const prompt = buildSystemPrompt(20, false, undefined, 'Checkout', ['A completed order reaches confirmation']);
   assert.match(prompt, /current flow itself/);
   assert.match(prompt, /read-only flow that opens an existing record/);
   assert.match(prompt, /Do not verify an expectation just because the page contains similar text/);
 });
 
-test("page observation supplements accessibility tree with stable DOM hints", async () => {
+test('page observation supplements accessibility tree with stable DOM hints', async () => {
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
@@ -155,7 +172,7 @@ test("page observation supplements accessibility tree with stable DOM hints", as
   }
 });
 
-test("page observation flags an element whose content overflows its own box", async () => {
+test('page observation flags an element whose content overflows its own box', async () => {
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
@@ -170,15 +187,15 @@ test("page observation flags an element whose content overflows its own box", as
 
     assert.match(snapshot, /button "Verylongunbrokenproductnamethatoverflows".*content-overflows/);
     // The element that fits gets no such flag — must not appear right after its own entry.
-    const fitsLine = snapshot.split("\n").find((line) => line.includes('"Fits fine"'));
-    assert.ok(fitsLine, "expected a line for the #fits button");
+    const fitsLine = snapshot.split('\n').find((line) => line.includes('"Fits fine"'));
+    assert.ok(fitsLine, 'expected a line for the #fits button');
     assert.doesNotMatch(fitsLine!, /content-overflows/);
   } finally {
     await browser.close();
   }
 });
 
-test("page observation does not flag a deliberately line-clamped description as overflowing", async () => {
+test('page observation does not flag a deliberately line-clamped description as overflowing', async () => {
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
@@ -191,8 +208,8 @@ test("page observation does not flag a deliberately line-clamped description as 
     `);
 
     const snapshot = await captureSnapshot(page);
-    const clampedLine = snapshot.split("\n").find((line) => line.includes("A long product description"));
-    assert.ok(clampedLine, "expected a line for the clamped description");
+    const clampedLine = snapshot.split('\n').find((line) => line.includes('A long product description'));
+    assert.ok(clampedLine, 'expected a line for the clamped description');
     assert.doesNotMatch(clampedLine!, /content-overflows/);
   } finally {
     await browser.close();

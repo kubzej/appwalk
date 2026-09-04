@@ -1,26 +1,26 @@
-import { join } from "node:path";
-import type { Browser, BrowserContext, Page } from "playwright";
-import type { Persona } from "../agent/personas.js";
-import type { TabRegistryHandle } from "../agent/tools.js";
-import type { BrowserLifecycle } from "../browser/actions.js";
-import type { FlowResult } from "../agent/loop.js";
-import type { CliArgs } from "./args.js";
-import { EvidenceRecorder } from "../evidence/recorder.js";
-import type { ExpectationObservation } from "../types.js";
-import type { GuardOptions } from "../safety/guard.js";
-import { installDestructiveActionGuard } from "../safety/guard.js";
-import type { ToolCall } from "../providers/provider.js";
-import { replay, type ReplayResult } from "../verify/replay.js";
-import type { Logger } from "../logging/logger.js";
-import { Redactor } from "../security/redaction.js";
+import { join } from 'node:path';
+import type { Browser, BrowserContext, Page } from 'playwright';
+import type { Persona } from '../agent/personas.js';
+import type { TabRegistryHandle } from '../agent/tools.js';
+import type { BrowserLifecycle } from '../browser/actions.js';
+import type { FlowResult } from '../agent/loop.js';
+import type { CliArgs } from './args.js';
+import { EvidenceRecorder } from '../evidence/recorder.js';
+import type { ExpectationObservation } from '../types.js';
+import type { GuardOptions } from '../safety/guard.js';
+import { installDestructiveActionGuard } from '../safety/guard.js';
+import type { ToolCall } from '../providers/provider.js';
+import { replay, type ReplayResult } from '../verify/replay.js';
+import type { Logger } from '../logging/logger.js';
+import { Redactor } from '../security/redaction.js';
 import {
   attachCrashDetection,
   attachPopupDetection,
   attachWebSocketCapture,
   createTraceSession,
   type TraceSession,
-} from "./browser-observability.js";
-import { closeTrackedContexts, createBrowserLifecycle } from "./browser-lifecycle.js";
+} from './browser-observability.js';
+import { closeTrackedContexts, createBrowserLifecycle } from './browser-lifecycle.js';
 
 export interface ReplayExecutionInput {
   replayBrowser: Browser;
@@ -35,7 +35,13 @@ export interface ReplayExecutionInput {
   flowLogger: Logger;
   guardOptions: GuardOptions;
   getSafetyBlockCount: () => number;
-  navigateOrLogin: (page: Page, args: CliArgs, hasPreloadedState?: boolean, startUrl?: string, logger?: Logger) => Promise<void>;
+  navigateOrLogin: (
+    page: Page,
+    args: CliArgs,
+    hasPreloadedState?: boolean,
+    startUrl?: string,
+    logger?: Logger,
+  ) => Promise<void>;
   setActiveRecorder: (recorder: EvidenceRecorder) => void;
   trackedContexts: Set<BrowserContext>;
 }
@@ -65,9 +71,8 @@ export async function executeReplay(input: ReplayExecutionInput): Promise<Replay
     setActiveRecorder,
     trackedContexts,
   } = input;
-  const flowStorageState = flowIndex > 0 && flow.startStorageState
-    ? JSON.parse(flow.startStorageState)
-    : args.storageStatePath;
+  const flowStorageState =
+    flowIndex > 0 && flow.startStorageState ? JSON.parse(flow.startStorageState) : args.storageStatePath;
   let replayRecorder: EvidenceRecorder | undefined;
   let runtimeServicesReady = false;
   let traceSession: TraceSession | undefined;
@@ -114,7 +119,7 @@ export async function executeReplay(input: ReplayExecutionInput): Promise<Replay
     replayResult = await replay(
       replayPage,
       actions,
-      persona?.verificationMode ?? "completion",
+      persona?.verificationMode ?? 'completion',
       replayRecorder,
       input.expectedExpectations,
       undefined,
@@ -146,5 +151,5 @@ export async function executeReplay(input: ReplayExecutionInput): Promise<Replay
 }
 
 function joinTracePath(args: CliArgs, runId: string, flowIndex: number): string {
-  return join(args.output, "traces", `${runId}-flow-${flowIndex + 1}.zip`);
+  return join(args.output, 'traces', `${runId}-flow-${flowIndex + 1}.zip`);
 }

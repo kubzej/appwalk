@@ -1,4 +1,4 @@
-import { EXIT_CODES } from "../exit-codes.js";
+import { EXIT_CODES } from '../exit-codes.js';
 
 type ExecutionOutcome = 'passed' | 'findings' | 'inconclusive' | 'failed';
 
@@ -201,9 +201,7 @@ export interface ExecutionReportInput {
   }>;
 }
 
-export function buildExecutionReport(
-  input: ExecutionReportInput,
-): ExecutionReport {
+export function buildExecutionReport(input: ExecutionReportInput): ExecutionReport {
   let nextFindingId = 1;
   const runs = input.runs.map((run): ReportRun => {
     const findings = run.findings.map((finding) => ({
@@ -234,33 +232,37 @@ export function buildExecutionReport(
     };
   });
   const findings = runs.flatMap((run) => run.findings);
-  const confirmedFindings = findings.filter(
-    (finding) => finding.status === 'confirmed',
-  ).length;
-  const inconclusiveFindings = findings.filter(
-    (finding) => finding.status === 'inconclusive',
-  ).length;
+  const confirmedFindings = findings.filter((finding) => finding.status === 'confirmed').length;
+  const inconclusiveFindings = findings.filter((finding) => finding.status === 'inconclusive').length;
   const errors = runs.filter((run) => Boolean(run.error)).length;
   const safetyBlockedRequests = runs.reduce((total, run) => total + run.safety.blockedRequests, 0);
-  const runtimeErrors = runs.reduce((total, run) => total + run.runtimeErrors
-    .filter((error) => !error.safetyRelated && !error.lifecycle)
-    .reduce((count, error) => count + error.occurrences, 0), 0);
-  const coverageIncomplete = runs.some((run) => run.exhausted || Boolean(run.error) || run.safety.blockedRequests > 0 || run.runtimeErrors.some((error) => !error.safetyRelated && !error.lifecycle));
-  const flowsFound = runs.reduce((total, run) => total + run.flowsFound, 0);
-  const replayConfirmed = runs.reduce(
-    (total, run) => total + run.replayConfirmed,
+  const runtimeErrors = runs.reduce(
+    (total, run) =>
+      total +
+      run.runtimeErrors
+        .filter((error) => !error.safetyRelated && !error.lifecycle)
+        .reduce((count, error) => count + error.occurrences, 0),
     0,
   );
+  const coverageIncomplete = runs.some(
+    (run) =>
+      run.exhausted ||
+      Boolean(run.error) ||
+      run.safety.blockedRequests > 0 ||
+      run.runtimeErrors.some((error) => !error.safetyRelated && !error.lifecycle),
+  );
+  const flowsFound = runs.reduce((total, run) => total + run.flowsFound, 0);
+  const replayConfirmed = runs.reduce((total, run) => total + run.replayConfirmed, 0);
   const outcome: ExecutionOutcome =
     errors > 0
       ? 'failed'
       : (input.issues?.length ?? 0) > 0
         ? 'inconclusive'
-      : confirmedFindings > 0
-        ? 'findings'
-        : inconclusiveFindings > 0 || replayConfirmed === 0 || coverageIncomplete
-          ? 'inconclusive'
-          : 'passed';
+        : confirmedFindings > 0
+          ? 'findings'
+          : inconclusiveFindings > 0 || replayConfirmed === 0 || coverageIncomplete
+            ? 'inconclusive'
+            : 'passed';
 
   return {
     schemaVersion: 1,

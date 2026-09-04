@@ -1,6 +1,6 @@
-import type { BrowserContext } from "playwright";
-import type { Logger } from "../logging/logger.js";
-import { DEFAULT_BLOCK_METHODS, normalizeBlockMethods } from "./methods.js";
+import type { BrowserContext } from 'playwright';
+import type { Logger } from '../logging/logger.js';
+import { DEFAULT_BLOCK_METHODS, normalizeBlockMethods } from './methods.js';
 
 export interface SafetyConfig {
   block?: string[];
@@ -16,7 +16,7 @@ export interface SafetyRequestOptions {
 
 export interface SafetyDecision {
   blocked: boolean;
-  reason?: "url" | "method";
+  reason?: 'url' | 'method';
   matchedAllowRule: boolean;
   matchedBlockRule: boolean;
 }
@@ -27,9 +27,9 @@ export interface GuardOptions extends SafetyRequestOptions {
 
 function globToRegExp(pattern: string): RegExp {
   const segments = pattern
-    .split("**")
-    .map((segment) => segment.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*"));
-  return new RegExp(`^${segments.join(".*")}$`);
+    .split('**')
+    .map((segment) => segment.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*'));
+  return new RegExp(`^${segments.join('.*')}$`);
 }
 
 function matchesAny(url: string, patterns: string[] | undefined): boolean {
@@ -52,7 +52,7 @@ const guardedContexts = new WeakSet<BrowserContext>();
 export function evaluateSafetyRequest(
   method: string,
   url: string,
-  options: Pick<SafetyRequestOptions, "allowDestructive" | "blockMethods" | "config">,
+  options: Pick<SafetyRequestOptions, 'allowDestructive' | 'blockMethods' | 'config'>,
 ): SafetyDecision {
   const matchedAllowRule = matchesAny(url, options.config?.allow);
   const matchedBlockRule = matchesAny(url, options.config?.block);
@@ -60,15 +60,17 @@ export function evaluateSafetyRequest(
     return { blocked: false, matchedAllowRule, matchedBlockRule };
   }
   if (matchedBlockRule) {
-    return { blocked: true, reason: "url", matchedAllowRule, matchedBlockRule };
+    return { blocked: true, reason: 'url', matchedAllowRule, matchedBlockRule };
   }
   if (options.allowDestructive) {
     return { blocked: false, matchedAllowRule, matchedBlockRule };
   }
-  const blockedByMethod = new Set(normalizeBlockMethods(options.blockMethods ?? DEFAULT_BLOCK_METHODS)).has(method.toUpperCase());
+  const blockedByMethod = new Set(normalizeBlockMethods(options.blockMethods ?? DEFAULT_BLOCK_METHODS)).has(
+    method.toUpperCase(),
+  );
   return {
     blocked: blockedByMethod,
-    ...(blockedByMethod ? { reason: "method" as const } : {}),
+    ...(blockedByMethod ? { reason: 'method' as const } : {}),
     matchedAllowRule,
     matchedBlockRule,
   };
@@ -77,23 +79,23 @@ export function evaluateSafetyRequest(
 /** Context-scoped, not page-scoped: a browser context can hold more than one page (a tab opened
  * via openTab, or one the target app opens itself), and `context.route()` — unlike `page.route()`
  * — automatically covers every page already in the context plus every page created in it later. */
-export async function installDestructiveActionGuard(
-  context: BrowserContext,
-  options: GuardOptions,
-): Promise<void> {
+export async function installDestructiveActionGuard(context: BrowserContext, options: GuardOptions): Promise<void> {
   if (options.allowDestructive && !options.config?.block?.length) return;
   if (guardedContexts.has(context)) return;
   guardedContexts.add(context);
 
-  await context.route("**/*", async (route) => {
+  await context.route('**/*', async (route) => {
     const request = route.request();
     const url = request.url();
     const decision = evaluateSafetyRequest(request.method(), url, options);
     if (decision.blocked) {
       options.onBlocked?.({ method: request.method(), url: safePath(url) });
       options.logger?.verbose(`Blocked destructive request: ${request.method()} ${safePath(url)}`);
-      options.logger?.debug("safety.request_blocked", "Destructive request blocked", {
-        method: request.method(), url, matchedBlockRule: decision.matchedBlockRule, blockMethods: options.blockMethods ?? DEFAULT_BLOCK_METHODS,
+      options.logger?.debug('safety.request_blocked', 'Destructive request blocked', {
+        method: request.method(),
+        url,
+        matchedBlockRule: decision.matchedBlockRule,
+        blockMethods: options.blockMethods ?? DEFAULT_BLOCK_METHODS,
       });
       await route.abort();
       return;
