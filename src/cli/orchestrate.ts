@@ -207,6 +207,10 @@ export function redactorForArgs(args: CliArgs): Redactor {
     args.storageStatePath,
     args.safetyConfigPath,
     args.provider === 'ollama' ? undefined : process.env[apiKeyEnvVar],
+    // A coverage run's own email/password/storageState overrides the global auth for that run
+    // only (see createCoverageRuns) — fold them in here too, since this redactor is shared
+    // (the execution's evidence log, the app logger) rather than rebuilt per run.
+    ...(args.coverageRuns ?? []).flatMap((run) => [run.email, run.password, run.storageState]),
   ]);
 }
 
@@ -635,23 +639,34 @@ async function exploreAndVerifyInBrowser(
   }
 }
 
-function createCoverageRuns(args: CliArgs): Array<{ id: string; name: string; args: CliArgs }> {
+export function createCoverageRuns(args: CliArgs): Array<{ id: string; name: string; args: CliArgs }> {
   const configuredRuns = args.coverageRuns?.length
     ? args.coverageRuns
     : [{ name: args.personaName ? `${args.personaName} baseline` : 'default' }];
 
-  return configuredRuns.map((run, index) => ({
-    id: `run-${index + 1}`,
-    name: run.name,
-    args: {
-      ...args,
-      coverageRuns: undefined,
-      personaName: run.persona ?? args.personaName,
-      maxSteps: run.maxSteps ?? args.maxSteps,
-      scope: run.scope ?? args.scope,
-      expectations: run.expect !== undefined ? run.expect : args.expectations,
-    },
-  }));
+  return configuredRuns.map((run, index) => {
+    // A run declaring any auth field of its own (e.g. so concurrent personas don't share one
+    // login session) replaces the global auth entirely for that run, rather than mixing fields
+    // from both — a run-level storageState paired with a leftover global email/password would
+    // otherwise leave navigateOrLogin's storageState-wins priority silently ignoring the run's
+    // own credentials, or vice versa.
+    const overridesAuth = run.email !== undefined || run.password !== undefined || run.storageState !== undefined;
+    return {
+      id: `run-${index + 1}`,
+      name: run.name,
+      args: {
+        ...args,
+        coverageRuns: undefined,
+        personaName: run.persona ?? args.personaName,
+        maxSteps: run.maxSteps ?? args.maxSteps,
+        scope: run.scope ?? args.scope,
+        expectations: run.expect !== undefined ? run.expect : args.expectations,
+        email: overridesAuth ? run.email : args.email,
+        password: overridesAuth ? run.password : args.password,
+        storageStatePath: overridesAuth ? run.storageState : args.storageStatePath,
+      },
+    };
+  });
 }
 
 export async function exploreCoverage(

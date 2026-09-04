@@ -142,6 +142,49 @@ test('rejects partial credential login configuration', () => {
   );
 });
 
+test('accepts a per-run auth override and rejects a partial one', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'appwalk-config-'));
+  const validPath = join(directory, 'valid.yaml');
+  const partialPath = join(directory, 'partial.yaml');
+  try {
+    writeFileSync(
+      validPath,
+      [
+        'version: 1',
+        'url: https://example.test',
+        'provider: openai',
+        'model: test-model',
+        'coverage:',
+        '  runs:',
+        '    - name: Persona A',
+        '      email: persona-a@example.test',
+        '      password: persona-a-secret',
+        '    - name: Persona B',
+        '      storageState: ./persona-b-state.json',
+      ].join('\n'),
+    );
+    const config = loadAppwalkConfig(validPath);
+    assert.equal(config.coverage?.runs?.[0]?.email, 'persona-a@example.test');
+    assert.equal(config.coverage?.runs?.[1]?.storageState, './persona-b-state.json');
+
+    writeFileSync(
+      partialPath,
+      [
+        'version: 1',
+        'provider: openai',
+        'model: test-model',
+        'coverage:',
+        '  runs:',
+        '    - name: Persona A',
+        '      email: persona-a@example.test',
+      ].join('\n'),
+    );
+    assert.throws(() => loadAppwalkConfig(partialPath), /email and password must be provided together/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('normalizes block methods consistently from YAML', () => {
   const directory = mkdtempSync(join(tmpdir(), 'appwalk-config-'));
   const path = join(directory, 'config.yaml');

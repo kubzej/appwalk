@@ -132,6 +132,85 @@ test('removal requires an explicit observed expectation', () => {
   );
 });
 
+test('rejection does not treat a met expectation confirming the success signal as rejection evidence', () => {
+  // The exact shape of the bug: the agent checked that a success heading is visible — which is
+  // true, and mechanically "met" — but that confirms the opposite of rejection, not rejection.
+  const acceptedHostileInput = context({
+    finalUrl: 'https://example.test/orders/42',
+    expectations: [
+      {
+        expectationIndex: 1,
+        status: 'met',
+        assertion: 'visible',
+        locator: 'role=heading[name="Order Confirmed!"]',
+        detail: 'Locator role=heading[name="Order Confirmed!"] is visible.',
+      },
+    ],
+  });
+  assert.equal(verifyFlow('rejection', acceptedHostileInput), false);
+});
+
+test('rejection treats a met expectation confirming the success signal is absent as real rejection evidence', () => {
+  const trulyRejected = context({
+    expectations: [
+      {
+        expectationIndex: 1,
+        status: 'met',
+        assertion: 'hidden',
+        locator: 'role=heading[name="Order Confirmed!"]',
+        detail: 'Locator role=heading[name="Order Confirmed!"] is not visible.',
+      },
+    ],
+  });
+  assert.equal(verifyFlow('rejection', trulyRejected), true);
+});
+
+test('rejection still accepts a met expectation confirming an explicit error signal', () => {
+  const explicitError = context({
+    expectations: [
+      {
+        expectationIndex: 1,
+        status: 'met',
+        assertion: 'containsText',
+        locator: 'role=alert',
+        value: 'First name is required',
+        detail: 'Locator role=alert contains the expected text.',
+      },
+    ],
+  });
+  assert.equal(verifyFlow('rejection', explicitError), true);
+});
+
+test('removal does not treat a met expectation confirming the success signal as removal evidence', () => {
+  const looksRemovedButActuallySucceeded = context({
+    expectations: [
+      {
+        expectationIndex: 1,
+        status: 'met',
+        assertion: 'visible',
+        locator: 'role=heading[name="Order Confirmed!"]',
+        detail: 'Locator role=heading[name="Order Confirmed!"] is visible.',
+      },
+    ],
+  });
+  assert.equal(verifyFlow('removal', looksRemovedButActuallySucceeded), false);
+});
+
+test('completion still accepts a met expectation confirming the success signal is present', () => {
+  const confirmedSuccess = context({
+    expectations: [
+      {
+        expectationIndex: 1,
+        status: 'met',
+        assertion: 'visible',
+        locator: 'role=heading[name="Order Confirmed!"]',
+        detail: 'Locator role=heading[name="Order Confirmed!"] is visible.',
+      },
+    ],
+  });
+  assert.equal(verifyFlow('completion', confirmedSuccess), true);
+});
+
 test('consistency and visual do not fall back to completion', () => {
   const successfulPage = context({
     finalUrl: 'https://example.test/success',

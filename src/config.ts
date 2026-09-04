@@ -11,6 +11,11 @@ export interface CoverageRunConfig {
   maxSteps?: number;
   scope?: string;
   expect?: string[];
+  /** Overrides the global auth.* for this run only — e.g. giving each concurrent persona its
+   * own account so they don't invalidate each other's session. See email/password below. */
+  email?: string;
+  password?: string;
+  storageState?: string;
 }
 
 export interface AppwalkConfig {
@@ -261,7 +266,7 @@ function validateConfig(value: unknown, path: string): AppwalkConfig {
       const runConfig = run as Record<string, unknown>;
       validateKnownKeys(
         runConfig,
-        ['name', 'persona', 'maxSteps', 'scope', 'expect'],
+        ['name', 'persona', 'maxSteps', 'scope', 'expect', 'email', 'password', 'storageState'],
         `${path}.coverage.runs[${index}]`,
       );
       if (!isNonEmptyString(runConfig.name)) throw new Error(`coverage.runs[${index}].name is required in ${path}.`);
@@ -274,6 +279,12 @@ function validateConfig(value: unknown, path: string): AppwalkConfig {
         throw new Error(`coverage.runs[${index}].scope must be a non-empty string in ${path}.`);
       }
       if (runConfig.expect !== undefined) validateStringList(runConfig.expect, `coverage.runs[${index}].expect`, path);
+      for (const key of ['email', 'password', 'storageState'] as const) {
+        if (runConfig[key] !== undefined && !isNonEmptyString(runConfig[key])) {
+          throw new Error(`coverage.runs[${index}].${key} must be a non-empty string in ${path}.`);
+        }
+      }
+      validateCredentialPair(runConfig.email, runConfig.password, `${path} coverage.runs[${index}]`);
     }
   }
   if (config.expect !== undefined) validateStringList(config.expect, 'expect', path);

@@ -319,7 +319,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'verifyExpectation',
     description:
-      'Check one user expectation against a concrete signal caused by the current flow. The expectation index refers to the numbered expectation in the system prompt. Only use this after the current flow has performed the behavior described by the expectation; a read-only page or matching heading from an existing record does not prove that a create, submit, update, complete, or confirm operation happened. Translate the natural-language requirement into one observable condition: a locator is visible/hidden, contains exact text, has an exact input value, is checked/unchecked, is enabled/disabled, has an exact count, or the URL contains/equals a value. Use unknown only when the current flow reached the relevant behavior but no reliable signal can be identified; do not claim a result in plain text.',
+      'Check one user expectation against a concrete signal caused by the current flow. The expectation index refers to the numbered expectation in the system prompt. Only use this after the current flow has performed the behavior described by the expectation; a read-only page or matching heading from an existing record does not prove that a create, submit, update, complete, or confirm operation happened. Translate the natural-language requirement into one observable condition: a locator is visible/hidden, contains exact text, has an exact input value, is checked/unchecked, is enabled/disabled, has an exact count, or the URL contains/equals a value. When the expectation is that something did NOT go through (rejected, blocked, prevented, removed), assert the absence of the success signal (hidden/unchecked, or count 0) or the presence of an explicit error/validation signal — asserting that the success signal is visible instead would confirm the opposite of what the expectation claims, even though the check itself "passes". Use unknown only when the current flow reached the relevant behavior but no reliable signal can be identified; do not claim a result in plain text.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -378,7 +378,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         summary: {
           type: 'string',
           description:
-            'What you did and what outcome was reached, in one short stable sentence. Describe the behavior at a high level; omit persona names, concrete product names, order IDs, timestamps, and other run-specific values.',
+            'What you did and what outcome was reached, in one short stable sentence. Describe the behavior at a high level, including the path taken when it was notable (e.g. backtracking, comparing several options before choosing one, retrying after a rejection) — not just the final outcome. Omit persona names, concrete product names, order IDs, timestamps, and other run-specific values.',
           minLength: 1,
           maxLength: 2_000,
         },

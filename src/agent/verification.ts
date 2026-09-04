@@ -1,6 +1,6 @@
 import type { NetworkEntry, RuntimeErrorEntry } from '../evidence/recorder.js';
 import { looksLikeSuccessByNetwork, looksLikeSuccessBySnapshot, looksLikeSuccessByUrl } from './success.js';
-import type { ExpectationObservation } from '../types.js';
+import type { ExpectationAssertion, ExpectationObservation } from '../types.js';
 
 export type VerificationMode =
   'completion' | 'rejection' | 'preservation' | 'stability' | 'recovery' | 'consistency' | 'visual' | 'removal';
@@ -39,6 +39,43 @@ function hasSuccessfulStateChange(network: NetworkEntry[]): boolean {
 
 function hasExplicitMetExpectation(ctx: VerificationContext): boolean {
   return ctx.expectations?.some((expectation) => expectation.status === 'met') ?? false;
+}
+
+// An assertion that "passes" by confirming a locator/value/URL is *present* — as opposed to
+// hidden/unchecked/disabled, which pass by confirming something is *absent*.
+const AFFIRMATIVE_ASSERTIONS = new Set<ExpectationAssertion>([
+  'visible',
+  'checked',
+  'enabled',
+  'containsText',
+  'urlContains',
+  'urlEquals',
+  'value',
+]);
+
+function expectationLooksLikeSuccessSignal(expectation: ExpectationObservation): boolean {
+  const checkedText = [expectation.locator, expectation.value].filter(Boolean).join(' ');
+  return looksLikeSuccessBySnapshot(checkedText) || looksLikeSuccessByUrl(checkedText);
+}
+
+/**
+ * A met expectation only counts as evidence that something did *not* go through normally
+ * (rejection, removal, preservation) if what it actually confirmed points that way — not just
+ * that some check happened to pass. `verifyExpectation` reports "met" whenever its mechanical
+ * check passes, with no idea which direction that supports; an agent confirming a success
+ * heading is *visible* has proven the opposite of rejection, even though the check itself
+ * "passed". Only exclude it when an affirmative assertion (visible/checked/.../containsText)
+ * confirms success-shaped content is present — the same success-shaped content confirmed
+ * *absent* (hidden/unchecked/disabled) is exactly the rejection/removal signal these modes want.
+ */
+function metExpectationSupportsNegativeOutcome(expectation: ExpectationObservation): boolean {
+  if (expectation.status !== 'met') return false;
+  if (!expectationLooksLikeSuccessSignal(expectation)) return true;
+  return !AFFIRMATIVE_ASSERTIONS.has(expectation.assertion);
+}
+
+function hasMetExpectationSupportingNegativeOutcome(ctx: VerificationContext): boolean {
+  return ctx.expectations?.some(metExpectationSupportsNegativeOutcome) ?? false;
 }
 
 function hasObservableChange(ctx: VerificationContext): boolean {
@@ -87,7 +124,7 @@ function hasSuspiciousDuplicateRequest(network: NetworkEntry[]): boolean {
 // A generic verifier cannot know which object was removed. Removal therefore needs an explicit
 // observable expectation such as a hidden target, zero count, or confirmed completion URL.
 function looksLikeRemoval(ctx: VerificationContext): boolean {
-  return hasExplicitMetExpectation(ctx);
+  return hasMetExpectationSupportingNegativeOutcome(ctx);
 }
 
 function hasNewMatchingLine(before: string, after: string, pattern: RegExp): boolean {
@@ -110,7 +147,7 @@ function hasNewMatchingLine(before: string, after: string, pattern: RegExp): boo
 // contain a success-looking word, so only network/snapshot signals count as corroborating evidence.
 // Imperfect: an acceptance with unrecognized wording can still slip through.
 function looksLikeRejection(ctx: VerificationContext): boolean {
-  if (hasExplicitMetExpectation(ctx)) return true;
+  if (hasMetExpectationSupportingNegativeOutcome(ctx)) return true;
   const newAlertOrInvalidMarker =
     hasNewMatchingLine(ctx.flowStartSnapshot, ctx.finalSnapshot, ALERT_PATTERN) ||
     hasNewMatchingLine(ctx.flowStartSnapshot, ctx.finalSnapshot, INVALID_FIELD_PATTERN);
@@ -125,7 +162,8 @@ function looksLikeRejection(ctx: VerificationContext): boolean {
 
 function looksLikePreservation(ctx: VerificationContext): boolean {
   return (
-    hasExplicitMetExpectation(ctx) || (ctx.finalUrl === ctx.flowStartUrl && !hasSuccessfulStateChange(ctx.network))
+    hasMetExpectationSupportingNegativeOutcome(ctx) ||
+    (ctx.finalUrl === ctx.flowStartUrl && !hasSuccessfulStateChange(ctx.network))
   );
 }
 
