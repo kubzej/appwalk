@@ -103,7 +103,7 @@ export class GeminiProvider implements LlmProvider {
         signal,
         logger: this.logger,
         beforeAttempt: (attemptSignal) =>
-          sharedRateLimitCoordinator.beforeRequest(
+          sharedRateLimitCoordinator.acquire(
             `gemini:${this.model}`,
             estimateRequestTokens(request, maxOutputTokens),
             this.logger,
@@ -115,12 +115,7 @@ export class GeminiProvider implements LlmProvider {
     );
     const response = result;
     const responseHeaders = response.sdkHttpResponse?.responseInternal.headers;
-    if (responseHeaders)
-      sharedRateLimitCoordinator.observe(
-        `gemini:${this.model}`,
-        responseHeaders,
-        response.usageMetadata?.promptTokenCount,
-      );
+    if (responseHeaders) sharedRateLimitCoordinator.observe(`gemini:${this.model}`, responseHeaders);
 
     const usage = response.usageMetadata;
     this.logger.debug('provider.response_received', 'Gemini response received', {

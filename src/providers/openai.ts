@@ -30,6 +30,12 @@ export class OpenAIProvider implements LlmProvider {
   private readonly model: string;
   private tools: OpenAI.Responses.FunctionTool[] = [];
   private lastResponseId: string | null = null;
+  // The Responses API resends only the newest turn — server-side history reconstructed from
+  // previous_response_id isn't in the wire body estimateRequestTokens() sees, so this
+  // conversation's own last-observed size is the only way to guess what the server will really
+  // count. Kept per instance (not in the shared rate-limit coordinator), since a coordinator key
+  // is shared by every persona on the same model and their conversations grow independently.
+  private lastObservedInputTokens: number | undefined;
   private requestIndex = 0;
   private readonly logger: Logger;
 
@@ -50,6 +56,7 @@ export class OpenAIProvider implements LlmProvider {
     signal?: AbortSignal;
   }): Promise<ProviderTurn> {
     this.lastResponseId = null;
+    this.lastObservedInputTokens = undefined;
     this.tools = toOpenAiTools(params.tools);
     const userContent: OpenAI.Responses.ResponseInputContent[] = [{ type: 'input_text', text: params.initialInput }];
     if (params.screenshot) {
@@ -119,9 +126,12 @@ export class OpenAIProvider implements LlmProvider {
         signal,
         logger: this.logger,
         beforeAttempt: (attemptSignal) =>
-          sharedRateLimitCoordinator.beforeRequest(
+          sharedRateLimitCoordinator.acquire(
             `openai:${this.model}`,
-            estimateRequestTokens(body, maxOutputTokens),
+            Math.max(
+              estimateRequestTokens(body, maxOutputTokens),
+              this.lastObservedInputTokens === undefined ? 0 : Math.ceil(this.lastObservedInputTokens * 1.5),
+            ),
             this.logger,
             attemptSignal,
           ),
@@ -133,7 +143,8 @@ export class OpenAIProvider implements LlmProvider {
     );
     const data = result.data;
     const usage = data.usage;
-    sharedRateLimitCoordinator.observe(`openai:${this.model}`, result.response.headers, usage?.input_tokens);
+    if (usage?.input_tokens !== undefined) this.lastObservedInputTokens = usage.input_tokens;
+    sharedRateLimitCoordinator.observe(`openai:${this.model}`, result.response.headers);
     this.logger.debug('provider.response_received', 'OpenAI response received', {
       provider: 'openai',
       model: this.model,

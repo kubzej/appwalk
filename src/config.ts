@@ -23,6 +23,10 @@ export interface AppwalkConfig {
   browser?: BrowserEngine;
   persona?: string;
   maxSteps?: number;
+  /** How many coverage-run personas may explore concurrently. Defaults to 1 (sequential, the
+   * historical behavior) — concurrency changes local resource usage (one Chromium process per
+   * persona) and terminal output shape, so it's opt-in. */
+  maxConcurrentPersonas?: number;
   screenshots?: boolean;
   trace?: boolean;
   responses?: {
@@ -112,6 +116,9 @@ export function validateResolvedOptions(options: Record<string, unknown>, path =
     throw new Error(`browser must be one of chromium, firefox, or webkit in ${path}.`);
   }
   validateMaxSteps(options.maxSteps, 'maxSteps', path);
+  if (options.maxConcurrentPersonas !== undefined) {
+    validateMaxSteps(options.maxConcurrentPersonas, 'maxConcurrentPersonas', path);
+  }
 
   for (const key of ['screenshots', 'trace', 'allowDestructive'] as const) {
     if (options[key] !== undefined && typeof options[key] !== 'boolean') {
@@ -174,6 +181,7 @@ function validateConfig(value: unknown, path: string): AppwalkConfig {
       'browser',
       'persona',
       'maxSteps',
+      'maxConcurrentPersonas',
       'screenshots',
       'trace',
       'responses',
@@ -199,6 +207,9 @@ function validateConfig(value: unknown, path: string): AppwalkConfig {
   if (config.output !== undefined && !isNonEmptyString(config.output))
     throw new Error(`output must be a non-empty string in ${path}.`);
   if (config.maxSteps !== undefined) validateMaxSteps(config.maxSteps, 'maxSteps', path);
+  if (config.maxConcurrentPersonas !== undefined) {
+    validateMaxSteps(config.maxConcurrentPersonas, 'maxConcurrentPersonas', path);
+  }
   if (config.screenshots !== undefined && typeof config.screenshots !== 'boolean') {
     throw new Error(`screenshots must be a boolean in ${path}.`);
   }

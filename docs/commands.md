@@ -50,28 +50,29 @@ Locators use Appwalk syntax such as `role=button[name="Submit"]`, `text="Continu
 
 Requirements below are evaluated after command-line values and the explicitly passed YAML config are merged. A value can therefore be supplied in either place, and a CLI value overrides the config value. `generate` reads an existing discovery bundle and does not need a provider or model.
 
-| Option | Applies to | Required when | Description |
-| --- | --- | --- | --- |
-| `-e, --email <value>` | `run`, `explore`, `generate` | Never; use with `--password` for credential login | Username or email for a normal credential login. |
-| `-p, --password <value>` | `run`, `explore`, `generate` | Never; use with `--email` for credential login | Password for a normal credential login. Keep it in an environment variable. |
-| `-o, --output <dir>` | All | Never | Output root. Defaults to `./appwalk-output`. |
-| `-n, --max-steps <number>` | `run`, `explore` | Never | Maximum browser actions per persona run. Defaults to `25`; must be a positive integer. |
-| `-m, --model <name>` | `run`, `explore` | Always for exploration | Provider model. Supply it via CLI or config. |
-| `--provider <name>` | `run`, `explore` | Always for exploration | `anthropic`, `gemini`, `ollama`, `grok`, or `openai`. Supply it via CLI or config. |
-| `--browser <engine>` | `run`, `explore` | No | `chromium`, `firefox`, or `webkit`. Defaults to `chromium`. |
-| `--storage-state <path>` | All | Only when using a pre-authenticated session or generating without fresh credentials | Playwright storage state to preload or use for generated tests. |
-| `--persona <name>` | `run`, `explore` | Never | Built-in exploration persona. See [Personas](personas.md). |
-| `--scope <text>` | `run`, `explore` | Never | Natural-language area or objective for the exploration. It can be used independently to focus discovery. |
-| `--expect <text>` | `run`, `explore` | Only with `--scope` | User-visible acceptance criterion. Repeatable. |
-| `--screenshots` | `run`, `explore` | Never | Captures a screenshot after actions for providers/models with vision support. |
-| `--trace` | `run`, `explore` | Never | Saves Playwright trace archives (`.zip`, viewable with `npx playwright show-trace`) for exploration and each replayed flow. A flow that replaces its browser with `reopenBrowser` is split into numbered trace segments. |
-| `--config <path>` | `run`, `explore` | Only when using YAML configuration | Explicit YAML config. Config files are not auto-discovered. |
-| `--flows <ids>` | `generate` | Never | Comma-separated flow IDs, for example `1,3`. Selected flows must be replay-confirmed. |
-| `--response-variant-max <number>` | `run`, `explore` | Never | Enables up to this many LLM-proposed response scenarios per confirmed base flow. `0` disables them. |
-| `--response-fixture-max-bytes <number>` | `run`, `explore` | Never | Skips captured JSON response bodies larger than this byte limit. |
-| `--allow-destructive` | `run`, `explore` | Never | Disables the default method block. Use only on a disposable target. |
-| `--block-methods <list>` | `run`, `explore` | Never | Replaces the default blocked method list with a comma-separated list. |
-| `--safety-config <path>` | `run`, `explore` | Never | JSON URL allow/block rules. See [Configuration](configuration.md#safety). |
+| Option                                  | Applies to                   | Required when                                                                       | Description                                                                                                                                                                                                                                                                                                           |
+| --------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-e, --email <value>`                   | `run`, `explore`, `generate` | Never; use with `--password` for credential login                                   | Username or email for a normal credential login.                                                                                                                                                                                                                                                                      |
+| `-p, --password <value>`                | `run`, `explore`, `generate` | Never; use with `--email` for credential login                                      | Password for a normal credential login. Keep it in an environment variable.                                                                                                                                                                                                                                           |
+| `-o, --output <dir>`                    | All                          | Never                                                                               | Output root. Defaults to `./appwalk-output`.                                                                                                                                                                                                                                                                          |
+| `-n, --max-steps <number>`              | `run`, `explore`             | Never                                                                               | Maximum browser actions per persona run. Defaults to `25`; must be a positive integer.                                                                                                                                                                                                                                |
+| `--max-concurrent-personas <number>`    | `run`, `explore`             | Never                                                                               | How many `coverage.runs` personas explore at once, each with its own browser. Defaults to `1` (sequential, the historical behavior); must be a positive integer. Requests across concurrent personas still share the account's real rate limit — see [Multi-person coverage](configuration.md#multi-person-coverage). |
+| `-m, --model <name>`                    | `run`, `explore`             | Always for exploration                                                              | Provider model. Supply it via CLI or config.                                                                                                                                                                                                                                                                          |
+| `--provider <name>`                     | `run`, `explore`             | Always for exploration                                                              | `anthropic`, `gemini`, `ollama`, `grok`, or `openai`. Supply it via CLI or config.                                                                                                                                                                                                                                    |
+| `--browser <engine>`                    | `run`, `explore`             | No                                                                                  | `chromium`, `firefox`, or `webkit`. Defaults to `chromium`.                                                                                                                                                                                                                                                           |
+| `--storage-state <path>`                | All                          | Only when using a pre-authenticated session or generating without fresh credentials | Playwright storage state to preload or use for generated tests.                                                                                                                                                                                                                                                       |
+| `--persona <name>`                      | `run`, `explore`             | Never                                                                               | Built-in exploration persona. See [Personas](personas.md).                                                                                                                                                                                                                                                            |
+| `--scope <text>`                        | `run`, `explore`             | Never                                                                               | Natural-language area or objective for the exploration. It can be used independently to focus discovery.                                                                                                                                                                                                              |
+| `--expect <text>`                       | `run`, `explore`             | Only with `--scope`                                                                 | User-visible acceptance criterion. Repeatable.                                                                                                                                                                                                                                                                        |
+| `--screenshots`                         | `run`, `explore`             | Never                                                                               | Captures a screenshot after actions for providers/models with vision support.                                                                                                                                                                                                                                         |
+| `--trace`                               | `run`, `explore`             | Never                                                                               | Saves Playwright trace archives (`.zip`, viewable with `npx playwright show-trace`) for exploration and each replayed flow. A flow that replaces its browser with `reopenBrowser` is split into numbered trace segments.                                                                                              |
+| `--config <path>`                       | `run`, `explore`             | Only when using YAML configuration                                                  | Explicit YAML config. Config files are not auto-discovered.                                                                                                                                                                                                                                                           |
+| `--flows <ids>`                         | `generate`                   | Never                                                                               | Comma-separated flow IDs, for example `1,3`. Selected flows must be replay-confirmed.                                                                                                                                                                                                                                 |
+| `--response-variant-max <number>`       | `run`, `explore`             | Never                                                                               | Enables up to this many LLM-proposed response scenarios per confirmed base flow. `0` disables them.                                                                                                                                                                                                                   |
+| `--response-fixture-max-bytes <number>` | `run`, `explore`             | Never                                                                               | Skips captured JSON response bodies larger than this byte limit.                                                                                                                                                                                                                                                      |
+| `--allow-destructive`                   | `run`, `explore`             | Never                                                                               | Disables the default method block. Use only on a disposable target.                                                                                                                                                                                                                                                   |
+| `--block-methods <list>`                | `run`, `explore`             | Never                                                                               | Replaces the default blocked method list with a comma-separated list.                                                                                                                                                                                                                                                 |
+| `--safety-config <path>`                | `run`, `explore`             | Never                                                                               | JSON URL allow/block rules. See [Configuration](configuration.md#safety).                                                                                                                                                                                                                                             |
 
 The application URL is positional for `run` and `explore`, unless it is provided as `url` in `--config`. For `generate`, the positional argument is the path to a previous discovery directory or `discovery.json` file.
 
@@ -79,12 +80,12 @@ The application URL is positional for `run` and `explore`, unless it is provided
 
 These switches control console presentation, not the evidence captured in the output directory:
 
-| Level | Intended reader | What appears |
-| --- | --- | --- |
-| `--quiet` | Automation or a user who needs only the result | Final results and errors. |
-| default | End user/tester | Major lifecycle stages, completed flows, warnings, and artifact paths. |
-| `--verbose` | Tester investigating a run | Detailed action progress, safety events, and scenario summaries. |
-| `--debug` | Developer | Verbose output plus structured provider, browser, replay, and execution diagnostics. Sensitive values are redacted. |
+| Level       | Intended reader                                | What appears                                                                                                        |
+| ----------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `--quiet`   | Automation or a user who needs only the result | Final results and errors.                                                                                           |
+| default     | End user/tester                                | Major lifecycle stages, completed flows, warnings, and artifact paths.                                              |
+| `--verbose` | Tester investigating a run                     | Detailed action progress, safety events, and scenario summaries.                                                    |
+| `--debug`   | Developer                                      | Verbose output plus structured provider, browser, replay, and execution diagnostics. Sensitive values are redacted. |
 
 `--verbose` and `--debug` are CLI-only operational controls. They are intentionally not part of the YAML coverage model.
 
@@ -101,12 +102,12 @@ by the authentication method and username only; passwords are never printed.
 
 ## Provider credentials
 
-| Provider | Environment variable | Local endpoint |
-| --- | --- | --- |
-| `openai` | `OPENAI_API_KEY` | Hosted API |
-| `anthropic` | `ANTHROPIC_API_KEY` | Hosted API |
-| `gemini` | `GEMINI_API_KEY` | Hosted API |
-| `grok` | `XAI_API_KEY` | Hosted API |
-| `ollama` | None | `http://localhost:11434` |
+| Provider    | Environment variable | Local endpoint           |
+| ----------- | -------------------- | ------------------------ |
+| `openai`    | `OPENAI_API_KEY`     | Hosted API               |
+| `anthropic` | `ANTHROPIC_API_KEY`  | Hosted API               |
+| `gemini`    | `GEMINI_API_KEY`     | Hosted API               |
+| `grok`      | `XAI_API_KEY`        | Hosted API               |
+| `ollama`    | None                 | `http://localhost:11434` |
 
 The selected hosted provider key must be present before the browser run starts. Ollama does not require a key, but the local service and selected model must be available.

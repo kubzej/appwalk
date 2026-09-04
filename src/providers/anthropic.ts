@@ -133,7 +133,7 @@ export class AnthropicProvider implements LlmProvider {
         signal,
         logger: this.logger,
         beforeAttempt: (attemptSignal) =>
-          sharedRateLimitCoordinator.beforeRequest(
+          sharedRateLimitCoordinator.acquire(
             `anthropic:${this.model}`,
             estimateRequestTokens(request, maxOutputTokens),
             this.logger,
@@ -146,11 +146,7 @@ export class AnthropicProvider implements LlmProvider {
       },
     );
     const response: Anthropic.Message = result.data;
-    sharedRateLimitCoordinator.observe(
-      `anthropic:${this.model}`,
-      result.response.headers,
-      response.usage.input_tokens + (response.usage.cache_creation_input_tokens ?? 0),
-    );
+    sharedRateLimitCoordinator.observe(`anthropic:${this.model}`, result.response.headers);
     this.logger.debug('provider.rate_limits_observed', 'Anthropic rate limits observed', {
       provider: 'anthropic',
       model: this.model,

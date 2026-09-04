@@ -119,8 +119,10 @@ export async function withHostedProviderRequest<T>(
     requestIndex: number;
     signal?: AbortSignal;
     logger?: Logger;
-    /** Wait for account/project quota before each attempt. */
-    beforeAttempt?: (signal: AbortSignal | undefined) => Promise<void>;
+    /** Wait for account/project quota before each attempt. May return a release callback (e.g.
+     * from a reservation-based rate limiter) that gets invoked once this attempt is done with
+     * the budget it reserved, whether it succeeded, failed, or is about to be retried. */
+    beforeAttempt?: (signal: AbortSignal | undefined) => Promise<(() => void) | void>;
     /** Provider-specific 429 delay. Other retryable failures use bounded backoff. */
     retryDelayMs?: (error: unknown, attempt: number) => number | undefined;
   },
@@ -142,10 +144,11 @@ export async function withHostedProviderRequest<T>(
       );
     }
     let attemptSignal: AttemptSignal | undefined;
+    let releaseQuota: (() => void) | undefined;
     try {
       // Quota waiting is bounded separately from the provider request timeout. Otherwise a
       // 60-second rate-limit wait would consume the entire request attempt before fetch starts.
-      await options.beforeAttempt?.(options.signal);
+      releaseQuota = (await options.beforeAttempt?.(options.signal)) ?? undefined;
       const requestRemainingMs = deadline - Date.now();
       if (requestRemainingMs <= 0) {
         throw new ProviderRequestError(
@@ -265,6 +268,7 @@ export async function withHostedProviderRequest<T>(
       }
     } finally {
       attemptSignal?.cleanup();
+      releaseQuota?.();
     }
   }
 

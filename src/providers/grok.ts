@@ -52,6 +52,12 @@ export class GrokProvider implements LlmProvider {
   private convId: string;
   private tools: ReturnType<typeof toGrokTools> = [];
   private lastResponseId: string | null = null;
+  // The Responses API resends only the newest turn — server-side history reconstructed from
+  // previous_response_id isn't in the wire body estimateRequestTokens() sees, so this
+  // conversation's own last-observed size is the only way to guess what the server will really
+  // count. Kept per instance (not in the shared rate-limit coordinator), since a coordinator key
+  // is shared by every persona on the same model and their conversations grow independently.
+  private lastObservedInputTokens: number | undefined;
   private requestIndex = 0;
   private readonly logger: Logger;
 
@@ -73,6 +79,7 @@ export class GrokProvider implements LlmProvider {
     signal?: AbortSignal;
   }): Promise<ProviderTurn> {
     this.lastResponseId = null;
+    this.lastObservedInputTokens = undefined;
     this.convId = randomUUID();
     this.tools = toGrokTools(params.tools);
     const userContent: unknown[] = [{ type: 'input_text', text: params.initialInput }];
@@ -161,9 +168,12 @@ export class GrokProvider implements LlmProvider {
         signal,
         logger: this.logger,
         beforeAttempt: (attemptSignal) =>
-          sharedRateLimitCoordinator.beforeRequest(
+          sharedRateLimitCoordinator.acquire(
             `grok:${this.model}`,
-            estimateRequestTokens(body, maxOutputTokens),
+            Math.max(
+              estimateRequestTokens(body, maxOutputTokens),
+              this.lastObservedInputTokens === undefined ? 0 : Math.ceil(this.lastObservedInputTokens * 1.5),
+            ),
             this.logger,
             attemptSignal,
           ),
@@ -175,7 +185,8 @@ export class GrokProvider implements LlmProvider {
     );
     const { data } = result;
     const usage = data.usage;
-    sharedRateLimitCoordinator.observe(`grok:${this.model}`, result.headers, usage?.input_tokens);
+    if (usage?.input_tokens !== undefined) this.lastObservedInputTokens = usage.input_tokens;
+    sharedRateLimitCoordinator.observe(`grok:${this.model}`, result.headers);
     this.logger.debug('provider.response_received', 'Grok response received', {
       provider: 'grok',
       model: this.model,

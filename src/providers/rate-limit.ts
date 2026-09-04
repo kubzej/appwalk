@@ -13,7 +13,15 @@ export const MAX_RATE_LIMIT_WAIT_MS = 60_000;
 import type { Logger } from '../logging/logger.js';
 
 interface TrackedRateLimit extends RateLimitState {
-  lastObservedInputTokens?: number;
+  /** Estimated cost of requests `acquire()` has already admitted but that haven't been
+   * reconciled by `observe()` yet (via a release) — accounts for concurrent siblings the server
+   * hasn't told us about. Survives `observe()` replacing the rest of this record. */
+  reservedTokens: number;
+  reservedRequests: number;
+}
+
+function emptyState(): TrackedRateLimit {
+  return { reservedTokens: 0, reservedRequests: 0 };
 }
 
 function parseDurationMs(value: string | null): number | undefined {
@@ -107,85 +115,115 @@ export function rateLimitRetryDelayMs(headers: Headers, fallbackMs = 5_000): num
 }
 
 /**
- * Coordinates sequential requests that share an account/project quota. It never retries a
- * failed request; it only uses a successful response's headers to avoid knowingly sending a
- * request that cannot fit in the current token window.
+ * Coordinates requests that share an account/project quota, safely across concurrent callers.
+ * It never retries a failed request; it only uses a successful response's headers, plus its own
+ * reservation ledger for requests it has admitted but not yet seen a response for, to avoid
+ * knowingly sending a request that cannot fit in the current token/request window.
  */
 export class RateLimitCoordinator {
   private readonly states = new Map<string, TrackedRateLimit>();
 
-  async beforeRequest(key: string, estimatedTokens: number, logger?: Logger, signal?: AbortSignal): Promise<void> {
-    const state = this.states.get(key);
-    if (!state) return;
+  /**
+   * Waits (if necessary) until `estimatedTokens` plus one request fit in the tracked window,
+   * then reserves that budget and returns a release function the caller must invoke exactly
+   * once — on success, failure, or retry — once the attempt is done with it.
+   *
+   * Safe under concurrency without a lock: the read-then-reserve section below never awaits, and
+   * Node runs one synchronous chunk at a time, so no two concurrent callers can both observe the
+   * same headroom and both reserve it. A waiter that wakes up re-validates from scratch rather
+   * than assuming its computed wait was sufficient, since a concurrent sibling may have consumed
+   * the freshly available budget first.
+   */
+  async acquire(key: string, estimatedTokens: number, logger?: Logger, signal?: AbortSignal): Promise<() => void> {
+    for (;;) {
+      let state = this.states.get(key);
+      if (!state) {
+        state = emptyState();
+        this.states.set(key, state);
+      }
 
-    const now = Date.now();
+      const now = Date.now();
 
-    // Tokens and requests are independent windows with their own remaining count and reset
-    // time; a stale window (reset time already passed) is dropped rather than treated as still
-    // exhausted, since the provider would have refilled it by now.
-    let waitMs: number | undefined;
-    let reason: 'token' | 'request' | undefined;
-
-    if (state.remainingTokens !== undefined && state.resetAt !== undefined) {
-      if (state.resetAt <= now) {
+      // Tokens and requests are independent windows with their own remaining count and reset
+      // time; a stale window (reset time already passed) is dropped rather than treated as still
+      // exhausted, since the provider would have refilled it by now.
+      if (state.resetAt !== undefined && state.resetAt <= now) {
         state.remainingTokens = undefined;
         state.resetAt = undefined;
-      } else {
-        // Include the last observed request size because Responses-style APIs may account for
-        // server-side conversation history that is not present in the next request body.
-        const expected = Math.max(
-          estimatedTokens,
-          state.lastObservedInputTokens === undefined ? 0 : Math.ceil(state.lastObservedInputTokens * 1.5),
-        );
-        if (state.remainingTokens < expected) {
+      }
+      if (state.requestsResetAt !== undefined && state.requestsResetAt <= now) {
+        state.remainingRequests = undefined;
+        state.requestsResetAt = undefined;
+      }
+
+      let waitMs: number | undefined;
+      let reason: 'token' | 'request' | undefined;
+
+      if (state.remainingTokens !== undefined && state.resetAt !== undefined) {
+        // `estimatedTokens` is the caller's job to size correctly — for a Responses-style API
+        // whose wire body omits server-reconstructed history, the caller (which owns that one
+        // conversation) is the only one who knows to inflate it. A per-key heuristic here would
+        // be wrong under concurrency: this key is shared by every persona using the same
+        // provider/model, so "the last observed size" would reflect whichever concurrent
+        // sibling's response happened to land most recently, not this request's own conversation.
+        const available = state.remainingTokens - state.reservedTokens;
+        if (available < estimatedTokens) {
           waitMs = state.resetAt - now + 100;
           reason = 'token';
         }
       }
-    }
 
-    if (state.remainingRequests !== undefined && state.requestsResetAt !== undefined) {
-      if (state.requestsResetAt <= now) {
-        state.remainingRequests = undefined;
-        state.requestsResetAt = undefined;
-      } else if (state.remainingRequests < 1) {
-        const requestWaitMs = state.requestsResetAt - now + 100;
-        if (waitMs === undefined || requestWaitMs > waitMs) {
-          waitMs = requestWaitMs;
-          reason = 'request';
+      if (state.remainingRequests !== undefined && state.requestsResetAt !== undefined) {
+        const availableRequests = state.remainingRequests - state.reservedRequests;
+        if (availableRequests < 1) {
+          const requestWaitMs = state.requestsResetAt - now + 100;
+          if (waitMs === undefined || requestWaitMs > waitMs) {
+            waitMs = requestWaitMs;
+            reason = 'request';
+          }
         }
       }
-    }
 
-    if (waitMs === undefined || reason === undefined) {
-      if (state.remainingTokens === undefined && state.remainingRequests === undefined) this.states.delete(key);
-      return;
-    }
+      if (waitMs === undefined || reason === undefined) {
+        // Admit: reserve synchronously, before returning control to the caller (and definitely
+        // before any other async work runs), so no concurrent acquire() can double-spend this
+        // headroom.
+        state.reservedTokens += estimatedTokens;
+        state.reservedRequests += 1;
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          // Re-fetch rather than close over `state` — observe() may have replaced this key's
+          // record since this reservation was made, and the decrement must land on whichever
+          // record is current or the two would drift out of sync.
+          const current = this.states.get(key);
+          if (!current) return;
+          current.reservedTokens = Math.max(0, current.reservedTokens - estimatedTokens);
+          current.reservedRequests = Math.max(0, current.reservedRequests - 1);
+        };
+      }
 
-    if (waitMs > MAX_RATE_LIMIT_WAIT_MS) {
-      throw new Error(
-        `Provider rate-limit wait of ${Math.ceil(waitMs / 1000)}s exceeds the ${Math.ceil(MAX_RATE_LIMIT_WAIT_MS / 1000)}s safety limit.`,
-      );
-    }
+      if (waitMs > MAX_RATE_LIMIT_WAIT_MS) {
+        throw new Error(
+          `Provider rate-limit wait of ${Math.ceil(waitMs / 1000)}s exceeds the ${Math.ceil(MAX_RATE_LIMIT_WAIT_MS / 1000)}s safety limit.`,
+        );
+      }
 
-    logger?.warn(`API quota reached (${reason} limit). Waiting ${Math.ceil(waitMs / 1000)}s before continuing.`);
-    logger?.debug('provider.rate_limit_wait', 'Waiting for the provider rate-limit window to reset', {
-      key,
-      reason,
-      remainingTokens: state.remainingTokens,
-      remainingRequests: state.remainingRequests,
-      estimatedTokens,
-      waitMs,
-    });
-    await sleep(waitMs, signal);
-    // Only the dimension that actually triggered the wait is cleared — the other window's last
-    // observed counters are still valid until its own reset time.
-    if (reason === 'token') {
-      state.remainingTokens = undefined;
-      state.resetAt = undefined;
-    } else {
-      state.remainingRequests = undefined;
-      state.requestsResetAt = undefined;
+      logger?.warn(`API quota reached (${reason} limit). Waiting ${Math.ceil(waitMs / 1000)}s before continuing.`);
+      logger?.debug('provider.rate_limit_wait', 'Waiting for the provider rate-limit window to reset', {
+        key,
+        reason,
+        remainingTokens: state.remainingTokens,
+        remainingRequests: state.remainingRequests,
+        reservedTokens: state.reservedTokens,
+        reservedRequests: state.reservedRequests,
+        estimatedTokens,
+        waitMs,
+      });
+      await sleep(waitMs, signal);
+      // Loop back and re-check from scratch instead of assuming the window is now clear — a
+      // concurrent sibling may have been admitted first and already spent the newly freed budget.
     }
   }
 
@@ -206,7 +244,7 @@ export class RateLimitCoordinator {
     );
   }
 
-  observe(key: string, headers: Headers, inputTokens?: number): void {
+  observe(key: string, headers: Headers): void {
     const remainingTokens = headerNumber(
       headers,
       'x-ratelimit-remaining-project-tokens',
@@ -250,7 +288,10 @@ export class RateLimitCoordinator {
       resetAt: resetAt ?? previous?.resetAt,
       remainingRequests,
       requestsResetAt: requestsResetAt ?? previous?.requestsResetAt,
-      lastObservedInputTokens: inputTokens ?? previous?.lastObservedInputTokens,
+      // Carried forward, not reset — these track requests acquire() admitted that haven't been
+      // released yet, which this fresh header snapshot knows nothing about.
+      reservedTokens: previous?.reservedTokens ?? 0,
+      reservedRequests: previous?.reservedRequests ?? 0,
     });
   }
 }

@@ -11,6 +11,7 @@ import { EXIT_CODES } from '../exit-codes.js';
 
 const DEFAULT_OUTPUT_DIR = './appwalk-output';
 const DEFAULT_MAX_STEPS = 25;
+const DEFAULT_MAX_CONCURRENT_PERSONAS = 1;
 
 type Command = 'explore' | 'generate' | 'run';
 
@@ -21,6 +22,7 @@ export interface CliArgs {
   password?: string;
   output: string;
   maxSteps: number;
+  maxConcurrentPersonas: number;
   model?: string;
   provider?: ProviderName;
   browserEngine: BrowserEngine;
@@ -56,6 +58,7 @@ function printUsage(error?: string): never {
       '  -p, --password <password>                   Login password',
       '  -o, --output <dir>                          Output root; each CLI execution gets a subdirectory (default: ./appwalk-output)',
       '  -n, --max-steps <number>                    Exploration action budget (default: 25)',
+      '      --max-concurrent-personas <number>       How many coverage personas explore at once (default: 1)',
       '  -m, --model <model>                         Provider model (required)',
       '      --provider anthropic|gemini|ollama|grok|openai (required)',
       '      --browser chromium|firefox|webkit         Browser engine to drive (default: chromium)',
@@ -106,6 +109,7 @@ export function parseArgs(argv: string[]): CliArgs {
     url: url ?? '',
     output: DEFAULT_OUTPUT_DIR,
     maxSteps: DEFAULT_MAX_STEPS,
+    maxConcurrentPersonas: DEFAULT_MAX_CONCURRENT_PERSONAS,
     browserEngine: 'chromium',
     allowDestructive: false,
     blockMethods: [...DEFAULT_BLOCK_METHODS],
@@ -126,6 +130,7 @@ export function parseArgs(argv: string[]): CliArgs {
     ['--output', 'output'],
     ['-n', 'maxSteps'],
     ['--max-steps', 'maxSteps'],
+    ['--max-concurrent-personas', 'maxConcurrentPersonas'],
     ['--response-variant-max', 'responseVariantMax'],
     ['--response-fixture-max-bytes', 'responseFixtureMaxBytes'],
     ['-m', 'model'],
@@ -156,6 +161,7 @@ export function parseArgs(argv: string[]): CliArgs {
     '--output',
     '-n',
     '--max-steps',
+    '--max-concurrent-personas',
     '--response-variant-max',
     '--response-fixture-max-bytes',
     '-m',
@@ -222,6 +228,9 @@ export function parseArgs(argv: string[]): CliArgs {
     } else if ((flag === '-n' || flag === '--max-steps') && value) {
       args.maxSteps = Number(value);
       args.cliSpecified.add('maxSteps');
+    } else if (flag === '--max-concurrent-personas' && value) {
+      args.maxConcurrentPersonas = Number(value);
+      args.cliSpecified.add('maxConcurrentPersonas');
     } else if (flag === '--response-variant-max' && value) {
       args.responseVariantMax = Number(value);
       args.cliSpecified.add('responseVariantMax');
@@ -286,6 +295,8 @@ export function applyConfig(args: CliArgs): CliArgs {
   if (!args.cliSpecified.has('browserEngine') && config.browser) args.browserEngine = config.browser;
   if (!args.cliSpecified.has('personaName') && config.persona) args.personaName = config.persona;
   if (!args.cliSpecified.has('maxSteps') && config.maxSteps !== undefined) args.maxSteps = config.maxSteps;
+  if (!args.cliSpecified.has('maxConcurrentPersonas') && config.maxConcurrentPersonas !== undefined)
+    args.maxConcurrentPersonas = config.maxConcurrentPersonas;
   if (!args.cliSpecified.has('screenshots') && config.screenshots !== undefined) args.screenshots = config.screenshots;
   if (!args.cliSpecified.has('trace') && config.trace !== undefined) args.trace = config.trace;
   if (!args.cliSpecified.has('email') && config.auth?.email) args.email = config.auth.email;

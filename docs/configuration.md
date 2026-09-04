@@ -34,6 +34,8 @@ output: ./appwalk-output
 provider: ${PROVIDER}
 model: ${MODEL}
 maxSteps: 25
+# Explore coverage.runs personas at once instead of one after another. Defaults to 1.
+# maxConcurrentPersonas: 2
 screenshots: true
 
 scope: Explore the authenticated shopping and order history experience.
@@ -73,29 +75,30 @@ coverage:
 
 ## Fields
 
-| YAML path | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `version` | `1` | Yes | Config schema version. |
-| `url` | string | Yes unless passed as CLI URL | Application URL. |
-| `output` | string | No | Output root. Defaults to `./appwalk-output`. |
-| `provider` | enum | Yes | `openai`, `anthropic`, `gemini`, `grok`, or `ollama`. |
-| `model` | string | Yes | Model name understood by the selected provider. |
-| `browser` | enum | No | `chromium`, `firefox`, or `webkit`. Defaults to `chromium`. |
-| `persona` | string | No | Built-in persona for a single run. Use `coverage.runs` for multiple independent personas. |
-| `maxSteps` | positive integer | No | Default action budget per run is 25. |
-| `screenshots` | boolean | No | Include screenshots in provider turns where supported. |
-| `trace` | boolean | No | Save a Playwright trace (`.zip`) for exploration and each replayed flow. |
-| `scope` | string | No | Global exploration objective. |
-| `expect` | string list | No | Global expectations. Requires a global or run scope. |
-| `responses.maxVariants` | non-negative integer | No | Maximum derived response scenarios per confirmed flow. |
-| `responses.maxFixtureBytes` | non-negative integer | No | Maximum captured response body size. |
-| `auth.email` | string | No | Credential-login username/email. |
-| `auth.password` | string | No | Credential-login password. Prefer `${ENV_VAR}`. |
-| `auth.storageState` | string | No | Path to Playwright storage state. |
-| `safety.allowDestructive` | boolean | No | If true, disables the default method block. |
-| `safety.blockMethods` | string list | No | Methods blocked by the browser guard. |
-| `safety.config` | string | No | Path to URL-based safety rules JSON. |
-| `coverage.runs` | run list | No | Sequential independent persona runs. Every run needs a `name`; `persona`, `maxSteps`, `scope`, and `expect` override global values for that run. |
+| YAML path                   | Type                 | Required                     | Meaning                                                                                                                               |
+| --------------------------- | -------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`                   | `1`                  | Yes                          | Config schema version.                                                                                                                |
+| `url`                       | string               | Yes unless passed as CLI URL | Application URL.                                                                                                                      |
+| `output`                    | string               | No                           | Output root. Defaults to `./appwalk-output`.                                                                                          |
+| `provider`                  | enum                 | Yes                          | `openai`, `anthropic`, `gemini`, `grok`, or `ollama`.                                                                                 |
+| `model`                     | string               | Yes                          | Model name understood by the selected provider.                                                                                       |
+| `browser`                   | enum                 | No                           | `chromium`, `firefox`, or `webkit`. Defaults to `chromium`.                                                                           |
+| `persona`                   | string               | No                           | Built-in persona for a single run. Use `coverage.runs` for multiple independent personas.                                             |
+| `maxSteps`                  | positive integer     | No                           | Default action budget per run is 25.                                                                                                  |
+| `maxConcurrentPersonas`     | positive integer     | No                           | How many `coverage.runs` personas explore at once. Defaults to `1` (sequential). See [Multi-person coverage](#multi-person-coverage). |
+| `screenshots`               | boolean              | No                           | Include screenshots in provider turns where supported.                                                                                |
+| `trace`                     | boolean              | No                           | Save a Playwright trace (`.zip`) for exploration and each replayed flow.                                                              |
+| `scope`                     | string               | No                           | Global exploration objective.                                                                                                         |
+| `expect`                    | string list          | No                           | Global expectations. Requires a global or run scope.                                                                                  |
+| `responses.maxVariants`     | non-negative integer | No                           | Maximum derived response scenarios per confirmed flow.                                                                                |
+| `responses.maxFixtureBytes` | non-negative integer | No                           | Maximum captured response body size.                                                                                                  |
+| `auth.email`                | string               | No                           | Credential-login username/email.                                                                                                      |
+| `auth.password`             | string               | No                           | Credential-login password. Prefer `${ENV_VAR}`.                                                                                       |
+| `auth.storageState`         | string               | No                           | Path to Playwright storage state.                                                                                                     |
+| `safety.allowDestructive`   | boolean              | No                           | If true, disables the default method block.                                                                                           |
+| `safety.blockMethods`       | string list          | No                           | Methods blocked by the browser guard.                                                                                                 |
+| `safety.config`             | string               | No                           | Path to URL-based safety rules JSON.                                                                                                  |
+| `coverage.runs`             | run list             | No                           | Independent persona runs. Every run needs a `name`; `persona`, `maxSteps`, `scope`, and `expect` override global values for that run. |
 
 ## Environment variables
 
@@ -109,9 +112,11 @@ auth:
 
 ## Multi-person coverage
 
-Coverage runs execute sequentially. Each run gets a fresh browser session and its own LLM conversation; one persona's context is not sent to the next persona. The output is aggregated into one execution report and one discovery bundle, while each run remains identifiable by its run ID and persona.
+Coverage runs execute sequentially by default; set `maxConcurrentPersonas` above 1 (or pass `--max-concurrent-personas`) to run that many at once instead. Each run gets a fresh browser session and its own LLM conversation regardless of concurrency; one persona's context is never sent to another. The output is aggregated into one execution report and one discovery bundle, while each run remains identifiable by its run ID and persona.
 
 The action budget is per run. For three runs with `maxSteps` values of 18, 17, and 15, the total possible browser actions are 50. Provider requests still depend on how many decisions each run needs and how much context the selected provider resends or caches.
+
+Running personas concurrently does not raise the account's real provider rate limit — that limit is tied to the API key/project, not to Appwalk's process or how many personas run at once. What concurrency buys instead is overlap: while one persona's browser is navigating or waiting for an element, another persona's LLM request can be in flight, so the same request/token budget gets used with fewer idle gaps. A shared rate-limit ledger (in-process) reserves budget before each provider request and blocks a concurrent request that would exceed it, so turning `maxConcurrentPersonas` up changes how much local CPU/memory (one Chromium instance per concurrent persona) you spend, not how much provider quota is available. Start low (2-3) and watch for rate-limit waits in `--verbose`/`--debug` output before going higher.
 
 ## Safety
 

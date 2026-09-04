@@ -44,6 +44,10 @@ export interface LoggerOptions {
   color?: boolean;
   /** Shared data policy used for messages and structured diagnostic details. */
   redactor?: Redactor;
+  /** Disable task()'s animated \r-redraw spinner in favor of a plain start/end line — for when
+   * more than one logger might be writing task() lines to the same stream concurrently, where
+   * competing carriage-return redraws would otherwise stomp on each other's line. */
+  plainTasks?: boolean;
 }
 
 export interface LogEvent {
@@ -170,6 +174,7 @@ export class Logger {
   private readonly colorEnabled: boolean;
   private readonly redactor: Redactor;
   private readonly depth: number;
+  private readonly plainTasks: boolean;
 
   constructor(
     readonly level: LogLevel = 'normal',
@@ -180,6 +185,7 @@ export class Logger {
   ) {
     this.colorEnabled = options.color ?? streamSupportsColor(out);
     this.redactor = options.redactor ?? new Redactor();
+    this.plainTasks = options.plainTasks ?? false;
     this.depth = depth;
   }
 
@@ -190,8 +196,19 @@ export class Logger {
       this.level,
       this.out,
       { ...this.context, ...context },
-      { color: this.colorEnabled, redactor: this.redactor },
+      { color: this.colorEnabled, redactor: this.redactor, plainTasks: this.plainTasks },
       this.depth + 1,
+    );
+  }
+
+  /** See `LoggerOptions.plainTasks`. Propagates to every future `child()` of the result. */
+  withPlainTasks(): Logger {
+    return new Logger(
+      this.level,
+      this.out,
+      this.context,
+      { color: this.colorEnabled, redactor: this.redactor, plainTasks: true },
+      this.depth,
     );
   }
 
@@ -284,7 +301,7 @@ export class Logger {
   async task<T>(label: string, fn: () => Promise<T>): Promise<T> {
     if (this.level === 'quiet') return fn();
     const prefix = `${this.indent()}${this.badge()}`;
-    const useSpinner = this.colorEnabled && this.level !== 'debug';
+    const useSpinner = this.colorEnabled && this.level !== 'debug' && !this.plainTasks;
     const spinner = useSpinner ? new Spinner(this.out, prefix, label) : undefined;
     if (spinner) spinner.start();
     else this.out.write(`${prefix}${label}\n`);

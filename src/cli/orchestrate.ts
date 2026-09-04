@@ -24,7 +24,8 @@ import { extractActions, type ReplayResult } from '../verify/replay.js';
 import type { CliArgs } from './args.js';
 import { EXIT_CODES } from '../exit-codes.js';
 import type { DiscoveryManifest, DiscoveryManifestFlow, DiscoveryManifestRun } from './manifest.js';
-import { appLogger } from './logger-state.js';
+import { appLogger, setAppLogger } from './logger-state.js';
+import { runWithConcurrencyLimit } from './concurrency.js';
 import { createProvider } from './provider-factory.js';
 import { executeReplay } from './replay-execution.js';
 import { runResponseVariants } from './response-variant-runner.js';
@@ -662,16 +663,22 @@ export async function exploreCoverage(
   const evidencePath = join(args.output, 'evidence.jsonl');
   const redactor = redactorForArgs(args);
   const evidenceLog = new EvidenceLog(evidencePath, redactor);
-  const runs: ExplorationRun[] = [];
 
   const configuredRuns = createCoverageRuns(args);
-  for (const [runIndex, configuredRun] of configuredRuns.entries()) {
+  const concurrency = Math.max(1, args.maxConcurrentPersonas);
+  if (concurrency > 1) {
+    // A non-animated spinner fallback once more than one persona can be exploring at a time —
+    // two concurrent `\r`-redrawing spinners would otherwise stomp on each other's terminal
+    // line. exploreAndVerify reads the shared appLogger directly, so swapping it here is enough
+    // to reach every persona's spinner-using task() calls without threading a logger through.
+    setAppLogger(appLogger.withPlainTasks());
+  }
+  const runs = await runWithConcurrencyLimit(configuredRuns, concurrency, async (configuredRun, runIndex) => {
     const personaLabel = configuredRun.args.personaName ?? configuredRun.name;
     const batchRunLogger = appLogger.child({ persona: personaLabel });
     appLogger.phase(`Persona ${runIndex + 1}/${configuredRuns.length}: ${personaLabel}`);
     try {
       const run = await exploreAndVerify(configuredRun.args, evidenceLog, configuredRun.id, configuredRun.name, signal);
-      runs.push(run);
       batchRunLogger.phase(
         `Summary: ${run.replayConfirmedIds.length} of ${run.discovery?.flows.length ?? 0} discovered flow(s) replay-confirmed`,
         {
@@ -690,11 +697,12 @@ export async function exploreCoverage(
               : 'exploration ended before the next flow was completed';
         batchRunLogger.warn(`Coverage incomplete: ${reason}`);
       }
+      return run;
     } catch (error) {
       if (signal?.aborted) throw error;
       const message = error instanceof Error ? error.message : String(error);
       batchRunLogger.error(`Persona failed: ${message}`);
-      runs.push({
+      const failedRun: ExplorationRun = {
         runId: configuredRun.id,
         runName: configuredRun.name,
         args: configuredRun.args,
@@ -708,9 +716,10 @@ export async function exploreCoverage(
         runtimeErrors: [],
         replayFailures: {},
         error: redactor.text(message),
-      });
+      };
+      return failedRun;
     }
-  }
+  });
 
   const evidence = readEvidenceLog(evidencePath);
   if (evidence.issues.length > 0) {
